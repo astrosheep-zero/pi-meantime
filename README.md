@@ -1,4 +1,4 @@
-# pi-bg-poc
+# pi-meantime
 
 纯 Pi Extension 的后台工具执行 PoC。目标接口固定为 **Pi 1.3.0**，不修改 Pi 核心，不启动第二个 Agent。
 
@@ -11,7 +11,7 @@
 需要已经安装的 Pi 1.3.0 和 Node.js 22.19+。建议在独立测试目录/会话试用，不与其他覆盖 `bash` 的插件同时加载。
 
 ```sh
-cd pi-bg-poc
+cd pi-meantime
 pi -e ./index.mjs
 ```
 
@@ -156,7 +156,7 @@ scripts/pi-smoke.mjs       安装真实 Pi SDK 后运行的独立冒烟测试
 examples/register-fixture.mjs  用新版 API 注册本地 MCP 测试服务器
 ```
 
-MIT License。没有发布 npm，没有向 GitHub 推送或改动任何现有仓库。
+MIT License。尚未发布 npm。GitHub 仓库：https://github.com/astrosheep-zero/pi-meantime。
 
 ## RPC 客户端接入
 

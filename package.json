@@ -1,5 +1,5 @@
 {
-  "name": "pi-bg-poc",
+  "name": "pi-meantime",
   "version": "0.1.4",
   "private": true,
   "description": "Pure Pi 1.3 extension: managed bash and typed tool proxies with cooperative background execution",

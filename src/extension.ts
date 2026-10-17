@@ -228,7 +228,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     promptSnippet: base.promptSnippet, promptGuidelines: base.promptGuidelines,
     annotations: base.annotations, executionMode: base.executionMode,
     outputSchema: RESULT_SCHEMA,
-    description: `${base.description}\nManaged by pi-bg-poc. Optional ${CONTROL}: auto/yes/no. timeout remains a hard command timeout; auto-background time is configured separately.`,
+    description: `${base.description}\nManaged by pi-meantime. Optional ${CONTROL}: auto/yes/no. timeout remains a hard command timeout; auto-background time is configured separately.`,
     // Preserve direct access from codemode. A built-in factory, not executeTool('bash'),
     // is used below, so the same-name override has no recursive dispatch.
     exposure: 'direct',
