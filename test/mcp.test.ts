@@ -52,6 +52,8 @@ test('server tool failure is a failed task, not a successful result merely becau
   try {
     const outcome = await h.pi.call('mcp__fixture__fail_bg', { ms: 1 });
     assert.equal(outcome.isError, true);
-    assert.equal(((outcome.result.structuredContent as { task: unknown }).task as Snapshot).state, 'failed');
+    assert.ok(!(outcome.result.structuredContent as { task?: unknown } | undefined)?.task);
+    const list = await h.pi.call('bg_task', { action: 'list' });
+    assert.equal((list.result.structuredContent as unknown as { tasks: Snapshot[] }).tasks[0]!.state, 'failed');
   } finally { await h.close(); }
 });

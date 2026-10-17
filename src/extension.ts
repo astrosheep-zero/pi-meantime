@@ -21,15 +21,20 @@ function owner(ctx: Context): string {
   return `${ctx.sessionManager.getSessionId()}\0${ctx.sessionManager.getSessionFile() ?? ''}`;
 }
 function json(value: unknown): Json { return JSON.parse(JSON.stringify(value)) as Json; }
-function resultView(view: View, nested: boolean): Result {
-  if (view.kind === 'handle') {
-    return {
-      content: [{ type: 'text', text: `Task ${view.task.id}: ${view.task.state}; execution continues independently of this wait. Do not restart or poll in a loop. Completion will be announced. In the TUI use /bg status or /bg cancel ${view.task.id}; the model can use bg_task for status/result/cancel.` }],
-      details: view.task,
-      structuredContent: { task: json(view.task), result_available: false },
-    };
-  }
-  const source = view.result;
+function foregroundOrHandle(view: View, nested: boolean): Result {
+  if (view.kind === 'handle') return {
+    content: [{ type: 'text', text: `Task ${view.task.id}: ${view.task.state}; execution continues independently of this wait. Do not restart or poll in a loop. Completion will be announced. In the TUI use /bg status or /bg cancel ${view.task.id}; the model can use bg_task for status/result/cancel.` }],
+    details: view.task,
+    structuredContent: { task: json(view.task), result_available: false },
+  };
+  if (view.thrown) throw view.thrown.error;
+  if (!nested) return view.result;
+  // Pi already aggregates nested usage. Preserve the hook's authoritative flag
+  // without double-counting usage or exposing our task bookkeeping.
+  const { usage: _usage, ...result } = view.result;
+  return { ...result, isError: view.isError ?? result.isError ?? false };
+}
+function storedResult(task: Snapshot, source: Result): Result {
   // Bounded context, persisted original, including structured/image data when it
   // fits the configured retention cap. Do not silently lose where full data lives.
   let budget = 32 * 1024;
@@ -39,25 +44,22 @@ function resultView(view: View, nested: boolean): Result {
     budget -= Buffer.byteLength(text);
     return text ? [{ type: 'text' as const, text }] : [];
   });
-  content.unshift({ type: 'text', text: `Task ${view.task.id}: ${view.task.state}. ${view.task.cancelRequestedAt ? 'A cancellation was requested; the native outcome is shown below. ' : ''}Result file: ${view.task.resultPath ?? 'unavailable'}.` });
+  content.unshift({ type: 'text', text: `Task ${task.id}: ${task.state}. ${task.cancelRequestedAt ? 'A cancellation was requested; the native outcome is shown below. ' : ''}Result file: ${task.resultPath ?? 'unavailable'}.` });
   const hadImages = source.content.some(b => b.type === 'image');
   const rawTextBytes = Buffer.byteLength(source.content.filter(b => b.type === 'text').map(b => b.text).join(''));
   if (hadImages || rawTextBytes > 32 * 1024) content.push({ type: 'text', text: 'Inline view omits image blocks or excess text. The stored result contains retained original blocks and structured data.' });
   return {
-    content, details: { task: view.task },
+    content, details: { task },
     structuredContent: {
-      task: json(view.task), result_available: true,
+      task: json(task), result_available: true,
       // Keep programmatic output bounded too; larger data remains in the result file.
       result: source.structuredContent !== undefined
         ? (Buffer.byteLength(JSON.stringify(source.structuredContent)) <= 32 * 1024 ? source.structuredContent : null)
         : truncateUtf8(source.content.filter(b => b.type === 'text').map(b => b.text).join('\n'), 32 * 1024),
     },
     // New records retain Pi's final Outcome flag. Older records only had result.isError.
-    isError: view.task.isError ?? source.isError ?? false,
+    isError: task.isError ?? source.isError ?? false,
     ...(source.terminate ? { terminate: true } : {}),
-    // Pi itself aggregates awaited nested usage. Adding it again doubles costs.
-    // Late usage is retained per task; see docs/DESIGN.md for the host-total limitation.
-    ...(!nested && source.usage ? { usage: source.usage } : {}),
   };
 }
 
@@ -129,7 +131,9 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     return {
       name, label: name,
       description: `${MARKER} ${info.description}\nThe ${CONTROL} field is Pi-only execution control. Default auto. The original tool is ${original}; use this proxy instead of calling it directly.`,
-      parameters: decorateSchema(info.parameters), outputSchema: RESULT_SCHEMA,
+      // Discovery metadata lacks outputSchema; native output or a handle is
+      // unknown, not the old task envelope promised for every invocation.
+      parameters: decorateSchema(info.parameters), outputSchema: {},
       exposure: info.exposure ?? 'direct', defaultActive: (info.exposure ?? 'direct') === 'direct',
       // Preserve Pi's exposure policy: indirect MCP proxies stay indirect.
       // Sequential tools are not accepted by discovery. Never silently override
@@ -164,7 +168,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
             },
           });
           if (!producerStarted) tickets.delete(callId);
-          return resultView(view, true);
+          return foregroundOrHandle(view, true);
         } catch (error) { if (!producerStarted) tickets.delete(callId); throw error; }
       },
     };
@@ -227,7 +231,11 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     name: 'bash', label: 'bash', parameters: decorateSchema(base.parameters),
     promptSnippet: base.promptSnippet, promptGuidelines: base.promptGuidelines,
     annotations: base.annotations, executionMode: base.executionMode,
-    outputSchema: RESULT_SCHEMA,
+    constrainedSampling: base.constrainedSampling,
+    outputSchema: base.outputSchema ? { anyOf: [base.outputSchema, {
+      type: 'object', properties: { task: { type: 'object' }, result_available: { const: false } },
+      required: ['task', 'result_available'],
+    }] } : {},
     description: `${base.description}\nManaged by pi-meantime. Optional ${CONTROL}: auto/yes/no. timeout remains a hard command timeout; auto-background time is configured separately.`,
     // Preserve direct access from codemode. A built-in factory, not executeTool('bash'),
     // is used below, so the same-name override has no recursive dispatch.
@@ -243,7 +251,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
           return { result, isError: result.isError === true };
         },
       });
-      return resultView(view, false);
+      return foregroundOrHandle(view, false);
     },
   });
   pi.registerTool({
@@ -268,7 +276,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       if (typeof params.id !== 'string') throw new Error('id is required for this action');
       if (params.action === 'result') {
         const { task, result } = r.result(params.id);
-        return result ? resultView({ kind: 'result', task, result }, true) : {
+        return result ? storedResult(task, result) : {
           ...textResult(`Result is not available. Do not relaunch the operation.\n${JSON.stringify(task)}`, task),
           structuredContent: { task: json(task), result_available: false },
         };
@@ -346,7 +354,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     }
   });
   on('input', event => {
-    if (event.streamingBehavior === 'steer') runtime?.detachAll('steer');
+    if (config.detachOnSteer && event.streamingBehavior === 'steer') runtime?.detachAll('steer');
     // No abort, no consume/resubmit, no lost images or changed queue semantics.
     return { action: 'continue' };
   });

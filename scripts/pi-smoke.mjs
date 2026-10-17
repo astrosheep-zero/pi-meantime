@@ -59,9 +59,12 @@ if (sdk) {
     assert.ok(wrapped, 'proxy must be activated in the test session');
     const result = await wrapped.execute('smoke', { ms: 1, text: 'REAL_PI_MCP_OK', __background__: 'no' }, new AbortController().signal);
     assert.ok(result.content.some(b => b.type === 'text' && b.text.includes('REAL_PI_MCP_OK')));
+    assert.equal(result.structuredContent?.task, undefined);
     const bash = session.agent.state.tools.find(t => t.name === 'bash');
     const shell = await bash.execute('smoke-bash', { command: 'printf REAL_PI_BASH_OK', __background__: 'no' }, new AbortController().signal);
-    assert.ok(shell.content.some(b => b.type === 'text' && b.text.includes('REAL_PI_BASH_OK')));
+    assert.deepEqual(shell.content, [{ type: 'text', text: 'REAL_PI_BASH_OK' }]);
+    assert.equal(shell.structuredContent.exit_code, 0);
+    assert.equal(shell.structuredContent.task, undefined);
   } finally {
     try {
       // AgentSession.dispose() invalidates context and listeners, but does not

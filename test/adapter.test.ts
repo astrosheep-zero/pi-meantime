@@ -158,6 +158,21 @@ test('steer releases foreground without abort or consuming text/images', async (
     assert.deepEqual(event.images, images); assert.equal(h.pi.abortCalls, 0);
   } finally { work.resolve(ok().result); await h.close(); }
 });
+test('disabled steer detach keeps input intact; explicit detach still works', async () => {
+  const work = deferred<Result>();
+  const h = await setup([basicTool('mcp__t__slow', () => work.promise)], { detachOnSteer: false });
+  try {
+    let settled = false;
+    const running = h.pi.call('mcp__t__slow_bg', {}).then(out => { settled = true; return out; });
+    await until(() => h.pi.trace.some(t => t.type === 'execute' && t.name === 'mcp__t__slow'));
+    const event = { type: 'input' as const, text: 'next', source: 'rpc' as const, streamingBehavior: 'steer' as const };
+    assert.deepEqual(await h.pi.emit('input', event), [{ action: 'continue' }]);
+    await sleep(5); assert.equal(settled, false);
+    await h.pi.commands.get('bg')!('detach', h.pi.ctx);
+    assert.equal(snapshot(await running).delivery, 'background');
+    assert.throws(() => validateConfig({ detachOnSteer: 'false' }), /detachOnSteer/);
+  } finally { work.resolve(ok().result); await h.close(); }
+});
 test('shortcut and auto timer both release managed waiters', async () => {
   for (const trigger of ['shortcut', 'timeout'] as const) {
     const work = deferred<Result>(); const h = await setup([basicTool('mcp__t__slow', () => work.promise)], { autoDetachMs: trigger === 'timeout' ? 10 : 0 });

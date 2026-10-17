@@ -1,6 +1,6 @@
 # 设计说明与决策记录
 
-版本：0.1.4 PoC。宿主目标：Pi 1.3.0。
+版本：0.1.5 PoC。宿主目标：Pi 1.3.0。
 
 ## 1. 范围
 
@@ -42,7 +42,7 @@ delivery: foreground -> background
 
 所有 detach 触发最终进入同一个方法。没有 `ctx.abort()`，没有捕获再重投用户输入。`input` 返回 `continue`，Pi 自己继续处理输入文本、附件和队列。
 
-`no` 模式是严格前台，用户快捷键也不强行破坏它。
+`no` 模式是严格前台，用户快捷键也不强行破坏它。`detachOnSteer` 默认 true；false 时 input 仍返回 continue，但不触发 detach。快捷键、显式命令和自动阈值独立工作。
 
 ## 3. 调用进入门槛
 
@@ -72,7 +72,11 @@ delivery: foreground -> background
 
 根级组合、条件、patternProperties、propertyNames、property-count、const/enum 等需要更复杂的等价变换；PoC 拒绝包装并保留原工具。没有偷偷放松业务约束。调用原工具时再次经过 Pi 的原始参数验证。
 
-代理返回统一 envelope：`task + result_available + result`。因为同一输入可以返回原结果或后台句柄，照抄原 outputSchema 会撒谎。本 PoC 明确改变编程调用者看到的输出包装，保留原业务结果的存储副本。
+未 detach 的调用返回原生结果，不附加 task、不二次截断、不移除图片。运行时把原始内存结果交给前台，清洗/大小限制只影响存储副本；存储失败记入任务元数据，不替换已完成的前台业务结果。Bash 原样重抛执行异常。代理保留嵌套调用 hook 后的结果及最终 Outcome.isError，但不重复上报 Pi 已自动聚合的 usage。
+
+只有真正 detach 才返回 `task + result_available:false`；`bg_task result` 继续返回有预算的任务 envelope。Bash outputSchema 是原生输出与后台句柄的 union，并继承 constrainedSampling。通用代理通过 getAllTools 发现的元数据不含 outputSchema，暂用 `{}`（unknown）描述原生输出或句柄，不再虚报统一 envelope 类型。
+
+同名 bash 的 tool_result 在前台结果或 detach 句柄返回时触发一次；detach 后晚结果不再触发该 bash hook。其他工具代理通过 ctx.executeTool 调原名，内层真实完成仍经过原工具 hook。bg_task 读取结果另经过 bg_task 自己的 hook。
 
 ## 6. 动态注册与生命周期
 
@@ -118,7 +122,7 @@ Bash 使用 Pi 原生进程清理；MCP/一般扩展工具仍经原名 ctx.execu
 
 不保存业务入参和环境变量。结果可能含敏感数据，因此采用私有权限，但不做自动内容脱敏；保留原工具结果钩子的脱敏结果。
 
-运行状态和完成数据分别保存；完成后从内存释放大结果。默认保留最近完成的128个任务；尚未最终确认的前台结果、等待通知的结果、仍有全局存活租约以及没有 endedAt 的不确定任务暂不淘汰。通知 flush 和最后租约释放后立即再次清理，无需等待新任务。显式读取结果时优先保留刚返回条目，避免同一次调用给出失效的 resultPath；后续清理事件仍可按保留策略淘汰它。恢复时不先 slice(maxRetained)，防止隐藏仍应保护的任务。元数据与对应结果一起删除，删除失败会保留内存记录并暴露 storageError/审计事件。单结果4MiB；超限存储显式截断清单。模型正文/结构化 inline 视图均有预算，任务列表默认10条、最多32条并支持 offset。
+运行状态和完成数据分别保存；完成后从内存释放大结果。默认保留最近完成的128个任务；尚未结束的前台调用、等待通知的结果、仍有全局存活租约以及没有 endedAt 的不确定任务暂不淘汰。通知 flush 和最后租约释放后立即再次清理，无需等待新任务。显式读取结果时优先保留刚返回条目，避免同一次调用给出失效的 resultPath；后续清理事件仍可按保留策略淘汰它。恢复时不先 slice(maxRetained)，防止隐藏仍应保护的任务。元数据与对应结果一起删除，删除失败会保留内存记录并暴露 storageError/审计事件。单结果4MiB；超限存储显式截断清单。bg_task 的模型正文/结构化 inline 视图均有预算，任务列表默认10条、最多32条并支持 offset。
 
 入站工具已经构造出来的超大结果，在截断前仍可能占内存，PoC 无法用结果截断阻止上游一次性分配。用户移除整个结果目录时会失去历史数据；PoC 不自动跨会话清理其他目录。
 

@@ -73,6 +73,7 @@ export interface Tool extends ToolInfo {
   exposure?: Exposure;
   defaultActive?: boolean;
   outputSchema?: ToolDefinition['outputSchema'];
+  constrainedSampling?: ToolDefinition['constrainedSampling'];
   executionMode?: 'parallel' | 'sequential';
   promptSnippet?: string;
   reachesTools?: (input: Record<string, unknown>) => 'all' | readonly string[];
@@ -87,7 +88,7 @@ export interface Tool extends ToolInfo {
  * the metadata and executor that the background wrapper actually uses.
  */
 export type BashTool = Pick<Tool,
-  'name' | 'description' | 'promptSnippet' | 'promptGuidelines' | 'annotations' | 'executionMode' | 'execute'>
+  'name' | 'description' | 'promptSnippet' | 'promptGuidelines' | 'annotations' | 'executionMode' | 'outputSchema' | 'constrainedSampling' | 'execute'>
   & Pick<ToolInfo, 'parameters'>;
 export interface InputEvent {
   type: 'input'; text: string; source: 'interactive' | 'rpc' | 'extension';

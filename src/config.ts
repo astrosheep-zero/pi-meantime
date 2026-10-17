@@ -15,6 +15,7 @@ export interface Config {
   notifyDebounceMs: number;
   storageRoot: string;
   blockOriginalCalls: boolean;
+  detachOnSteer: boolean;
 }
 export const DEFAULT_CONFIG: Config = {
   include: ['mcp__*'],
@@ -28,6 +29,7 @@ export const DEFAULT_CONFIG: Config = {
   notifyDebounceMs: 50,
   storageRoot: join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), '.pi', 'agent'), 'bg-poc-tasks'),
   blockOriginalCalls: true,
+  detachOnSteer: true,
 };
 export function validateConfig(raw: unknown): Config {
   if (!isRecord(raw)) throw new Error('bg-poc config must be an object');
@@ -45,7 +47,9 @@ export function validateConfig(raw: unknown): Config {
     const n = config[key];
     if (typeof n !== 'number' || !Number.isInteger(n) || n < min || n > max) throw new Error(`Invalid ${key}: expected integer ${min}..${max}`);
   }
-  if (typeof config.blockOriginalCalls !== 'boolean') throw new Error('blockOriginalCalls must be boolean');
+  for (const key of ['blockOriginalCalls', 'detachOnSteer'] as const) {
+    if (typeof config[key] !== 'boolean') throw new Error(`${key} must be boolean`);
+  }
   if (typeof config.storageRoot !== 'string' || !isAbsolute(config.storageRoot)) throw new Error('storageRoot must be absolute');
   return config;
 }

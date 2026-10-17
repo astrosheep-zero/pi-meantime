@@ -15,7 +15,7 @@ export interface Snapshot {
   isError?: boolean;
   producerId?: string; recovered?: boolean; notification: 'none' | 'pending' | 'queued' | 'observed' | 'failed' | 'suppressed';
 }
-export type View = { kind: 'result'; task: Snapshot; result: Result } | { kind: 'handle'; task: Snapshot };
+export type View = { kind: 'result'; task: Snapshot; result: Result; isError?: boolean; thrown?: { error: unknown } } | { kind: 'handle'; task: Snapshot };
 export interface RunRequest {
   tool: string; kind: 'bash' | 'tool'; callId: string; mode: Mode;
   canDetach: boolean; parentSignal?: AbortSignal; onUpdate?: Update;
@@ -100,6 +100,7 @@ export class TaskRuntime {
         try { request.onUpdate?.(partial); } catch { /* A dead renderer cannot kill the producer. */ }
       }
     };
+    let thrown: { error: unknown } | undefined;
     task.done = Promise.resolve().then(() => {
       if (task.controller!.signal.aborted) throw new Error('Cancelled before execution');
       return request.execute(task.controller!.signal, update);
@@ -108,7 +109,10 @@ export class TaskRuntime {
       // Preserve the native payload separately from its authoritative final flag.
       // afterToolCall may intentionally override a result's original isError.
       return { result: outcome.result, isError: outcome.isError };
-    }).catch(error => ({ result: failure(error), isError: true })).then(outcome => this.finish(task, outcome.result, outcome.isError))
+    }).catch(error => {
+      thrown = { error };
+      return { result: failure(error), isError: true };
+    }).then(outcome => this.finish(task, outcome.result, outcome.isError, thrown))
       .finally(() => { leases().delete(id); this.prune(); this.changed(); });
     if (request.mode === 'auto' && request.canDetach && this.config.autoDetachMs > 0) {
       task.autoTimer = setTimeout(() => this.detach(task, 'timeout'), this.config.autoDetachMs);
@@ -167,7 +171,7 @@ export class TaskRuntime {
     task.resolveView?.(view); task.resolveView = undefined;
     this.changed();
   }
-  private finish(task: Task, result: Result, isError: boolean): void {
+  private finish(task: Task, result: Result, isError: boolean, thrown?: { error: unknown }): void {
     task.meta.localRunning = false; task.meta.endedAt = Date.now(); task.finishSequence = ++this.completionSequence;
     clearTimeout(task.autoTimer); clearTimeout(task.cancelTimer); task.cleanupParent?.();
     // These states describe Pi's returned outcome, never inferred remote rollback.
@@ -188,7 +192,10 @@ export class TaskRuntime {
     task.controller = undefined;
     if (!task.viewSettled) {
       task.observed = true; task.meta.notification = 'observed';
-      this.resolveView(task, { kind: 'result', task: snap(task), result: task.result });
+      // Retention may clean/truncate the disk copy; it must not change a
+      // foreground result (or turn a successful operation into a storage error).
+      task.published = true; // No task metadata is needed in the foreground reply.
+      this.resolveView(task, { kind: 'result', task: snap(task), result, isError, thrown });
     } else if (task.meta.delivery === 'background' && !task.observed) {
       task.meta.notification = this.open ? 'pending' : 'suppressed';
     }

@@ -4,6 +4,8 @@
 
 `bash` 同名包装；符合条件的 MCP / 扩展工具保留原注册，创建 `<original>_bg` 代理。代理逐个**继承原工具 exposure**：`direct` 仍为 `direct`，`codemode` 仍为 `codemode`，`deferred` 仍为 `deferred`；`hidden`、`model-only` 不生成代理。只有 direct 工具在代理激活后隐藏原工具的模型声明，原工具仍供内部 `ctx.executeTool()` 调用。所有入口共享一个 Runtime，统一支持模型主动后台化、Ctrl+Shift+B、steer 和前台等待超时。Pi 1.3.0 的 MCP 默认 exposure 是 `codemode`，无需为了此 PoC 强制升级为 `direct`。
 
+**v0.1.5**：未 detach 的 bash/代理调用保持原生结果；新增 `detachOnSteer` 开关，默认开启。关闭后 steer 仅由 Pi 排队处理，不触发转后台；快捷键、`/bg detach` 和自动阈值不受影响。
+
 **v0.1.4 修复版**：取消保留 Pi 最终原生错误位和原始结果，不再把已返回的取消错误推断为 outcome_unknown；新增手动 `/bg cancel <id>`、可读状态列表，并修复审批拒绝前抢先发后台句柄的竞态。继续保留 v0.1.3 的 reload 晚结果、保留策略和真实 SDK 类型修复。验证范围与复跑方法见 [验证说明](docs/VALIDATION.md)。
 
 ## 开始试用
@@ -91,19 +93,25 @@ bg_task(action, id?, offset?, limit?)
 
 原 MCP Tool 仍可被内部 `ctx.executeTool(originalName, args, {signal})` 调用。代理名称不同，避免同名递归。
 
-两种正常返回：
+**未 detach：保持原工具返回形态**，包括 content、details、structuredContent 和图片，不添加任务头、不额外截断；`auto` 在转后台前已完成也一样。Bash 异常原样重抛；代理采用原工具 hook 的最终错误位，嵌套 usage 由 Pi 聚合，不重复计算。任务仍在内部记录和落盘。
+
+**真正 detach：返回后台句柄**：
 
 ```json
 {"task":{"id":"bg_...","state":"running","delivery":"background"},"result_available":false}
 ```
 
+完成通知只给元数据；之后 `bg_task(action="result")` 才返回：
+
 ```json
 {"task":{"id":"bg_...","state":"completed"},"result_available":true,"result":{"original":"structured result"}}
 ```
 
-这是包装器的 **统一输出 envelope**。输入业务 Schema 保留；输出 Schema 没有假装与原工具完全相同。前台成功也会带 task 元数据。原结果正文仍呈现给模型，原 `content`、`details`、`structuredContent`、`usage` 在大小预算内落盘。原工具没有结构化结果时，envelope 的 `result` 是文本。
+Bash 输出声明为原生输出与句柄的 union；通用代理暂声明 unknown，因为发现接口不提供原输出 Schema。`bg_task` 仍使用任务 envelope。
 
-图片不自动塞进模型上下文，保存在结果文件。超大结构化结果的 inline `result` 为 `null`，按 `task.resultPath` 读取保留结果。超过整个结果保留上限时明确标记 `resultTruncated`；不会宣称保留了完整原文。
+同名 bash 的 hook 对前台结果或 detach 句柄触发一次，晚结果不再触发。其他工具代理的内层调用完成时仍经过原工具 hook；读取后台结果另走 `bg_task` hook。
+
+后台结果读取时，图片不自动塞进模型上下文，保存在结果文件。超大结构化结果的 inline `result` 为 `null`，按 `task.resultPath` 读取保留结果。超过整个结果保留上限时明确标记 `resultTruncated`；不会宣称保留了完整原文。
 
 ## 配置
 
@@ -114,6 +122,7 @@ bg_task(action, id?, offset?, limit?)
 | `include` | `["mcp__*"]` |
 | `exclude` | IDE MCP，以及 `read/write/edit/codemode/tool_search` |
 | `autoDetachMs` | `120000`；`0` 关闭计时自动 detach |
+| `detachOnSteer` | `true`；设为 `false` 后 steer 不转后台 |
 | `maxRunning` | `4`，按真实本地 producer 计数 |
 | `maxRetained` | `128` 个已结束任务 |
 | `maxResultBytes` | `4194304`，单任务保留结果上限 |
