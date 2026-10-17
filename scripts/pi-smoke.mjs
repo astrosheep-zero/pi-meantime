@@ -31,6 +31,22 @@ if (sdk) {
           args: [fileURLToPath(new URL('../test/fixtures/mcp-server.mjs', import.meta.url))],
           exposure: 'direct', timeout: 10,
         });
+        pi.registerTool({
+          name: 'background_probe', label: 'background probe', description: 'Test nested background result retrieval',
+          parameters: { type: 'object', properties: {} },
+          async execute(_id, _args, _signal, _update, ctx) {
+            assert.ok(ctx.tools.some(t => t.name === 'bg_task'), 'bg_task must be callable by codemode');
+            const started = await ctx.executeTool('bash', { command: 'sleep 0.1; printf REAL_BACKGROUND_OK', __background__: 'yes' });
+            assert.equal(started.result.structuredContent.result_available, false);
+            const id = started.result.structuredContent.task.id;
+            await new Promise(resolve => setTimeout(resolve, 300));
+            const collected = await ctx.executeTool('bg_task', { action: 'result', id });
+            assert.equal(collected.isError, false);
+            assert.equal(collected.result.structuredContent.result_available, true);
+            assert.equal(collected.result.structuredContent.result.output, 'REAL_BACKGROUND_OK');
+            return collected.result;
+          },
+        });
         extension = install(pi, {
           config: validateConfig({ storageRoot: join(root, 'tasks'), autoDetachMs: 0 }),
           makeBash: cwd => sdk.createBashToolDefinition(cwd),
@@ -45,7 +61,7 @@ if (sdk) {
     manager.appendMessage({ role: 'assistant', content: [{ type: 'toolCall', id: 'smoke', name: 'mcp__bg_poc_fixture__slow_bg', arguments: { ms: 1 } }],
       api: 'openai-completions', provider: 'fixture', model: 'fixture', usage, stopReason: 'toolUse', timestamp: Date.now() });
     ({ session } = await sdk.createAgentSession({ cwd: root, resourceLoader: loader, settingsManager, sessionManager: manager }));
-    await session.bindExtensions({});
+    await session.bindExtensions({ mode: 'rpc' });
     const deadline = Date.now() + 8000;
     const target = 'mcp__bg_poc_fixture__slow_bg';
     while (!session.getAllTools().some(t => t.name === target)) {
@@ -54,7 +70,7 @@ if (sdk) {
     }
     // SDK may keep added MCP tools outside its initial active set. Explicit activation
     // here is part of the test setup, not the extension's production policy.
-    session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), target, 'mcp__bg_poc_fixture__slow', 'bg_task', 'bash'])]);
+    session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), target, 'mcp__bg_poc_fixture__slow', 'bg_task', 'bash', 'background_probe'])]);
     const wrapped = session.agent.state.tools.find(t => t.name === target);
     assert.ok(wrapped, 'proxy must be activated in the test session');
     const result = await wrapped.execute('smoke', { ms: 1, text: 'REAL_PI_MCP_OK', __background__: 'no' }, new AbortController().signal);
@@ -65,6 +81,8 @@ if (sdk) {
     assert.deepEqual(shell.content, [{ type: 'text', text: 'REAL_PI_BASH_OK' }]);
     assert.equal(shell.structuredContent.exit_code, 0);
     assert.equal(shell.structuredContent.task, undefined);
+    const probe = session.agent.state.tools.find(t => t.name === 'background_probe');
+    await probe.execute('background-probe', {}, new AbortController().signal);
   } finally {
     try {
       // AgentSession.dispose() invalidates context and listeners, but does not
@@ -81,5 +99,5 @@ if (sdk) {
       }
     }
   }
-  console.log('REAL_PI_SMOKE_PASS: official SDK registration, nested MCP and native Bash; shutdown cleanup completed. No model call. TUI/RPC detachment not exercised by this headless smoke.');
+  console.log('REAL_PI_SMOKE_PASS: official SDK registration, nested MCP and native Bash; shutdown cleanup completed. No model call. SDK RPC-mode detach and nested result retrieval passed; no actual TUI/CLI transport exercised.');
 }

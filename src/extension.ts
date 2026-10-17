@@ -255,7 +255,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     },
   });
   pi.registerTool({
-    name: 'bg_task', label: 'Background tasks', exposure: 'model-only',
+    name: 'bg_task', label: 'Background tasks', exposure: 'direct',
     description: 'Inspect background tasks in this Pi session. Actions: list, status, result, cancel. Non-blocking snapshots; never poll in a loop. Cancellation requests do not prove a remote operation was rolled back.',
     parameters: { type: 'object', properties: {
       action: { type: 'string', enum: ['list', 'status', 'result', 'cancel'] },

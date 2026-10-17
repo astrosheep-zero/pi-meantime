@@ -4,6 +4,8 @@
 
 `bash` 同名包装；符合条件的 MCP / 扩展工具保留原注册，创建 `<original>_bg` 代理。代理逐个**继承原工具 exposure**：`direct` 仍为 `direct`，`codemode` 仍为 `codemode`，`deferred` 仍为 `deferred`；`hidden`、`model-only` 不生成代理。只有 direct 工具在代理激活后隐藏原工具的模型声明，原工具仍供内部 `ctx.executeTool()` 调用。所有入口共享一个 Runtime，统一支持模型主动后台化、Ctrl+Shift+B、steer 和前台等待超时。Pi 1.3.0 的 MCP 默认 exposure 是 `codemode`，无需为了此 PoC 强制升级为 `direct`。
 
+**v0.1.6**：`bg_task` 改为 direct，允许模型直接调用和 Codemode 内调用；真实 SDK 冒烟覆盖 detach → 后台完成 → 嵌套读取真实输出。
+
 **v0.1.5**：未 detach 的 bash/代理调用保持原生结果；新增 `detachOnSteer` 开关，默认开启。关闭后 steer 仅由 Pi 排队处理，不触发转后台；快捷键、`/bg detach` 和自动阈值不受影响。
 
 **v0.1.4 修复版**：取消保留 Pi 最终原生错误位和原始结果，不再把已返回的取消错误推断为 outcome_unknown；新增手动 `/bg cancel <id>`、可读状态列表，并修复审批拒绝前抢先发后台句柄的竞态。继续保留 v0.1.3 的 reload 晚结果、保留策略和真实 SDK 类型修复。验证范围与复跑方法见 [验证说明](docs/VALIDATION.md)。
