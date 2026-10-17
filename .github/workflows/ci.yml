@@ -1,0 +1,29 @@
+name: Check
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  contract-tests:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ['22', '24']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci --ignore-scripts --include=dev
+      - run: npm run check
+      - run: npm run demo
+  real-sdk-smoke:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci --ignore-scripts
+      - run: PI_OFFLINE=1 npm run test:pi

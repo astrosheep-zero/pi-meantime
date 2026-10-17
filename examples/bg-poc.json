@@ -1,0 +1,12 @@
+{
+  "include": ["mcp__*"],
+  "exclude": ["mcp__ide__*", "read", "write", "edit", "codemode", "tool_search"],
+  "autoDetachMs": 1000,
+  "maxRunning": 4,
+  "maxRetained": 128,
+  "maxResultBytes": 4194304,
+  "reconcileMs": 500,
+  "shutdownGraceMs": 1000,
+  "notifyDebounceMs": 50,
+  "blockOriginalCalls": true
+}

@@ -1,0 +1,14 @@
+{
+  "packageVersion": "0.1.4",
+  "productionSha256": {
+    "index.mjs": "262f08714d242679a1357e2abf7b7337b36624d93306fb99e17238119d713878",
+    "package.json": "54779037a4b9e7af2aaa06612350202a18b0b4857b79a5bffdcb365d202db112",
+    "src/config.ts": "693aa476ec5e7eaf7cba20b76bd6f6c01d24205b7744829d43a6b9c459806ffd",
+    "src/extension.ts": "284940ba2235c07956775628c643bd457a201ce6e744f3bf068d0417b675c49d",
+    "src/runtime.ts": "2978758c045f6e9f0f410bd368ccfef8e6e47b6029268789d5c0615b3c57fe5e",
+    "src/store.ts": "510ad8d1afcf6b8f007fd8a5acb99b7b5c1d01cee1337b5e53fdefc7c72b5403",
+    "src/protocol.ts": "73582753fbffbc4a5d28103c21bbf7dcbe24f7651a5943f1f4aa5189f183266f",
+    "src/schema.ts": "8e378316356bf41cee7c9b8bbfe23a76acfd775b4960480454f02371fdf2fe5b"
+  },
+  "baselinePurpose": "Final 0.1.4 production candidate"
+}

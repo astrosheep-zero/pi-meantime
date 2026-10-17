@@ -1,0 +1,17 @@
+node_modules/
+evidence/
+validation-runs/
+coverage/
+.tmp/
+__pycache__/
+*.pyc
+*.log
+*.tgz
+*.zip
+*.ansi
+.env
+.env.*
+!.env.example
+auth.json
+sessions/
+.DS_Store

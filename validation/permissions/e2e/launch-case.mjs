@@ -1,0 +1,18 @@
+import fs from 'node:fs';import {createHash} from 'node:crypto';import path from 'node:path';import {spawnSync,spawn} from 'node:child_process';
+const root=path.resolve('.');const scenario=process.argv[2];
+const dir=path.join(root,'evidence',scenario);fs.mkdirSync(path.join(dir,'home'),{recursive:true});fs.mkdirSync(path.join(dir,'agent'),{recursive:true});
+fs.writeFileSync(path.join(dir,'source-hashes-at-launch.json'),JSON.stringify(Object.fromEntries(['index.mjs','package.json',...fs.readdirSync(path.join(root,'src')).map(f=>'src/'+f)].map(f=>[f,createHash('sha256').update(fs.readFileSync(path.join(root,f))).digest('hex')])),null,2));
+fs.writeFileSync(path.join(dir,'extension-load-manifest.json'),JSON.stringify({backgroundExtensionLoaded:!scenario.startsWith('native_'),sdkVersion:'1.3.0'},null,2));
+const portFile=path.join(dir,'mock-port.txt');fs.rmSync(portFile,{force:true});const server=spawn(process.execPath,[path.join(root,'e2e/mock-llm.mjs'),path.join(root,'evidence'),portFile],{stdio:['ignore','ignore','inherit']});for(let n=0;!fs.existsSync(portFile);n++){if(n>100)throw new Error('mock startup timeout');await new Promise(r=>setTimeout(r,20));}const port=fs.readFileSync(portFile,'utf8').trim();
+fs.writeFileSync(path.join(dir,'agent/models.json'),JSON.stringify({providers:{localmock:{baseUrl:`http://127.0.0.1:${port}/${scenario}/v1`,api:'openai-completions',apiKey:'localstubkey',models:[{id:'mock-model',name:'Local test mock',reasoning:false,input:['text'],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:128000,maxTokens:4096}]}}}));
+fs.writeFileSync(path.join(dir,'agent/settings.json'),JSON.stringify({enableInstallTelemetry:false,enableAnalytics:false,quietStartup:true,defaultTools:['bash','bg_task','codemode','tool_search']}));
+fs.writeFileSync(path.join(dir,'bg-config.json'),JSON.stringify({include:['mcp__*','fixture_*'],autoDetachMs:100,reconcileMs:100,notifyDebounceMs:50,shutdownGraceMs:100,storageRoot:path.join(dir,'tasks')}));
+const q=s=>"'"+s.replaceAll("'","'\\''")+"'";
+const env={PATH:path.dirname(process.execPath)+':/usr/bin:/bin',HOME:path.join(dir,'home'),TERM:'xterm-256color',LANG:'C.UTF-8',PI_CODING_AGENT_DIR:path.join(dir,'agent'),PI_OFFLINE:'1',PI_BG_CONFIG:path.join(dir,'bg-config.json'),E2E_CASE_DIR:dir,NO_PROXY:'127.0.0.1,localhost'};
+const args=[process.execPath,path.join(root,'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'),'--offline','--no-extensions','-e','builtin:mcp','-e','builtin:codemode','-e','builtin:tool-search',...(scenario.startsWith('native_')?[]:['-e',path.join(root,'index.mjs')]),'-e',path.join(root,'e2e/observer.mjs'),'--no-skills','--no-prompt-templates','--no-themes','--no-context-files','--approve','--provider','localmock','--model','mock-model','--thinking','off','--system-prompt','You are a deterministic test agent. Use only local mock test tools.'];
+const cmd='env -i '+Object.entries(env).map(([k,v])=>k+'='+q(v)).join(' ')+' '+args.map(q).join(' ');
+fs.writeFileSync(path.join(dir,'launch-command.txt'),cmd+'\n');
+if(process.argv[3]!=='--stdio')throw new Error('This suite requires the Python PTY driver (--stdio)');
+const out=spawnSync(args[0],args.slice(1),{stdio:'inherit',env});
+fs.writeFileSync(path.join(dir,'cli-process-status.json'),JSON.stringify({status:out.status,signal:out.signal,error:out.error?{name:out.error.name,message:out.error.message,code:out.error.code}:null},null,2));
+server.kill();process.exit(out.error||out.signal||out.status===null?1:out.status);
