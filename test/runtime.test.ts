@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { TaskRuntime } from '../src/runtime.ts';
 import { deferred, ok, runtimeHarness, sleep, until } from './helpers.ts';
 import type { Outcome } from '../src/protocol.ts';
@@ -12,7 +12,8 @@ test('fast foreground result completes without a completion notification', async
     const view = await h.runtime.run({ tool: 'one', kind: 'tool', callId: 'c1', mode: 'auto', canDetach: true, execute: async () => ok() });
     assert.equal(view.kind, 'result'); assert.equal(view.task.state, 'completed');
     h.runtime.published('c1'); await sleep(15); assert.equal(h.notifications.length, 0);
-    assert.ok(view.task.resultPath); assert.match(readFileSync(view.task.resultPath, 'utf8'), /done/);
+    assert.equal(view.task.resultPath, undefined); assert.equal(existsSync(h.store.directory), false);
+    assert.equal(h.records.size, 0); assert.equal(h.runtime.list().length, 0);
   } finally { await h.close(); }
 });
 test('explicit background returns before producer, notification waits for finalized parent result', async () => {
@@ -79,7 +80,7 @@ test('reading result acknowledges completion and prevents duplicate notification
 });
 test('notification enqueue failure is retried; it is not falsely marked delivered', async () => {
   const h = runtimeHarness(); await h.runtime.close(); let sends = 0;
-  const runtime = new TaskRuntime(h.store, h.config, { notify() { if (++sends < 2) throw new Error('busy'); } });
+  const runtime = new TaskRuntime(h.store, h.config, { ...h.sink, notify() { if (++sends < 2) throw new Error('busy'); } });
   const work = deferred<Outcome>();
   try {
     const view = await runtime.run({ tool: 'one', kind: 'tool', callId: 'c1', mode: 'yes', canDetach: true, execute: () => work.promise });
@@ -112,7 +113,7 @@ test('recovery never replays unfinished work or generates stale notifications', 
   const h = runtimeHarness(); const work = deferred<Outcome>();
   const view = await h.runtime.run({ tool: 'remote', kind: 'tool', callId: 'c1', mode: 'yes', canDetach: true, execute: () => work.promise });
   await h.runtime.close();
-  const other = new TaskRuntime(h.store, h.config, { notify() { throw new Error('must not notify'); } });
+  const other = new TaskRuntime(h.store, h.config, { ...h.sink, notify() { throw new Error('must not notify'); } }, [...h.records.values()]);
   try {
     const restored = other.get(view.task.id); assert.equal(restored.state, 'outcome_unknown'); assert.equal(restored.recovered, true);
     assert.throws(() => other.cancel(restored.id), /no live local controller/);
@@ -159,7 +160,7 @@ test('late tool usage stays in the task ledger without inventing foreground usag
 test('quota is retained across runtime shutdown until non-cooperative producers actually settle', async () => {
   const h = runtimeHarness({ maxRunning: 1 }); const work = deferred<Outcome>();
   await h.runtime.run({ tool: 'one', kind: 'tool', callId: 'c1', mode: 'yes', canDetach: true, execute: () => work.promise });
-  await h.runtime.close(); const next = new TaskRuntime(h.store, h.config, { notify() {} });
+  await h.runtime.close(); const next = new TaskRuntime(h.store, h.config, h.sink, [...h.records.values()]);
   try {
     assert.throws(() => next.run({ tool: 'next', kind: 'tool', callId: 'c2', mode: 'yes', canDetach: true, execute: async () => ok() }), /capacity/);
     work.resolve(ok()); await until(() => TaskRuntime.liveProducerCount() === 0);
@@ -170,8 +171,11 @@ test('terminal retention is bounded and large results are not duplicated in the 
   const h = runtimeHarness({ maxRetained: 2 });
   try {
     for (let i = 0; i < 5; i++) {
-      await h.runtime.run({ tool: 'one', kind: 'tool', callId: `c${i}`, mode: 'no', canDetach: true, execute: async () => ok('x'.repeat(10_000)) });
-      h.runtime.published(`c${i}`);
+      const work = deferred<Outcome>();
+      const view = await h.runtime.run({ tool: 'one', kind: 'tool', callId: `c${i}`, mode: 'yes', canDetach: true, execute: () => work.promise });
+      h.runtime.published(`c${i}`); work.resolve(ok('x'.repeat(10_000)));
+      await until(() => !h.runtime.get(view.task.id).localRunning);
+      h.runtime.result(view.task.id);
     }
     assert.equal(h.runtime.list().length, 2);
     for (const task of h.runtime.tasks.values()) assert.equal(task.result, undefined);
@@ -183,7 +187,7 @@ test('a finalized result with a reused call ID but another task UUID cannot rele
   try {
     const view = await h.runtime.run({ tool: 'one', kind: 'tool', callId: 'reused', mode: 'yes', canDetach: true, execute: () => work.promise });
     work.resolve(ok()); await until(() => h.runtime.get(view.task.id).state === 'completed');
-    h.runtime.published('reused', 'bg_00000000-0000-0000-0000-000000000000'); await sleep(10);
+    h.runtime.published('reused', 'mt_0000000f'); await sleep(10);
     assert.equal(h.notifications.length, 0);
     h.runtime.published('reused', view.task.id); await until(() => h.notifications.length === 1);
   } finally { work.resolve(ok()); await h.close(); }
@@ -192,14 +196,43 @@ test('a finalized result with a reused call ID but another task UUID cannot rele
 test('a long-running task finishing last keeps its result even when newer-created tasks filled retention', async () => {
   const h = runtimeHarness({ maxRetained: 1 }); const work = deferred<Outcome>();
   try {
-    const wait = h.runtime.run({ tool: 'old-long', kind: 'tool', callId: 'long', mode: 'no', canDetach: true, execute: () => work.promise });
+    const view = await h.runtime.run({ tool: 'old-long', kind: 'tool', callId: 'long', mode: 'yes', canDetach: true, execute: () => work.promise });
     for (let i = 0; i < 3; i++) {
-      await h.runtime.run({ tool: 'new-short', kind: 'tool', callId: `short${i}`, mode: 'no', canDetach: true, execute: async () => ok() });
-      h.runtime.published(`short${i}`);
+      const short = deferred<Outcome>();
+      const handle = await h.runtime.run({ tool: 'new-short', kind: 'tool', callId: `short${i}`, mode: 'yes', canDetach: true, execute: () => short.promise });
+      h.runtime.published(`short${i}`); short.resolve(ok());
+      await until(() => !h.runtime.get(handle.task.id).localRunning); h.runtime.result(handle.task.id);
     }
     work.resolve(ok('late result'));
-    const view = await wait; h.runtime.published('long');
-    assert.match(readFileSync(view.task.resultPath!, 'utf8'), /late result/);
+    h.runtime.published('long');
+    await until(() => !h.runtime.get(view.task.id).localRunning);
+    assert.match(readFileSync(h.runtime.get(view.task.id).resultPath!, 'utf8'), /late result/);
     assert.equal(h.runtime.list().length, 1); assert.equal(h.runtime.list()[0]!.tool, 'old-long');
+  } finally { work.resolve(ok()); await h.close(); }
+});
+test('wait handles timeouts, cancellation and long waits without cancelling the producer', async (t) => {
+  const h = runtimeHarness(); const work = deferred<Outcome>();
+  try {
+    const view = await h.runtime.run({ tool: 'slow', kind: 'tool', callId: 'w1', mode: 'yes', canDetach: true, execute: () => work.promise });
+    assert.match(view.task.id, /^mt_[a-f0-9]{8}$/);
+    const early = await h.runtime.wait(view.task.id, 10);
+    assert.equal(early.result, undefined); assert.equal(early.task.state, 'running');
+    const aborted = new AbortController(); aborted.abort(new Error('stop waiting'));
+    await assert.rejects(h.runtime.wait(view.task.id, 5000, aborted.signal), /stop waiting/);
+    const controller = new AbortController();
+    const cancelledWait = h.runtime.wait(view.task.id, 5000, controller.signal);
+    controller.abort(new Error('stop waiting'));
+    await assert.rejects(cancelledWait, /stop waiting/);
+    assert.equal(h.runtime.get(view.task.id).state, 'running');
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let settled = false;
+    const pending = h.runtime.wait(view.task.id.slice(3, 7), 2_147_483_647 + 5000).then(value => { settled = true; return value; });
+    t.mock.timers.tick(2_147_483_647);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, false, 'the first timer chunk must not end the wait');
+    t.mock.timers.reset();
+    work.resolve(ok('waited'));
+    const done = await pending;
+    assert.equal(done.task.state, 'completed'); assert.match(JSON.stringify(done.result), /waited/);
   } finally { work.resolve(ok()); await h.close(); }
 });

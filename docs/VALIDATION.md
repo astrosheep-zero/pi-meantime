@@ -1,8 +1,16 @@
 # 验证与复跑
 
-固定开发基线：Pi/SDK 1.3.0，锁文件固定依赖；已验证 Node 24.19.0。以下为 0.1.4 已执行的测试范围，不等于所有运行环境都已通过。仓库只保留代码和可复跑fixture，不包含运行日志、私有环境路径、auth、生成会话或原始验收证据。
+固定开发基线：Pi/SDK 1.3.0，锁文件固定依赖；当前开发版在 Node 26.10.0 验证。仓库只保留代码和可复跑 fixture，不包含运行日志、私有环境路径、auth、生成会话或原始验收证据。
 
-## 已验证范围
+## 当前开发版已验证范围
+
+- 正式 SDK 类型检查和单元/组件测试通过，覆盖前台不落盘、后台晋升、晚结果、owner 隔离、结果清理失败后恢复重试。
+- 无模型调用的真实 SDK smoke：原生 Bash、本地 MCP、后台结果嵌套读取；使用磁盘 SessionManager，确认前台无扩展文件/索引，重开会话文件并重新加载扩展后读回后台结果。
+- 官方 SDK 结果钩子、取消和权限检查通过；选择器由测试适配器提供，不代表真实终端菜单验收。
+
+## 0.1.4 历史验证
+
+以下为旧版本范围，尚未对当前存储格式重跑；旧验收脚本可能仍依赖旧任务格式：
 
 - 正式 SDK 类型契约及87项单元/组件测试通过
 - 无真实模型调用的SDK smoke通过
@@ -18,6 +26,12 @@ npm ci --ignore-scripts
 npm run check
 npm run demo
 npm run test:pi
+node --experimental-strip-types scripts/sdk-cancel-permissions.mjs
+```
+
+旧版本完整宿主验收入口（当前存储格式未复验）：
+
+```sh
 bash validation/run-all.sh /path/to/new-empty-output
 PI_E2E_NODE="$(command -v node)" python3 e2e-restart/run-restart.py proof-new
 python3 e2e-restart/verify-restart.py proof-new

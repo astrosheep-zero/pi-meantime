@@ -29,6 +29,7 @@ export class FakePi implements PiHost {
   readonly commands = new Map<string, (args: string, ctx: Context) => void | Promise<void>>();
   readonly notifications: { content: string; details?: unknown }[] = [];
   readonly journal: unknown[] = [];
+  readonly entries: { type: string; customType?: string; data?: unknown }[] = [];
   readonly uiMessages: string[] = [];
   readonly uiWidgets = new Map<string, string[]>();
   readonly trace: { type: string; name?: string; id?: string; args?: unknown }[] = [];
@@ -44,7 +45,7 @@ export class FakePi implements PiHost {
   constructor(session = 'A', mode: Context['mode'] = 'tui') {
     this.ctx = { cwd: process.cwd(), mode, hasUI: mode === 'tui' || mode === 'rpc',
       signal: undefined, isIdle: () => true,
-      sessionManager: { getSessionId: () => session, getSessionFile: () => `/sessions/${session}.jsonl` },
+      sessionManager: { getSessionId: () => session, getSessionFile: () => `/sessions/${session}.jsonl`, getEntries: () => [...this.entries] },
       ui: { notify: text => { this.uiMessages.push(text); }, setStatus: () => {}, setWidget: (key, lines) => { if (lines) { this.uiWidgets.set(key, [...lines]); this.uiMessages.push(lines.join('\n')); } else this.uiWidgets.delete(key); } },
     };
   }
@@ -96,7 +97,9 @@ export class FakePi implements PiHost {
   registerShortcut(name: string, options: { handler: (ctx: Context) => void | Promise<void> }): void { this.shortcuts.set(name, options.handler); }
   registerCommand(name: string, options: { handler: (args: string, ctx: Context) => void | Promise<void> }): void { this.commands.set(name, options.handler); }
   sendMessage(message: { content: string; details?: unknown }): void { this.notifications.push(message); }
-  appendEntry(_type: string, data?: unknown): void { this.journal.push(data); }
+  appendEntry(customType: string, data?: unknown): void {
+    this.journal.push(data); this.entries.push({ type: 'custom', customType, data: structuredClone(data) });
+  }
   async call(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<Outcome> {
     const id = `call_${++this.sequence}`;
     return this.dispatch(name, args, id, undefined, signal);

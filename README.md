@@ -6,7 +6,7 @@
 
 `bash` 同名包装；符合条件的 MCP / 扩展工具保留原注册，创建 `<original>_mt` 代理。代理逐个**继承原工具 exposure**：`direct` 仍为 `direct`，`codemode` 仍为 `codemode`，`deferred` 仍为 `deferred`；`hidden`、`model-only` 不生成代理。只有 direct 工具在代理激活后隐藏原工具的模型声明，原工具仍供内部 `ctx.executeTool()` 调用。所有入口共享一个 Runtime，统一支持模型主动后台化、Ctrl+Shift+B、steer 和前台等待超时。Pi 1.3.0 的 MCP 默认 exposure 是 `codemode`，无需为了此扩展 强制升级为 `direct`。
 
-**v0.2.0**：代理后缀改为 `_mt`，system prompt 新增简短的 meantime 说明；管理工具改名 `meantime`，控制参数改名 `__meantime__`，主命令 `/meantime`，保留 `/bg` 别名。配置改为 `meantime.json` / `PI_MEANTIME_CONFIG`，默认存储目录改为 `meantime-tasks`。从旧版升级时，将旧配置移至新路径；要继续读取旧任务，在新配置中把 `storageRoot` 指向原目录。
+**v0.2.0**：代理后缀改为 `_mt`，system prompt 新增简短的 meantime 说明；管理工具改名 `meantime`，控制参数改名 `__meantime__`，主命令 `/meantime`，保留 `/bg` 别名。配置改为 `meantime.json` / `PI_MEANTIME_CONFIG`，默认存储目录改为 `meantime-tasks`。从旧版升级时，将旧配置移至新路径。当前开发版简化了存储，不读取或迁移旧版 meta/result 文件，也不自动删除它们。
 
 **v0.1.6**：`bg_task` 改为 direct，允许模型直接调用和 Codemode 内调用；真实 SDK 冒烟覆盖 detach → 后台完成 → 嵌套读取真实输出。
 
@@ -64,9 +64,10 @@ mcp__meantime_fixture__slow_mt({
 })
 
 meantime({ action: "list" })
-meantime({ action: "status", id: "bg_..." })
-meantime({ action: "result", id: "bg_..." })
-meantime({ action: "cancel", id: "bg_..." })
+meantime({ action: "status", id: "mt_1234abcd" })
+meantime({ action: "result", id: "1234" }) // 唯一前缀，可省 mt_
+meantime({ action: "wait", id: "1234", timeout_ms: 30000 })
+meantime({ action: "cancel", id: "mt_1234abcd" })
 ```
 
 也可以让模型调用 `slow_mt` 时省略 `__meantime__`，运行中输入新要求，或按 Ctrl+Shift+B。前台等待释放，底层任务继续，当前工具正常返回句柄。
@@ -92,7 +93,7 @@ Ctrl+B 保留 Pi 编辑器原有用途。本扩展 使用 **Ctrl+Shift+B**，终
 ```text
 bash(command, timeout?, __meantime__?)
 mcp__server__operation_mt(原业务参数..., __meantime__?)
-meantime(action, id?, offset?, limit?)
+meantime(action, id?, timeout_ms?, offset?, limit?)
 ```
 
 对于 `codemode`/`deferred`，原工具和 `_mt` 代理可能都列在 Codemode 的候选工具中；默认 `blockOriginalCalls` 阻止通过原名绕过，但不会从 Codemode 列表物理移除原工具。
@@ -101,18 +102,18 @@ System prompt 的 `meantime` 章节简要说明：`_mt` 工具与原工具执行
 
 原 MCP Tool 仍可被内部 `ctx.executeTool(originalName, args, {signal})` 调用。代理名称不同，避免同名递归。
 
-**未 detach：保持原工具返回形态**，包括 content、details、structuredContent 和图片，不添加任务头、不额外截断；`auto` 在转后台前已完成也一样。Bash 异常原样重抛；代理采用原工具 hook 的最终错误位，嵌套 usage 由 Pi 聚合，不重复计算。任务仍在内部记录和落盘。
+**未 detach：保持原工具返回形态**，包括 content、details、structuredContent 和图片，不添加任务头、不额外截断；`auto` 在转后台前已完成也一样。Bash 异常原样重抛；代理采用原工具 hook 的最终错误位，嵌套 usage 由 Pi 聚合，不重复计算。结束后从内部记录删除，由 Pi 保存原生返回；扩展不创建任何任务文件或目录。
 
 **真正 detach：返回后台句柄**：
 
 ```json
-{"task":{"id":"bg_...","state":"running","delivery":"background"},"result_available":false}
+{"task":{"id":"mt_1234abcd","state":"running","delivery":"background"},"result_available":false}
 ```
 
-完成通知只给元数据；之后 `meantime(action="result")` 才返回：
+完成通知包含状态、Bash 命令预览和约 1KB 文本输出尾巴，并明确标注自动消息与截断。`meantime(action="result")` 读取保留结果；`wait` 等到完成或超时后按相同格式返回（默认 30 秒，无上限；中止等待不取消任务）。成功读取会确认已读，无需额外 ack：
 
 ```json
-{"task":{"id":"bg_...","state":"completed"},"result_available":true,"result":{"original":"structured result"}}
+{"task":{"id":"mt_1234abcd","state":"completed"},"result_available":true,"result":{"original":"structured result"}}
 ```
 
 Bash 输出声明为原生输出与句柄的 union；通用代理暂声明 unknown，因为发现接口不提供原输出 Schema。`meantime` 仍使用任务 envelope。
@@ -148,7 +149,7 @@ Bash 输出声明为原生输出与句柄的 union；通用代理暂声明 unkno
 
 需要明确接受的边界：
 
-- **会话内后台，不提供跨进程继续执行。** `/reload`、会话切换、树切换、退出都请求取消并停止旧通知。恢复时未完成任务标记 `outcome_unknown`，绝不自动重放。旧 producer 若随后真正完成，同一会话的恢复 runtime 会在 status/list/result 时刷新成功结果；退出不会覆盖终态证据。
+- **会话内后台，不提供跨进程继续执行。** `/reload`、会话切换、退出请求取消并停止旧通知；同一会话的树导航共享任务，fork/clone 不接管旧任务。转后台时用 Pi 会话自定义条目保存索引，完成时仅写一个含最终状态与结果的文件。恢复缺少结果的任务标记 `outcome_unknown`，绝不自动重放；旧 producer 的晚结果仍写入原目录，可由原会话在 status/list/result 时读回。通知与已读只留内存，重启不投递历史通知。
 - 取消和原生调用使用相同 AbortSignal/MCP 取消通路。`cancelRequestedAt` 只记录请求事实；原调用最终 `Outcome.isError=true` 映射为 failed，false 映射为 completed，原始结果另行原样保存（在配置的大小上限内）。不从请求取消推断远端结果；远端不合作是原生调用同样存在的边界。真正失去本地执行控制且尚无最终结果时仍显示 outcome_unknown。
 - `ctx.executeTool()` 仍用 Pi 原生嵌套调用队列。不会释放或绕过 Pi 的顺序锁。底层排队时，“yes”可能等待到原调用进入后才返回句柄。
 - 后台工具的晚到 usage 保存在任务结果里；**Pi 会话全局费用统计可能漏掉父工具返回后的 usage**。扩展不伪造修正值，不重复计费。

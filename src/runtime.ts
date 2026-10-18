@@ -1,29 +1,30 @@
-import { randomUUID } from 'node:crypto';
 import type { Config } from './config.ts';
 import type { Mode, Outcome, Result, Update } from './protocol.ts';
-import { TaskStore, cleanText, truncateUtf8 } from './store.ts';
+import { TASK_ID, TaskStore, cleanText, newTaskId, truncateUtf8 } from './store.ts';
 
 export type TaskState = 'running' | 'cancel_requested' | 'completed' | 'failed' | 'cancelled' | 'outcome_unknown';
 export type DetachReason = 'explicit' | 'shortcut' | 'steer' | 'timeout';
 export interface Snapshot {
-  id: string; tool: string; kind: 'bash' | 'tool'; state: TaskState;
+  id: string; tool: string; kind: 'bash' | 'tool'; state: TaskState; command?: string;
   mode: Mode; delivery: 'foreground' | 'background'; createdAt: number;
   endedAt?: number; detachReason?: DetachReason; cancelRequestedAt?: number;
   localRunning: boolean; progress?: string; resultPath?: string;
   resultTruncated?: boolean; resultBytes?: number; storageError?: string;
   /** Final native Outcome error flag (or a local persistence error), independent of stale result.isError. */
   isError?: boolean;
-  producerId?: string; recovered?: boolean; notification: 'none' | 'pending' | 'queued' | 'observed' | 'failed' | 'suppressed';
+  recovered?: boolean; notification: 'none' | 'pending' | 'queued' | 'observed' | 'failed' | 'suppressed';
 }
+export type TaskIndex = Pick<Snapshot, 'id' | 'tool' | 'kind' | 'command' | 'mode' | 'createdAt' | 'detachReason'>;
+export type IndexChange = { task: TaskIndex } | { removed: string[] };
 export type View = { kind: 'result'; task: Snapshot; result: Result; isError?: boolean; thrown?: { error: unknown } } | { kind: 'handle'; task: Snapshot };
 export interface RunRequest {
-  tool: string; kind: 'bash' | 'tool'; callId: string; mode: Mode;
+  tool: string; kind: 'bash' | 'tool'; callId: string; mode: Mode; command?: string;
   canDetach: boolean; parentSignal?: AbortSignal; onUpdate?: Update;
   readyToDetach?: () => boolean;
   execute(signal: AbortSignal, update: Update): Promise<Outcome>;
 }
 interface Task {
-  meta: Snapshot; callId: string; ownsRecord: boolean; controller?: AbortController;
+  meta: Snapshot; callId: string; controller?: AbortController;
   result?: Result; published: boolean; observed: boolean; viewSettled: boolean;
   requestedDetach?: DetachReason; canDetach: boolean; readyToDetach?: () => boolean;
   resolveView?: (view: View) => void;
@@ -34,7 +35,7 @@ interface Task {
 export interface RuntimeSink {
   notify(tasks: Snapshot[]): void;
   changed?(): void;
-  journal?(event: { type: string; task: Snapshot }): void;
+  index(change: IndexChange): void;
 }
 // Reloaded modules share admission only, not stale Pi contexts. Non-cooperative
 // old producers continue to occupy a slot until they actually settle.
@@ -53,26 +54,21 @@ export class TaskRuntime {
   readonly config: Config;
   readonly tasks = new Map<string, Task>();
   private open = true;
-  private readonly producerId = randomUUID();
   private promptDepth = 0;
   private promptResume?: ReturnType<typeof setImmediate>;
   private completionSequence = 0;
   private notifyTimer?: ReturnType<typeof setTimeout>;
   private sink: RuntimeSink;
 
-  constructor(store: TaskStore, config: Config, sink: RuntimeSink) {
+  constructor(store: TaskStore, config: Config, sink: RuntimeSink, records: TaskIndex[] = []) {
     this.store = store; this.config = config; this.sink = sink;
-    const records = store.loadMetadata().sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
-    for (const raw of records) {
-      if (typeof raw.id !== 'string' || !/^bg_[a-f0-9-]{36}$/.test(raw.id) || typeof raw.tool !== 'string') continue;
-      const meta = raw as unknown as Snapshot;
-      const unfinished = meta.localRunning || meta.state === 'running' || meta.state === 'cancel_requested';
-      const restored: Snapshot = { ...meta, recovered: true, localRunning: false,
-        state: unfinished ? 'outcome_unknown' : meta.state, notification: 'suppressed' };
-      this.tasks.set(restored.id, { meta: restored, callId: '', ownsRecord: false, published: true, observed: false,
+    for (const record of records) {
+      if (!TASK_ID.test(record.id)) continue;
+      const meta: Snapshot = { ...record, delivery: 'background', state: 'outcome_unknown',
+        recovered: true, localRunning: false, notification: 'suppressed' };
+      this.tasks.set(meta.id, { meta, callId: '', published: true, observed: false,
         viewSettled: true, canDetach: false, notifyAttempts: 0 });
     }
-    this.prune();
   }
 
   run(request: RunRequest): Promise<View> {
@@ -80,14 +76,14 @@ export class TaskRuntime {
     if (request.parentSignal?.aborted) throw new Error('Tool call was cancelled before admission');
     if (request.mode === 'yes' && !request.canDetach) throw new Error('Background execution is unavailable in print/json mode or for this tool');
     if (leases().size >= this.config.maxRunning) throw new Error(`Background capacity ${this.config.maxRunning} reached; inspect or cancel a task, do not retry in a loop`);
-    const id = `bg_${randomUUID()}`;
+    let id = newTaskId();
+    while (this.tasks.has(id) || leases().has(id) || this.store.has(id)) id = newTaskId();
     const meta: Snapshot = { id, tool: request.tool, kind: request.kind, mode: request.mode,
-      state: 'running', delivery: 'foreground', createdAt: Date.now(), localRunning: true, notification: 'none', producerId: this.producerId };
-    const task: Task = { meta, callId: request.callId, ownsRecord: true, controller: new AbortController(), published: false,
+      ...(request.command !== undefined ? { command: request.command } : {}),
+      state: 'running', delivery: 'foreground', createdAt: Date.now(), localRunning: true, notification: 'none' };
+    const task: Task = { meta, callId: request.callId, controller: new AbortController(), published: false,
       observed: false, viewSettled: false, canDetach: request.canDetach, readyToDetach: request.readyToDetach, notifyAttempts: 0 };
     const view = new Promise<View>(resolve => { task.resolveView = resolve; });
-    // Admission and its durable record precede starting any side effect.
-    this.store.saveMeta(id, meta);
     this.tasks.set(id, task); leases().add(id);
     const onParentAbort = () => {
       if (task.meta.delivery === 'foreground' && !task.viewSettled) this.requestCancel(task, request.parentSignal?.reason);
@@ -136,12 +132,22 @@ export class TaskRuntime {
   private detach(task: Task, reason: DetachReason): boolean {
     if (!this.open || task.viewSettled || !task.canDetach || task.meta.mode === 'no' || task.meta.state !== 'running') return false;
     if (this.promptDepth > 0 || this.promptResume || (task.readyToDetach && !task.readyToDetach())) { task.requestedDetach = reason; return false; }
-    task.meta.delivery = 'background'; task.meta.detachReason = reason;
+    task.meta.detachReason = reason;
+    return this.releaseToBackground(task);
+  }
+  private releaseToBackground(task: Task, force = false): boolean {
+    if (task.meta.delivery === 'foreground') {
+      const { id, tool, kind, command, mode, createdAt, detachReason } = task.meta;
+      try { this.sink.index({ task: { id, tool, kind, command, mode, createdAt, detachReason } }); }
+      catch (error) {
+        task.meta.storageError = `Task index could not be saved: ${String(error)}`;
+        if (!force) { task.canDetach = false; return false; }
+      }
+      task.meta.delivery = 'background';
+    }
     task.cleanupParent?.(); task.cleanupParent = undefined;
     clearTimeout(task.autoTimer);
-    this.persist(task);
     this.resolveView(task, { kind: 'handle', task: snap(task) });
-    this.journal('detached', task);
     return true;
   }
   ready(callId: string): void {
@@ -178,75 +184,99 @@ export class TaskRuntime {
     // These states describe Pi's returned outcome, never inferred remote rollback.
     task.meta.isError = isError;
     task.meta.state = isError ? 'failed' : 'completed';
+    task.controller = undefined;
+    if (!task.viewSettled) {
+      // Pi already persists the foreground result, including its native payload.
+      this.resolveView(task, { kind: 'result', task: snap(task), result, isError, thrown });
+      this.tasks.delete(task.meta.id);
+      return;
+    }
     try {
-      const current = this.store.readMeta(task.meta.id);
-      if (!current || current.producerId !== this.producerId) throw new Error('Task lifecycle writer ownership changed or metadata disappeared');
-      if (current.localRunning === false && typeof current.endedAt === 'number') throw new Error('Task already has terminal evidence; refusing to replace its result');
-      const saved = this.store.saveResult(task.meta.id, result);
-      task.result = saved.result; task.meta.resultPath = saved.path;
+      const saved = this.store.save(task.meta.id, {
+        endedAt: task.meta.endedAt, isError, cancelRequestedAt: task.meta.cancelRequestedAt,
+      }, result);
+      task.meta.resultPath = saved.path;
       task.meta.resultTruncated = saved.truncated; task.meta.resultBytes = saved.originalBytes;
     } catch (error) {
-      // An operation may have succeeded; never silently retry it after losing its result.
       task.result = failure(`Result could not be persisted: ${String(error)}. The operation may already have executed; inspect externally before retrying.`);
       task.meta.storageError = String(error); task.meta.state = 'outcome_unknown'; task.meta.isError = true;
     }
-    task.controller = undefined;
-    if (!task.viewSettled) {
-      task.observed = true; task.meta.notification = 'observed';
-      // Retention may clean/truncate the disk copy; it must not change a
-      // foreground result (or turn a successful operation into a storage error).
-      task.published = true; // No task metadata is needed in the foreground reply.
-      this.resolveView(task, { kind: 'result', task: snap(task), result, isError, thrown });
-    } else if (task.meta.delivery === 'background' && !task.observed) {
-      task.meta.notification = this.open ? 'pending' : 'suppressed';
-    }
-    this.persist(task); this.journal('settled', task);
+    task.meta.notification = this.open ? 'pending' : 'suppressed';
     this.scheduleNotifications(); this.prune(); this.changed();
-    if (task.meta.resultPath) task.result = undefined; // disk-backed retention, not N times a multi-MiB heap copy
   }
   published(callId: string, taskId?: string): void {
     for (const task of this.tasks.values()) if (task.callId === callId && (taskId === undefined || task.meta.id === taskId)) task.published = true;
     this.scheduleNotifications(); this.prune();
   }
   private lookup(id: string): Task {
-    const task = this.tasks.get(id);
-    if (!task || !this.refresh(task)) throw new Error('No task with that id in this session');
+    // Full id or a unique prefix (e.g. "mt_4495" or "4495").
+    let task = this.tasks.get(id);
+    if (!task && id.length > 0) {
+      const needle = id.startsWith('mt_') ? id : `mt_${id}`;
+      const hits = [...this.tasks.values()].filter(t => t.meta.id.startsWith(needle));
+      if (hits.length > 1) throw new Error(`Ambiguous task id prefix ${id}: ${hits.map(t => t.meta.id).join(', ')}`);
+      task = hits[0];
+    }
+    if (!task) throw new Error('No task with that id in this session');
+    this.refresh(task);
     return task;
   }
-  // A recovered runtime is an observer, never the lifecycle writer. The original
-  // producer may still complete after reload grace, so snapshots are not caches.
-  private refresh(task: Task): boolean {
-    if (task.ownsRecord) return true;
-    const raw = this.store.readMeta(task.meta.id);
-    if (!raw) { this.tasks.delete(task.meta.id); return false; }
-    const meta = raw as unknown as Snapshot;
-    const unfinished = meta.localRunning || meta.state === 'running' || meta.state === 'cancel_requested';
-    task.meta = { ...meta, recovered: true, localRunning: false,
-      state: unfinished ? 'outcome_unknown' : meta.state,
-      notification: task.observed ? 'observed' : 'suppressed' };
-    return true;
+  /** Block until the task settles, the timeout passes or the caller aborts, then return result(). */
+  async wait(id: string, timeoutMs: number, signal?: AbortSignal): Promise<{ task: Snapshot; result?: Result }> {
+    signal?.throwIfAborted();
+    const task = this.lookup(id);
+    if (task.meta.localRunning && task.done) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let onAbort: (() => void) | undefined;
+      try {
+        await Promise.race([
+          task.done,
+          new Promise<void>(resolve => {
+            let remaining = timeoutMs;
+            const schedule = () => {
+              const chunk = Math.min(remaining, 2_147_483_647);
+              timer = setTimeout(() => {
+                remaining -= chunk;
+                if (remaining > 0) schedule(); else resolve();
+              }, chunk);
+            };
+            schedule();
+          }),
+          new Promise<void>((_resolve, reject) => {
+            onAbort = () => reject(signal!.reason);
+            signal?.addEventListener('abort', onAbort, { once: true });
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer); if (onAbort) signal?.removeEventListener('abort', onAbort);
+      }
+    }
+    return this.result(task.meta.id);
+  }
+  // A late producer writes only its completion file, never another session's index.
+  private refresh(task: Task): void {
+    if (!task.meta.recovered || task.meta.endedAt !== undefined) return;
+    try {
+      const stored = this.store.read(task.meta.id);
+      if (stored) Object.assign(task.meta, stored.completion, {
+        state: stored.completion.isError ? 'failed' : 'completed', resultPath: stored.path,
+        resultTruncated: stored.truncated, resultBytes: stored.originalBytes, storageError: undefined,
+      });
+    } catch (error) { task.meta.storageError = String(error); }
   }
   get(id: string): Snapshot { return snap(this.lookup(id)); }
   list(): Snapshot[] {
     for (const task of this.tasks.values()) this.refresh(task);
+    this.prune();
     return [...this.tasks.values()].map(snap).sort((a, b) => b.createdAt - a.createdAt);
   }
   result(id: string): { task: Snapshot; result?: Result } {
     const task = this.lookup(id);
     if (task.meta.localRunning || !task.meta.endedAt) return { task: snap(task) };
-    const result = task.result ?? (task.meta.resultPath ? this.store.readResult(id) : undefined);
-    if (result) {
-      task.observed = true; task.meta.notification = 'observed';
-      if (task.ownsRecord) this.persist(task);
-      else {
-        // Merge only acknowledgement into the latest canonical record. Never
-        // write the observer's projected outcome_unknown/localRunning fields.
-        this.store.updateMeta(id, current => ({ ...current, notification: 'observed' }));
-        this.refresh(task);
-      }
-    }
+    const result = task.result ?? (task.meta.resultPath ? this.store.read(task.meta.id)?.result : undefined);
+    if (result) { task.observed = true; task.meta.notification = 'observed'; }
     const view = { task: snap(task), result };
-    this.prune(id);
+    this.prune(task.meta.id);
     return view;
   }
   cancel(id: string): Snapshot {
@@ -261,14 +291,13 @@ export class TaskRuntime {
     if (!task.meta.localRunning || !task.controller || task.meta.cancelRequestedAt) return;
     task.meta.cancelRequestedAt = Date.now(); task.meta.state = 'cancel_requested';
     clearTimeout(task.autoTimer);
-    task.controller.abort(reason); this.persist(task); this.journal('cancel_requested', task);
+    task.controller.abort(reason);
     if (!task.viewSettled) {
       // Cancellation is cooperative for arbitrary tools. Release the observer
       // after grace, but do not free admission while a producer is still alive.
       task.cancelTimer = setTimeout(() => {
         if (task.viewSettled) return;
-        task.meta.delivery = 'background'; task.cleanupParent?.();
-        this.resolveView(task, { kind: 'handle', task: snap(task) });
+        this.releaseToBackground(task, true);
       }, this.config.shutdownGraceMs);
     }
   }
@@ -287,13 +316,12 @@ export class TaskRuntime {
     const batch = this.eligible().slice(0, 16); if (!batch.length) return;
     try {
       this.sink.notify(batch.map(snap));
-      for (const task of batch) { task.meta.notification = 'queued'; this.persist(task); }
+      for (const task of batch) task.meta.notification = 'queued';
       this.scheduleNotifications();
     } catch {
       for (const task of batch) {
         task.notifyAttempts++;
         if (task.notifyAttempts >= 3) task.meta.notification = 'failed';
-        this.persist(task);
       }
       this.scheduleNotifications();
     }
@@ -305,7 +333,6 @@ export class TaskRuntime {
     if (!this.open) return;
     this.open = false; clearTimeout(this.notifyTimer); clearImmediate(this.promptResume); this.promptResume = undefined;
     for (const task of this.tasks.values()) {
-      if (!task.ownsRecord) continue;
       this.requestCancel(task); task.meta.notification = 'suppressed';
       task.cleanupParent?.(); clearTimeout(task.autoTimer);
     }
@@ -316,55 +343,25 @@ export class TaskRuntime {
     })]);
     clearTimeout(timer);
     for (const task of this.tasks.values()) {
-      if (!task.ownsRecord) continue;
       clearTimeout(task.cancelTimer);
       if (task.meta.localRunning) task.meta.state = 'outcome_unknown';
-      if (!task.viewSettled) this.resolveView(task, { kind: 'handle', task: snap(task) });
-      this.persist(task);
+      if (!task.viewSettled) this.releaseToBackground(task, true);
     }
     // Old closures cannot send into a newly selected session.
-    this.sink = { notify: () => {} };
-  }
-  private persist(task: Task): void {
-    if (!task.ownsRecord) return;
-    try {
-      const saved = this.store.updateMeta(task.meta.id, current => {
-        if (current.producerId !== this.producerId) throw new Error('Task lifecycle writer ownership changed');
-        // Terminal evidence is immutable. Shutdown uncertainty has no endedAt,
-        // so a late producer success can advance it, never the reverse.
-        const terminal = current.localRunning === false && typeof current.endedAt === 'number';
-        const next = terminal ? { ...current } : { ...current, ...task.meta };
-        next.notification = current.notification === 'observed' || current.notification === 'queued'
-          ? current.notification : task.meta.notification;
-        if (task.meta.notification === 'observed') next.notification = 'observed';
-        return next;
-      });
-      task.meta = saved as unknown as Snapshot;
-    } catch (error) { task.meta.storageError = String(error); this.journal('storage_error', task); }
-  }
-  private journal(type: string, task: Task): void {
-    if (this.open) { try { this.sink.journal?.({ type, task: snap(task) }); } catch { /* The disk snapshot remains authoritative. */ } }
+    this.sink = { notify() {}, index() {} };
   }
   private changed(): void { if (this.open) { try { this.sink.changed?.(); } catch {} } }
   private prune(retainId?: string): void {
     if (!this.open) return; // A retired runtime cannot delete its successor's records.
-    const readable: Task[] = [];
-    for (const task of this.tasks.values()) {
-      try { if (this.refresh(task)) readable.push(task); }
-      catch (error) { task.meta.storageError = String(error); this.journal('retention_error', task); }
-    }
-    const ended = readable.filter(t => !t.meta.localRunning && t.meta.endedAt !== undefined)
+    const ended = [...this.tasks.values()].filter(t => !t.meta.localRunning && t.meta.endedAt !== undefined)
       .sort((a, b) => Number(b.meta.id === retainId) - Number(a.meta.id === retainId)
         || (b.meta.endedAt ?? 0) - (a.meta.endedAt ?? 0) || (b.finishSequence ?? 0) - (a.finishSequence ?? 0));
     for (const task of ended.slice(this.config.maxRetained)) {
       if (!task.published || task.meta.notification === 'pending' || leases().has(task.meta.id)) continue;
       try {
-        const current = this.store.readMeta(task.meta.id);
-        // Re-check authoritative state immediately before removing both files.
-        // Unknown recovery is never evidence that a producer has stopped.
-        if (current && (current.localRunning !== false || typeof current.endedAt !== 'number' || current.notification === 'pending')) continue;
-        this.store.remove(task.meta.id); this.tasks.delete(task.meta.id);
-      } catch (error) { task.meta.storageError = String(error); this.journal('retention_error', task); }
+        this.store.remove(task.meta.id);
+        this.sink.index({ removed: [task.meta.id] }); this.tasks.delete(task.meta.id);
+      } catch (error) { task.meta.storageError = String(error); }
     }
   }
   static liveProducerCount(): number { return leases().size; }

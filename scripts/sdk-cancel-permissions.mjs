@@ -137,24 +137,15 @@ try {
       assert.deepEqual(native.result.content, makeResult(rawError, 'hook-native').content);
       assert.deepEqual(native.result.structuredContent, makeResult(rawError, 'hook-native').structuredContent);
       const wrapped = await invoke(proxy, { rawError, finalError, tag: 'hook-wrapped', __meantime__: 'no' });
-      const task = wrapped.result.structuredContent.task;
-      const retained = JSON.parse(readFileSync(task.resultPath, 'utf8'));
       assert.equal(wrapped.isError, finalError);
       assert.equal(wrapped.result.isError, finalError);
-      assert.equal(retained.isError, rawError, 'original result payload must retain its pre-hook flag');
-      assert.equal(task.isError, finalError, 'task stores the final SDK verdict separately');
-      assert.equal(task.state, finalError ? 'failed' : 'completed');
-      assert.deepEqual(retained.content, makeResult(rawError, 'hook-wrapped').content);
-      assert.deepEqual(retained.details, makeResult(rawError, 'hook-wrapped').details);
-      assert.deepEqual(retained.structuredContent, makeResult(rawError, 'hook-wrapped').structuredContent);
-      assert.deepEqual(wrapped.result.structuredContent.result, retained.structuredContent);
-      assert.ok(wrapped.result.content.some(block => block.text === 'RAW:hook-wrapped'));
-      const fetched = await invoke('meantime', { action: 'result', id: task.id });
-      assert.equal(fetched.isError, finalError, 'explicit retained-result lookup uses final SDK verdict');
-      assert.deepEqual(fetched.result.structuredContent.result, retained.structuredContent);
+      assert.deepEqual(wrapped.result.content, makeResult(rawError, 'hook-wrapped').content);
+      assert.deepEqual(wrapped.result.details, makeResult(rawError, 'hook-wrapped').details);
+      assert.deepEqual(wrapped.result.structuredContent, makeResult(rawError, 'hook-wrapped').structuredContent);
+      assert.equal(tasks().length, 0, 'foreground result needs no retained task');
       await turn(); assertReleased();
       return { nativeResultFlag: native.result.isError, nativeFinalFlag: native.isError,
-        wrappedFinalFlag: wrapped.isError, retainedFlag: retained.isError, state: task.state };
+        wrappedFinalFlag: wrapped.isError };
     });
   }
 
@@ -174,17 +165,14 @@ try {
     await until(() => calls.has(`${tag}-wrapped`), 'wrapped body did not start');
     wrappedController.abort();
     const wrapped = await wrappedPending;
-    const task = wrapped.result.structuredContent.task;
-    const retained = JSON.parse(readFileSync(task.resultPath, 'utf8'));
     const expectedError = finalError ?? true;
     assert.equal(native.isError, expectedError); assert.equal(wrapped.isError, expectedError);
-    assert.equal(task.state, expectedError ? 'failed' : 'completed'); assert.ok(task.cancelRequestedAt);
-    assert.equal(retained.isError, true); assert.equal(task.isError, expectedError);
-    assert.deepEqual(retained.content, [{ type: 'text', text: `NATIVE_CANCEL:${tag}-wrapped` }]);
-    assert.deepEqual(retained.structuredContent, makeResult(true, `${tag}-wrapped`).structuredContent);
+    assert.equal(wrapped.result.isError, expectedError);
+    assert.deepEqual(wrapped.result.content, [{ type: 'text', text: `NATIVE_CANCEL:${tag}-wrapped` }]);
+    assert.deepEqual(wrapped.result.structuredContent, makeResult(true, `${tag}-wrapped`).structuredContent);
+    assert.equal(tasks().length, 0);
     await turn(); assertReleased();
-    return { nativeFinalFlag: native.isError, wrappedFinalFlag: wrapped.isError, state: task.state,
-      cancelRequested: true, retainedOriginalError: true };
+    return { nativeFinalFlag: native.isError, wrappedFinalFlag: wrapped.isError };
   });
 
   await check('outer_permission_denial_prevents_task_admission', async () => {
@@ -216,19 +204,17 @@ try {
     assert.ok(pendingTask); assert.equal(pendingTask.delivery, 'foreground');
     pendingChoice('No'); const outcome = await pending;
     await until(() => TaskRuntime.liveProducerCount() === 0, 'denial retained a live producer');
-    const task = tasks().find(item => item.id === pendingTask.id);
-    assert.equal(bodyCount(), beforeCalls); assert.equal(task.state, 'failed'); assert.equal(task.localRunning, false);
-    const retained = JSON.parse(readFileSync(task.resultPath, 'utf8'));
-    assert.equal(task.isError, true); assert.match(retained.content[0].text, /FIXTURE_PERMISSION_DENIED/);
+    assert.equal(bodyCount(), beforeCalls);
+    assert.equal(tasks().find(item => item.id === pendingTask.id), undefined);
+    assert.match(outcome.result.content[0].text, /FIXTURE_PERMISSION_DENIED/);
     const promptEvents = events.slice(beforeEvents).filter(event => event.type.startsWith('ui_prompt_'));
     assert.deepEqual(promptEvents.map(event => event.type), ['ui_prompt_start', 'ui_prompt_end']);
     assertReleased();
     // A denial must be returned directly, not transformed into a successful
     // background handle by the ui_prompt_end / detach microtask race.
     assert.equal(outcome.isError, true, 'denial must be surfaced as the finalized error');
-    assert.equal(outcome.result.structuredContent.result_available, true);
-    assert.equal(task.delivery, 'foreground');
-    return { bodyStarts: 0, state: task.state, promptEvents, liveProducers: TaskRuntime.liveProducerCount() };
+    assert.equal(outcome.result.structuredContent?.task, undefined);
+    return { bodyStarts: 0, promptEvents, liveProducers: TaskRuntime.liveProducerCount() };
   });
 
   await check('nested_mcp_permission_denial_prevents_side_effect', async () => {
@@ -242,13 +228,11 @@ try {
     pendingChoice('No'); const outcome = await pending;
     await until(() => TaskRuntime.liveProducerCount() === 0, 'MCP denial retained producer');
     await delay(30); assert.equal(existsSync(marker), false); assert.equal(mcpCallCount(), beforeMcpCalls); assertReleased();
-    const task = tasks().find(item => item.id === outcome.result.structuredContent.task.id);
-    assert.equal(task.state, 'failed');
-    const retained = JSON.parse(readFileSync(task.resultPath, 'utf8'));
-    assert.match(retained.content[0].text, /FIXTURE_PERMISSION_DENIED/);
+    assert.equal(outcome.result.structuredContent?.task, undefined);
+    assert.match(outcome.result.content[0].text, /FIXTURE_PERMISSION_DENIED/);
     assert.equal(outcome.isError, true, 'MCP denial must be surfaced as finalized error');
     return { mcpRequestsReceived: mcpCallCount() - beforeMcpCalls, sideEffectCreated: false,
-      state: task.state, liveProducers: TaskRuntime.liveProducerCount() };
+      liveProducers: TaskRuntime.liveProducerCount() };
   });
 
   await check('approved_mcp_request_reuses_capacity_and_runs_once', async () => {

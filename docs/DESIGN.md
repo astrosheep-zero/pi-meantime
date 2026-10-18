@@ -72,7 +72,7 @@ delivery: foreground -> background
 
 根级组合、条件、patternProperties、propertyNames、property-count、const/enum 等需要更复杂的等价变换；扩展拒绝包装并保留原工具。没有偷偷放松业务约束。调用原工具时再次经过 Pi 的原始参数验证。
 
-未 detach 的调用返回原生结果，不附加 task、不二次截断、不移除图片。运行时把原始内存结果交给前台，清洗/大小限制只影响存储副本；存储失败记入任务元数据，不替换已完成的前台业务结果。Bash 原样重抛执行异常。代理保留嵌套调用 hook 后的结果及最终 Outcome.isError，但不重复上报 Pi 已自动聚合的 usage。
+未 detach 的调用返回原生结果，不附加 task、不二次截断、不移除图片；结束后从 runtime 删除，由 Pi 原生会话历史保存结果，不创建自家存储目录或文件。Bash 原样重抛执行异常。代理保留嵌套调用 hook 后的结果及最终 Outcome.isError，但不重复上报 Pi 已自动聚合的 usage。
 
 只有真正 detach 才返回 `task + result_available:false`；`meantime result` 继续返回有预算的任务 envelope。Bash outputSchema 是原生输出与后台句柄的 union，并继承 constrainedSampling。通用代理通过 getAllTools 发现的元数据不含 outputSchema，暂用 `{}`（unknown）描述原生输出或句柄，不再虚报统一 envelope 类型。
 
@@ -98,31 +98,37 @@ delivery: foreground -> background
 
 最终确认同时验证 tool-call ID 和 task UUID，防止旧会话迟到事件遇到重复 call ID。快完成的前台任务不发第二次通知。
 
-通知只包含 task ID、工具名和状态，不把原始工具输出变成额外的指令消息。模型需要结果时通过 `meantime result` 读取，仍经过该工具自己的结果管线。
+Bash 任务保存完整命令供 status/result 详情读取；任务列表和完成通知把命令合为单行、截取最多 120 UTF-8 字节的预览，截断时加省略号。不新增 name/description 入参。
+
+通知包含 task ID、工具名、状态、Bash 命令预览，以及约 1KB 的文本输出尾巴；尾巴用 `<untrusted-output-tail>` 包裹并声明为不可信数据，不是指令。通知明确声明是自动完成消息，不是用户输入或批准；没有新信息时静默处理。尾巴只含文本，不含图片和结构化数据；尾巴或落盘结果截断都会标注 truncated。省去常见场景下多一轮 `meantime result`；完整保留结果仍通过 `meantime result` 读取。
 
 采用 `followUp + triggerTurn:true`；多项完成合成一条消息。同步入队失败最多重试三次。`queued`只表示 sendMessage 调用已成功返回，不等于模型必然收到。宿主接口没有投递确认，进程崩溃时不宣称 exactly-once。重启后不自动投递历史通知，避免旧任务打断新工作。
 
+`wait` 按 Node 定时器上限分段等待，不截断总等待时长。预先取消和等待中取消都终止等待，不取消 producer、不确认结果。恢复任务没有本地 Promise 可等待时立即返回当前状态。
+
 ## 8. 取消、关闭与恢复
 
-Bash 使用 Pi 原生进程清理；MCP/一般扩展工具仍经原名 ctx.executeTool 和 Pi 原生 AbortSignal 通路。v0.1.4 不因取消请求额外推断远端结局。最终 Outcome.isError（包括 afterToolCall 的最终裁决）决定 failed/completed，result payload 保留原样；元数据单独记录 isError，避免把旧 payload.isError 冒充最终裁决。cancelRequestedAt 仅记请求事实。真正未收到最终 outcome 的控制丢失/存储失败才保留 outcome_unknown。旧版 endedAt 的 unknown 记录可读取原结果，取消幂等，不重分类历史。
+Bash 使用 Pi 原生进程清理；MCP/一般扩展工具仍经原名 ctx.executeTool 和 Pi 原生 AbortSignal 通路。最终 Outcome.isError（包括 afterToolCall 的最终裁决）决定 failed/completed，result payload 保留原样；完成文件单独记录 isError，避免把旧 payload.isError 冒充最终裁决。cancelRequestedAt 仅记请求事实；没有最终结果且失去本地控制时显示 outcome_unknown。
 
-`/reload`、会话切换、树切换和退出采用相同的保守策略：停止旧通知、请求取消、等待有限 grace，未结束的本地 producer 记 outcome_unknown。**本版不承诺 reload 保活。**
+`/reload`、会话切换和退出请求取消、等待有限 grace，并停止旧通知。尚未结束的前台调用也经过后台晋升路径，记录索引再释放句柄。普通 detach 若索引写入失败则保持前台；强制取消/关闭仍可释放句柄并显示 storageError。**不承诺 reload 保活。** 同一会话内树导航共享任务，不重启 runtime、不请求取消；fork/clone 使用新 owner，不接管复制历史中的旧任务。
 
 进程全局配额只保留存活 producer 的租约，不保留旧宿主上下文。非协作任务在实际 Promise 结束前不释放配额，防止反复 reload 绕过并发上限。Pi 进程退出后，这种保护自然结束；这不等于能追踪失联的远端作业。
 
-恢复读取同会话结果文件，未完成记录投影为 outcome_unknown，不恢复 Promise、不盲目 kill PID、更不重放原请求。
+恢复通过 Pi getEntries() 读取全部分支中的 meantime-index，按 owner 过滤并应用删除记录。索引只有任务身份和调用描述，不保存运行中快照。缺少完成文件的任务投影为 outcome_unknown；status/list/result 会重读，允许旧 producer 的晚结果出现。不恢复 Promise、不盲目 kill PID、更不重放原请求。
 
-每条任务有 producerId，只有创建它的 runtime 可写生命周期。恢复 runtime 是观察者：status/list/result 从磁盘刷新；不把本地的 recovered/outcome_unknown 投影写回。观察者读到结果后只对最新记录合并 notification=observed。原 producer 在写结果前核对所有权，元数据更新使用同步 read/merge/rename；已有 endedAt 且 localRunning=false 的终态证据不可被关闭旧快照倒退。queued/observed 确认不会被旧关闭路径改回 suppressed。
-
-这些操作在同一个 Node/Pi 进程内不跨 await，因此 reload runtime 之间不会交错 read-modify-write。没有跨进程文件锁/事务协议；不支持两个 Pi 进程同时打开同一 owner 存储目录，也不承诺突然进程退出时 metadata/result 两文件的事务原子性。
+旧 producer 只向自己绑定的目录写一次完成文件，不向新会话追加索引或通知。通知、已读确认和重试都只在内存；恢复后不发历史通知。没有元数据 CAS、producerId 或双文件事务；不支持两个 Pi 进程同时操作同一 owner 的存储。
 
 ## 9. 存储、大小与成本
 
 每个会话使用 hashed 目录，目录 0700、文件 0600；写临时文件再原子 rename。task ID 严格校验，拒绝结果文件 symlink。这个本地存储位于当前 OS 用户的信任域，不能代替文件系统或沙箱隔离。
 
-不保存业务入参和环境变量。结果可能含敏感数据，因此采用私有权限，但不做自动内容脱敏；保留原工具结果钩子的脱敏结果。
+除用于辨识任务的 Bash 命令外，不保存业务入参和环境变量。结果可能含敏感数据，因此采用私有权限，但不做自动内容脱敏；保留原工具结果钩子的脱敏结果。
 
-运行状态和完成数据分别保存；完成后从内存释放大结果。默认保留最近完成的128个任务；尚未结束的前台调用、等待通知的结果、仍有全局存活租约以及没有 endedAt 的不确定任务暂不淘汰。通知 flush 和最后租约释放后立即再次清理，无需等待新任务。显式读取结果时优先保留刚返回条目，避免同一次调用给出失效的 resultPath；后续清理事件仍可按保留策略淘汰它。恢复时不先 slice(maxRetained)，防止隐藏仍应保护的任务。元数据与对应结果一起删除，删除失败会保留内存记录并暴露 storageError/审计事件。单结果4MiB；超限存储显式截断清单。meantime 的模型正文/结构化 inline 视图均有预算，任务列表默认10条、最多32条并支持 offset。
+仅转后台时用 Pi appendEntry 保存任务索引（id、tool、kind、command、mode、createdAt、detachReason）。后台完成时原子写入一个 `.result.json`，包含 completion（endedAt、isError、可选 cancelRequestedAt）、result、truncated 和 originalBytes；完成后从内存释放大结果。目录懒创建，前台调用不落盘。
+
+默认保留最近完成的128个后台任务；等待通知、仍有全局存活租约以及没有 endedAt 的不确定任务暂不淘汰。活跃 runtime 在完成、通知、读取时执行清理；关闭后的晚结果延后至原会话恢复清理。显式读取时优先保留刚返回条目。清理先删除结果文件，再追加 removed 索引事件，防止恢复时复活为 unknown；删除失败保留索引与内存记录并暴露 storageError，后续可重试。文件和会话索引之间没有跨文件事务保证。
+
+单结果默认4MiB，大小判断包含整个完成 envelope；超限存储显式截断清单。meantime 的模型正文/结构化 inline 视图均有预算，任务列表默认10条、最多32条并支持 offset。旧版 meta/result 格式不迁移、不读取，也不自动删除。
 
 入站工具已经构造出来的超大结果，在截断前仍可能占内存，扩展无法用结果截断阻止上游一次性分配。用户移除整个结果目录时会失去历史数据；扩展不自动跨会话清理其他目录。
 
@@ -141,6 +147,10 @@ Bash 使用 Pi 原生进程清理；MCP/一般扩展工具仍经原名 ctx.execu
 
 Pi 的 ui_prompt_end 可能早于权限钩子的 Promise 结算。prompt 结束后保留一轮 setImmediate 屏障，期间所有 detach、通知排队/flush 继续暂停，让原生拒绝先成为错误结果；不能用“菜单已关闭”推断“审批通过”。这覆盖本次验证的同步 select 结果后直接返回裁决，不为任意插件另加的长期异步裁决作保证。
 
-/meantime cancel 必须一个完整 ID；缺失/多参数只显示当前会话列表与用法。查找仅限会话 owner，完成后的重复取消不再发 AbortSignal。/meantime status 展示 ID、工具、状态、取消请求/recovered 标志，不展示内部 producerId 大 JSON。后台回执保留结构化元数据，同时告诉人可输入的命令。
+任务 ID 为 `mt_` + 8 位 hex（生成时查重），不兼容旧版 `bg_<uuid>` 记录。/meantime cancel 与 meantime 工具接受完整 ID 或唯一前缀（可省略 `mt_`），前缀有歧义时报错并列出候选；缺失/多参数只显示当前会话列表与用法。查找仅限会话 owner，完成后的重复取消不再发 AbortSignal。/meantime status 展示 ID、工具、状态、取消请求/recovered 标志，不展示内部运行时大 JSON。后台回执保留结构化元数据，同时告诉人可输入的命令。
 
 操作反馈使用公开 ui.setWidget 的同 key 字符串数组，标记 Latest background control，仅显示最近一次操作，不污染模型上下文、不抢焦点。原因是 Pi 1.3.0 info notify 的旧状态行会在重绘时引用最新共享文本；本扩展不修改该上游实现。状态列表运行中优先、每页三项，/meantime status <offset> 可访问后续项；会话停止和开始均清面板。它不是永久操作历史。
+
+## meantime wait
+
+`meantime(action:"wait", id, timeout_ms?)` 阻塞到任务结束、超时或调用被中止，然后按 `result` 返回；超时只返回状态，`result_available:false`。默认 30 秒，按用户要求不设上限（内部仅受 setTimeout 上限约束）。wait 不取消任务。

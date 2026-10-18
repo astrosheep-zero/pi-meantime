@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { TaskRuntime } from '../src/runtime.ts';
-import { TaskStore } from '../src/store.ts';
+import type { Snapshot } from '../src/runtime.ts';
+import { install } from '../src/extension.ts';
+import { FakePi, basicTool, fixtureBash } from './host.ts';
 import { deferred, ok, runtimeHarness, sleep, until } from './helpers.ts';
 import type { Outcome } from '../src/protocol.ts';
 
@@ -10,171 +12,130 @@ const run = (runtime: TaskRuntime, callId: string, work: Promise<Outcome>) => ru
   tool: 'noncooperative', kind: 'tool', callId, mode: 'yes', canDetach: true, execute: () => work,
 });
 
-test('the current restored runtime refreshes late success and cannot overwrite it on close', async () => {
-  const h = runtimeHarness(); const work = deferred<Outcome>(); let calls = 0; const notes: unknown[] = [];
-  const view = await run(h.runtime, 'late', work.promise.then(result => { calls++; return result; }));
-  h.runtime.published('late'); await h.runtime.close();
-  const restored = new TaskRuntime(h.store, h.config, { notify: tasks => notes.push(tasks) });
+test('recovery observes late completion without replay, stale notifications, or lifecycle writes', async () => {
+  const h = runtimeHarness({ maxRunning: 1 }); const work = deferred<Outcome>();
+  const view = await run(h.runtime, 'late', work.promise); h.runtime.published('late'); await h.runtime.close();
+  const restored = new TaskRuntime(h.store, h.config, { ...h.sink, notify() { assert.fail('stale notification'); } }, [...h.records.values()]);
   try {
     assert.equal(restored.get(view.task.id).state, 'outcome_unknown');
+    assert.equal(restored.result(view.task.id).result, undefined);
+    assert.throws(() => restored.cancel(view.task.id), /no live local controller/);
+    assert.throws(() => run(restored, 'other', Promise.resolve(ok())), /capacity/);
     work.resolve(ok('LATE_RESULT')); await until(() => TaskRuntime.liveProducerCount() === 0);
-    assert.equal(restored.list()[0]!.state, 'completed');
-    const read = restored.result(view.task.id);
-    assert.equal(read.task.state, 'completed'); assert.equal(read.task.recovered, true);
-    assert.deepEqual(read.result, JSON.parse(JSON.stringify(ok('LATE_RESULT').result)));
-    assert.ok(read.task.endedAt); assert.ok(read.task.resultPath);
-    const before = h.store.readMeta(view.task.id); await restored.close();
-    assert.deepEqual(h.store.readMeta(view.task.id), before);
-    assert.equal(before!.notification, 'observed'); assert.equal(calls, 1); assert.equal(notes.length, 0);
+    const result = restored.result(view.task.id.slice(3));
+    assert.equal(result.task.state, 'completed'); assert.equal(result.task.recovered, true);
+    assert.deepEqual(result.result, JSON.parse(JSON.stringify(ok('LATE_RESULT').result)));
+    const before = readFileSync(result.task.resultPath!, 'utf8');
+    restored.flushNotifications(); await restored.close();
+    assert.equal(readFileSync(result.task.resultPath!, 'utf8'), before);
+    assert.equal(h.notifications.length, 0);
+    assert.equal(readdirSync(h.store.directory).length, 1);
   } finally { work.resolve(ok()); await restored.close(); await h.close(); }
 });
 
-test('multiple stale observers may close before and after late completion without lifecycle writes', async () => {
-  const h = runtimeHarness(); const work = deferred<Outcome>();
-  const view = await run(h.runtime, 'late', work.promise); await h.runtime.close();
-  const a = new TaskRuntime(h.store, h.config, { notify() { assert.fail('stale notification'); } });
-  const b = new TaskRuntime(h.store, h.config, { notify() { assert.fail('stale notification'); } });
+test('cancellation grace and shutdown both index an unfinished foreground handle once', async () => {
+  const h = runtimeHarness({ autoDetachMs: 0 }); const cancelled = deferred<Outcome>(); const closing = deferred<Outcome>();
   try {
-    await a.close(); work.resolve(ok('late')); await until(() => TaskRuntime.liveProducerCount() === 0);
-    const canonical = h.store.readMeta(view.task.id); assert.equal(canonical!.state, 'completed');
-    await b.close(); assert.deepEqual(h.store.readMeta(view.task.id), canonical);
-    assert.equal(b.result(view.task.id).task.state, 'completed');
-  } finally { work.resolve(ok()); await a.close(); await b.close(); await h.close(); }
+    const wait = h.runtime.run({ tool: 'cancel', kind: 'tool', callId: 'cancel', mode: 'no', canDetach: true, execute: () => cancelled.promise });
+    await sleep(1); h.runtime.cancel(h.runtime.list()[0]!.id);
+    const handle = await wait;
+    assert.equal(handle.kind, 'handle'); assert.equal(h.records.size, 1);
+    const shutdownWait = h.runtime.run({ tool: 'close', kind: 'tool', callId: 'close', mode: 'no', canDetach: true, execute: () => closing.promise });
+    await sleep(1); // The producer has started before shutdown requests cancellation.
+    await h.runtime.close(); const shutdownHandle = await shutdownWait;
+    assert.equal(shutdownHandle.kind, 'handle'); assert.equal(h.records.size, 2);
+    assert.equal(existsSync(h.store.directory), false);
+    cancelled.resolve(ok()); closing.resolve(ok()); await until(() => TaskRuntime.liveProducerCount() === 0);
+    assert.equal(readdirSync(h.store.directory).length, 2);
+    assert.equal(h.records.size, 2);
+  } finally { cancelled.resolve(ok()); closing.resolve(ok()); await until(() => TaskRuntime.liveProducerCount() === 0); await h.close(); }
 });
 
-test('observer acknowledgement is merged and producer shutdown cannot regress it', async () => {
+test('failed index append keeps normal detach in the foreground without an uncaught timer error', async () => {
   const h = runtimeHarness(); const work = deferred<Outcome>();
-  const view = await run(h.runtime, 'one', work.promise); h.runtime.published('one');
-  work.resolve(ok()); await until(() => TaskRuntime.liveProducerCount() === 0);
-  const restored = new TaskRuntime(h.store, h.config, { notify() {} });
+  const runtime = new TaskRuntime(h.store, h.config, { notify() {}, index() { throw new Error('disk full'); } });
   try {
-    const read = restored.result(view.task.id); assert.ok(read.result);
-    await h.runtime.close();
-    const disk = h.store.readMeta(view.task.id)!;
-    assert.equal(disk.notification, 'observed'); assert.equal(disk.state, 'completed');
-    assert.equal(disk.resultPath, read.task.resultPath); assert.equal(disk.endedAt, read.task.endedAt);
-  } finally { await restored.close(); await h.close(); }
+    const wait = run(runtime, 'one', work.promise);
+    await sleep(5); assert.equal(runtime.list()[0]!.delivery, 'foreground');
+    assert.match(runtime.list()[0]!.storageError!, /disk full/);
+    work.resolve(ok()); assert.equal((await wait).kind, 'result');
+    assert.equal(existsSync(h.store.directory), false);
+  } finally { work.resolve(ok()); await runtime.close(); await h.close(); }
 });
 
-test('flush alone enforces retention and removes matching metadata and result files', async () => {
+test('retention protects pending notifications and removes both the result and its session index', async () => {
   const h = runtimeHarness({ maxRetained: 1, notifyDebounceMs: 5000 });
-  const jobs = [deferred<Outcome>(), deferred<Outcome>(), deferred<Outcome>()];
+  const jobs = [deferred<Outcome>(), deferred<Outcome>()];
   try {
-    const handles = [];
-    for (let i = 0; i < 3; i++) {
-      handles.push(await run(h.runtime, `c${i}`, jobs[i]!.promise)); h.runtime.published(`c${i}`);
-    }
+    const handles: Awaited<ReturnType<typeof run>>[] = [];
+    for (let i = 0; i < jobs.length; i++) { handles.push(await run(h.runtime, `c${i}`, jobs[i]!.promise)); h.runtime.published(`c${i}`); }
     h.runtime.prompt(true);
     for (const work of jobs) { work.resolve(ok()); await sleep(2); }
     await until(() => TaskRuntime.liveProducerCount() === 0);
-    assert.equal(h.runtime.list().length, 3); assert.equal(h.store.loadMetadata().length, 3);
-    assert(h.runtime.list().every(t => t.notification === 'pending'));
-    h.runtime.prompt(false); await new Promise<void>(resolve => setImmediate(resolve));
-    h.runtime.flushNotifications(); // no later run/finish/publish; permission verdict microtasks have settled
-    assert.equal(h.notifications.flat().length, 3);
-    assert.equal(h.runtime.list().length, 1); assert.equal(h.store.loadMetadata().length, 1);
-    assert.equal(readdirSync(h.store.directory).filter(x => x.endsWith('.result.json')).length, 1);
-    assert.equal(h.runtime.list()[0]!.notification, 'queued');
-    assert.equal(h.runtime.list()[0]!.id, handles[2]!.task.id);
-    assert.ok(h.runtime.result(handles[2]!.task.id).result);
+    assert.equal(h.runtime.list().length, 2); assert.equal(h.records.size, 2);
+    h.runtime.prompt(false); await new Promise<void>(resolve => setImmediate(resolve)); h.runtime.flushNotifications();
+    assert.equal(h.notifications.flat().length, 2); assert.equal(h.records.size, 1);
+    assert.equal(readdirSync(h.store.directory).length, 1);
+    await h.runtime.close();
+    const restored = new TaskRuntime(h.store, h.config, h.sink, [...h.records.values()]);
+    try {
+      assert.equal(restored.list().length, 1);
+      assert.throws(() => restored.get(handles[0]!.task.id), /No task/);
+      assert.ok(restored.result(handles[1]!.task.id).result);
+    } finally { await restored.close(); }
   } finally { jobs.forEach(w => w.resolve(ok())); await h.close(); }
 });
 
-test('recovery loads all pending records; each remains readable until observation releases retention', async () => {
-  const h = runtimeHarness({ maxRetained: 1, notifyDebounceMs: 5000 });
-  const jobs = [deferred<Outcome>(), deferred<Outcome>(), deferred<Outcome>()];
-  let recovered: TaskRuntime | undefined;
+test('retention deletion failure remains discoverable after restore and can be retried', async () => {
+  const h = runtimeHarness({ maxRetained: 1 });
+  const remove = h.store.remove.bind(h.store);
+  h.store.remove = () => { throw new Error('EACCES'); };
+  let restored: TaskRuntime | undefined;
   try {
-    const ids: string[] = [];
-    for (let i = 0; i < 3; i++) { const v = await run(h.runtime, `c${i}`, jobs[i]!.promise); ids.push(v.task.id); h.runtime.published(`c${i}`); }
-    h.runtime.prompt(true); jobs.forEach(w => w.resolve(ok())); await until(() => TaskRuntime.liveProducerCount() === 0);
-    recovered = new TaskRuntime(h.store, h.config, { notify() { assert.fail('recovery cannot notify'); } });
-    assert.equal(recovered.list().length, 3);
-    for (const id of ids) assert.ok(recovered.result(id).result);
-    assert.equal(recovered.list().length, 1); assert.equal(h.store.loadMetadata().length, 1);
-  } finally { jobs.forEach(w => w.resolve(ok())); await recovered?.close(); await h.close(); }
+    for (let i = 0; i < 2; i++) {
+      const work = deferred<Outcome>();
+      const handle = await run(h.runtime, `delete${i}`, work.promise);
+      h.runtime.published(`delete${i}`);
+      work.resolve(ok()); await until(() => TaskRuntime.liveProducerCount() === 0);
+      h.runtime.result(handle.task.id);
+    }
+    assert.equal(h.records.size, 2);
+    assert.ok(h.runtime.list().some(task => task.storageError?.includes('EACCES')));
+    await h.runtime.close();
+    restored = new TaskRuntime(h.store, h.config, h.sink, [...h.records.values()]);
+    assert.equal(restored.list().length, 2);
+    h.store.remove = remove;
+    assert.equal(restored.list().length, 1);
+    assert.equal(h.records.size, 1);
+    assert.equal(readdirSync(h.store.directory).length, 1);
+  } finally { h.store.remove = remove; await restored?.close(); await h.close(); }
 });
 
-test('recovered uncertainty is never pruned as a terminal task or used to free a live lease', async () => {
-  const h = runtimeHarness({ maxRetained: 1, maxRunning: 1 }); const work = deferred<Outcome>();
-  const view = await run(h.runtime, 'late', work.promise); await h.runtime.close();
-  const recovered = new TaskRuntime(h.store, h.config, { notify() {} });
+test('Pi session index survives tree navigation and resume, but a fork cannot adopt its tasks', async () => {
+  const h = runtimeHarness(); const pi = new FakePi('A'); const work = deferred<Outcome>(); let executions = 0;
+  pi.registerTool(basicTool('mcp__test__late', async () => { executions++; return (await work.promise).result; }));
+  const instance = install(pi, { config: h.config, makeBash: fixtureBash });
   try {
-    assert.equal(recovered.get(view.task.id).state, 'outcome_unknown');
-    assert.equal(h.store.readMeta(view.task.id)!.localRunning, true);
-    assert.throws(() => run(recovered, 'other', Promise.resolve(ok())), /capacity/);
-    assert.throws(() => recovered.cancel(view.task.id), /no live local controller/);
-    await recovered.close(); assert.equal(h.store.readMeta(view.task.id)!.state, 'outcome_unknown');
-    work.resolve(ok()); await until(() => TaskRuntime.liveProducerCount() === 0);
-    assert.equal(h.store.readMeta(view.task.id)!.state, 'completed');
-  } finally { work.resolve(ok()); await recovered.close(); await h.close(); }
-});
-
-test('same session ID with a different session file has no task access or late notification', async () => {
-  const h = runtimeHarness(); const work = deferred<Outcome>();
-  const a = new TaskRuntime(new TaskStore(h.root, 'session\0/path/a.jsonl', h.config.maxResultBytes), h.config, { notify() { assert.fail('old owner notified'); } });
-  const b = new TaskRuntime(new TaskStore(h.root, 'session\0/path/b.jsonl', h.config.maxResultBytes), h.config, { notify() { assert.fail('wrong owner notified'); } });
-  try {
-    const view = await run(a, 'same-call', work.promise); a.published('same-call'); await a.close();
-    assert.throws(() => b.result(view.task.id), /No task/); assert.equal(b.list().length, 0);
-    work.resolve(ok()); await until(() => TaskRuntime.liveProducerCount() === 0); b.flushNotifications();
-    assert.throws(() => b.result(view.task.id), /No task/); assert.equal(b.list().length, 0);
-  } finally { work.resolve(ok()); await a.close(); await b.close(); await h.close(); }
-});
-
-test('a writer ownership conflict is visible and never clobbers the canonical record', async () => {
-  const h = runtimeHarness();
-  try {
-    const view = await h.runtime.run({ tool: 'one', kind: 'tool', callId: 'c', mode: 'no', canDetach: true, execute: async () => ok() });
-    h.store.updateMeta(view.task.id, current => ({ ...current, producerId: 'another-writer' }));
-    const before = h.store.readMeta(view.task.id); await h.runtime.close();
-    assert.deepEqual(h.store.readMeta(view.task.id), before);
-    assert.match(h.runtime.get(view.task.id).storageError!, /ownership changed/);
-    assert.ok(existsSync(view.task.resultPath!));
-  } finally { await h.close(); }
-});
-
-test('final lease release prunes simultaneous observed finishes without a later event', async () => {
-  const h = runtimeHarness({ maxRetained: 1 }); const jobs = [deferred<Outcome>(), deferred<Outcome>(), deferred<Outcome>()];
-  try {
-    const waits = jobs.map((job, i) => h.runtime.run({ tool: 'foreground', kind: 'tool', callId: `c${i}`, mode: 'no', canDetach: true, execute: () => job.promise }));
-    // The host has already published these call IDs; all producers settle in a
-    // single microtask batch, and foreground results need no notifications.
-    for (let i = 0; i < 3; i++) h.runtime.published(`c${i}`);
-    jobs.forEach(job => job.resolve(ok())); await Promise.all(waits);
-    await until(() => TaskRuntime.liveProducerCount() === 0);
-    assert.equal(h.runtime.list().length, 1); assert.equal(h.store.loadMetadata().length, 1);
-    assert.equal(h.notifications.length, 0);
-  } finally { jobs.forEach(job => job.resolve(ok())); await h.close(); }
-});
-
-test('an ownership conflict before late finish cannot replace another canonical result', async () => {
-  const h = runtimeHarness(); const work = deferred<Outcome>();
-  try {
-    const view = await run(h.runtime, 'late', work.promise);
-    const canonical = h.store.saveResult(view.task.id, ok('OTHER_CANONICAL_RESULT').result);
-    h.store.updateMeta(view.task.id, current => ({ ...current, producerId: 'another-writer',
-      localRunning: false, endedAt: Date.now(), state: 'completed', resultPath: canonical.path }));
-    const before = h.store.readMeta(view.task.id);
-    work.resolve(ok('STALE_WRITER_RESULT')); await until(() => TaskRuntime.liveProducerCount() === 0);
-    assert.deepEqual(h.store.readMeta(view.task.id), before);
-    assert.match(JSON.stringify(h.store.readResult(view.task.id)), /OTHER_CANONICAL_RESULT/);
-    assert.equal(h.runtime.get(view.task.id).state, 'outcome_unknown');
-    assert.match(h.runtime.get(view.task.id).storageError!, /ownership changed/);
-  } finally { work.resolve(ok()); await h.close(); }
-});
-
-test('reading a pending older result retains the file promised by that returned view', async () => {
-  const h = runtimeHarness({ maxRetained: 1, notifyDebounceMs: 5000 }); const jobs = [deferred<Outcome>(), deferred<Outcome>()];
-  try {
-    const older = await run(h.runtime, 'old', jobs[0]!.promise); h.runtime.published('old');
-    const newer = await run(h.runtime, 'new', jobs[1]!.promise); h.runtime.published('new');
-    h.runtime.prompt(true); jobs[0]!.resolve(ok('old payload')); await sleep(2); jobs[1]!.resolve(ok('new payload'));
-    await until(() => TaskRuntime.liveProducerCount() === 0);
-    const oldResult = h.runtime.result(older.task.id); assert.ok(oldResult.result); assert.ok(existsSync(oldResult.task.resultPath!));
-    // The other pending task remains protected even if maxRetained is one.
-    assert.equal(h.runtime.list().length, 2); assert.equal(h.runtime.get(newer.task.id).notification, 'pending');
-    const newResult = h.runtime.result(newer.task.id); assert.ok(existsSync(newResult.task.resultPath!));
-    assert.equal(h.runtime.list().length, 1); assert.equal(h.store.loadMetadata().length, 1);
-  } finally { jobs.forEach(job => job.resolve(ok())); await h.close(); }
+    await pi.emit('session_start', { type: 'session_start' });
+    const handle = await pi.call('mcp__test__late_mt', { __meantime__: 'yes' });
+    const id = (handle.result.details as Snapshot).id, originalCtx = pi.ctx;
+    assert.equal(pi.entries.length, 1);
+    await pi.emit('session_tree', { type: 'session_tree' });
+    const active = await pi.call('meantime', { action: 'status', id });
+    assert.equal((active.result.details as Snapshot).state, 'running');
+    await pi.emit('session_shutdown', { type: 'session_shutdown' });
+    // A fork copies entries but uses another owner. Late completion must not
+    // append entries or notifications to the new session.
+    pi.ctx = { ...pi.ctx, sessionManager: { getSessionId: () => 'B', getSessionFile: () => '/sessions/B.jsonl', getEntries: () => [...pi.entries] } };
+    await pi.emit('session_start', { type: 'session_start' });
+    assert.equal((await pi.call('meantime', { action: 'status', id })).isError, true);
+    const entriesBefore = pi.entries.length;
+    work.resolve(ok('LATE_OWNER_A')); await until(() => TaskRuntime.liveProducerCount() === 0);
+    assert.equal(pi.entries.length, entriesBefore); assert.equal(pi.notifications.length, 0);
+    await pi.emit('session_shutdown', { type: 'session_shutdown' }); pi.ctx = originalCtx;
+    await pi.emit('session_start', { type: 'session_start' });
+    const result = await pi.call('meantime', { action: 'result', id: id.slice(3) });
+    assert.equal(result.isError, false); assert.match(JSON.stringify(result.result.content), /LATE_OWNER_A/);
+    assert.equal(executions, 1); assert.equal(pi.notifications.length, 0);
+  } finally { work.resolve(ok()); await instance.dispose(); await h.close(); }
 });

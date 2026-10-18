@@ -27,7 +27,8 @@ export interface Context {
   hasUI: boolean;
   signal?: AbortSignal;
   isIdle(): boolean;
-  sessionManager: { getSessionId(): string; getSessionFile(): string | undefined };
+  sessionManager: { getSessionId(): string; getSessionFile(): string | undefined;
+    getEntries(): { type: string; customType?: string; data?: unknown }[] };
   ui: {
     notify(message: string, type?: 'info' | 'warning' | 'error'): void;
     setStatus(key: string, value: string | undefined): void;

@@ -140,6 +140,10 @@ test('model explicit background continues in parallel with another tool and fini
     assert.equal(task.delivery, 'background'); assert.equal(task.state, 'running');
     const fast = await h.pi.call('local_fast', {}); assert.equal(fast.isError, false);
     work.resolve(ok('slow result').result); await until(() => h.pi.notifications.length === 1);
+    assert.match(h.pi.notifications[0]!.content, /<untrusted-output-tail>\nslow result\n<\/untrusted-output-tail>/);
+    assert.match(task.id, /^mt_[a-f0-9]{8}$/);
+    const byPrefix = await h.pi.call('meantime', { action: 'status', id: task.id.slice(3, 9) });
+    assert.equal(byPrefix.isError, false); assert.match(JSON.stringify(byPrefix.result), new RegExp(task.id));
     const result = await h.pi.call('meantime', { action: 'result', id: task.id });
     assert.match(JSON.stringify(result.result), /slow result/); assert.equal(result.isError, false);
     assert.equal(h.pi.trace.filter(e => e.type === 'execute' && e.name === 'mcp__t__slow').length, 1);
@@ -231,9 +235,17 @@ test('session switch suppresses callbacks and isolates task lookup', async () =>
 test('real shell fixture runs, can detach without a second spawn, and result is retained', async () => {
   const h = await setup();
   try {
-    const out = await h.pi.call('bash', { command: `node -e 'setTimeout(()=>console.log("SHELL_DONE"),80)'`, __meantime__: 'yes' });
+    const command = `node -e 'setTimeout(()=>console.log("SHELL_DONE"),80)'\n# ${'long comment '.repeat(20)}`;
+    const out = await h.pi.call('bash', { command, __meantime__: 'yes' });
     const task = snapshot(out); assert.equal(task.state, 'running');
+    assert.equal(task.command, command);
+    const list = await h.pi.call('meantime', { action: 'list' });
+    const preview = (list.result.details as { tasks: Snapshot[] }).tasks[0]!.command!;
+    assert.ok(preview.endsWith('…')); assert.ok(!preview.includes('\n'));
     await until(() => h.pi.notifications.length === 1);
+    assert.ok(h.pi.notifications[0]!.content.includes(preview));
+    const status = await h.pi.call('meantime', { action: 'status', id: task.id });
+    assert.equal((status.result.details as Snapshot).command, command);
     const result = await h.pi.call('meantime', { action: 'result', id: task.id });
     assert.match(JSON.stringify(result.result), /SHELL_DONE/);
   } finally { await h.close(); }
@@ -294,9 +306,12 @@ test('global nested sequential queue is respected; a queued request cannot claim
   } finally { a.resolve(ok().result); b.resolve(ok().result); await h.close(); }
 });
 test('management results are paginated rather than dumping the full registry into model context', async () => {
-  const h = await setup([basicTool('mcp__t__one')]);
+  const h = await setup([basicTool('mcp__t__one', async () => { await sleep(10); return ok().result; })]);
   try {
-    for (let i = 0; i < 12; i++) await h.pi.call('mcp__t__one_mt', {});
+    for (let i = 0; i < 12; i++) {
+      await h.pi.call('mcp__t__one_mt', { __meantime__: 'yes' });
+      await until(() => TaskRuntime.liveProducerCount() === 0);
+    }
     const page = await h.pi.call('meantime', { action: 'list', limit: 5 });
     const value = page.result.structuredContent as { tasks: unknown[]; next_offset: number; total: number };
     assert.equal(value.tasks.length, 5); assert.equal(value.next_offset, 5); assert.equal(value.total, 12);

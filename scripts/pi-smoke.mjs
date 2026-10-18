@@ -4,7 +4,7 @@
  * MCP dispatch in a headless SDK session. Human TUI steering is a separate gate.
  */
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -54,7 +54,7 @@ if (sdk) {
       }],
     });
     await loader.reload();
-    const manager = sdk.SessionManager.inMemory(root);
+    const manager = sdk.SessionManager.create(root, join(root, 'sessions'));
     // This is a synthetic recorded assistant call, not a model invocation.
     const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
@@ -89,8 +89,25 @@ if (sdk) {
     assert.deepEqual(shell.content, [{ type: 'text', text: 'REAL_PI_BASH_OK' }]);
     assert.equal(shell.structuredContent.exit_code, 0);
     assert.equal(shell.structuredContent.task, undefined);
+    assert.equal(existsSync(join(root, 'tasks')), false, 'foreground must not create task storage');
+    assert.equal(manager.getEntries().filter(e => e.customType === 'meantime-index').length, 0);
     const probe = session.agent.state.tools.find(t => t.name === 'background_probe');
-    await probe.execute('background-probe', {}, new AbortController().signal);
+    const completed = await probe.execute('background-probe', {}, new AbortController().signal);
+    const id = completed.structuredContent.task.id;
+    const sessionFile = manager.getSessionFile();
+    await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
+    await extension.dispose();
+    session.dispose();
+    await loader.reload();
+    const reopened = sdk.SessionManager.open(sessionFile);
+    assert.equal(reopened.getEntries().filter(e => e.customType === 'meantime-index').length, 1);
+    ({ session } = await sdk.createAgentSession({ cwd: root, resourceLoader: loader, settingsManager, sessionManager: reopened }));
+    await session.bindExtensions({ mode: 'rpc' });
+    session.setActiveToolsByName(['meantime']);
+    const restored = await session.agent.state.tools.find(t => t.name === 'meantime')
+      .execute('restored-result', { action: 'result', id }, new AbortController().signal);
+    assert.equal(restored.structuredContent.task.recovered, true);
+    assert.equal(restored.structuredContent.result.output, 'REAL_BACKGROUND_OK');
   } finally {
     try {
       // AgentSession.dispose() invalidates context and listeners, but does not

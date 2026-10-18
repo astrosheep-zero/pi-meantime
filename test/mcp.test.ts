@@ -47,13 +47,14 @@ test('cancelled MCP request keeps its native error without classifying remote ex
     assert.equal(h.client.sent.filter(m => m.method === 'notifications/cancelled').length, 1);
   } finally { await h.close(); }
 });
-test('server tool failure is a failed task, not a successful result merely because Promise resolved', async () => {
+test('foreground server failure preserves its native error without a retained task', async () => {
   const h = await harness();
   try {
     const outcome = await h.pi.call('mcp__fixture__fail_mt', { ms: 1 });
     assert.equal(outcome.isError, true);
     assert.ok(!(outcome.result.structuredContent as { task?: unknown } | undefined)?.task);
     const list = await h.pi.call('meantime', { action: 'list' });
-    assert.equal((list.result.structuredContent as unknown as { tasks: Snapshot[] }).tasks[0]!.state, 'failed');
+    assert.equal((list.result.structuredContent as unknown as { tasks: Snapshot[] }).tasks.length, 0);
+    assert.equal(h.pi.entries.length, 0);
   } finally { await h.close(); }
 });

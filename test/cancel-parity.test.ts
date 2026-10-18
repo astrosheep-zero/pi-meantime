@@ -1,9 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { TaskStore } from '../src/store.ts';
 import { install } from '../src/extension.ts';
 import { validateConfig } from '../src/config.ts';
 import { TaskRuntime } from '../src/runtime.ts';
@@ -24,7 +23,7 @@ test('final native Outcome flag wins in both directions without rewriting its pa
       assert.equal(view.task.isError, finalError);
       assert.equal(view.task.state, finalError ? 'failed' : 'completed');
       assert.deepEqual(view.result, original);
-      assert.deepEqual(JSON.parse(readFileSync(view.task.resultPath!, 'utf8')), original);
+      assert.equal(view.task.resultPath, undefined);
     }
   } finally { await h.close(); }
 });
@@ -95,7 +94,7 @@ test('/bg cancel requires one explicit id and never guesses among current sessio
     assert.match(h.pi.uiMessages.at(-1)!, /Usage: \/meantime cancel <id>.*No task was cancelled/s);
     assert.ok(h.pi.uiMessages.at(-1)!.includes(idA)); assert.ok(h.pi.uiMessages.at(-1)!.includes(idB)); assert.equal(h.aborts(), 0);
     await h.command(`cancel ${idA} ${idB}`); assert.equal(h.aborts(), 0);
-    await h.command('cancel bg_00000000-0000-4000-8000-000000000000');
+    await h.command('cancel mt_00000000');
     assert.match(h.pi.uiMessages.at(-1)!, /No task with that id in this session/); assert.equal(h.aborts(), 0);
     await h.command(`cancel ${idA}`); await h.command(`cancel ${idA}`); assert.equal(h.aborts(), 1);
     const listed = await h.pi.call('meantime', { action: 'status', id: idB });
@@ -110,7 +109,7 @@ test('/bg cancel rejects an old session id and does not cancel a different task'
     await h.command('status'); assert.equal(h.pi.uiWidgets.size, 1);
     await h.pi.emit('session_shutdown', { type: 'session_shutdown' });
     assert.equal(h.pi.uiWidgets.size, 0);
-    h.pi.ctx = { ...h.pi.ctx, sessionManager: { getSessionId: () => 'B', getSessionFile: () => '/sessions/B.jsonl' } };
+    h.pi.ctx = { ...h.pi.ctx, sessionManager: { getSessionId: () => 'B', getSessionFile: () => '/sessions/B.jsonl', getEntries: () => [] } };
     await h.pi.emit('session_start', { type: 'session_start' });
     const b = await h.pi.call('mcp__test__one_mt', { __meantime__: 'yes' }); const idB = (b.result.details as Snapshot).id; const before = h.aborts();
     await h.command(`cancel ${id}`); assert.equal(h.aborts(), before);
@@ -143,9 +142,11 @@ test('recovery retains authoritative outcome flags and raw payload independently
   try {
     for (const isError of [false, true]) {
       const payload: Result = { content: [{ type: 'text', text: 'hooked' }], details: {}, isError: !isError };
-      const view = await h.runtime.run({ tool: 'hooked', kind: 'tool', callId: `r-${isError}`, mode: 'no', canDetach: true,
-        execute: async () => ({ result: payload, isError }) });
-      const recovered = new TaskRuntime(h.store, h.config, { notify() { throw new Error('must not notify'); } });
+      const work = deferred<Outcome>();
+      const view = await h.runtime.run({ tool: 'hooked', kind: 'tool', callId: `r-${isError}`, mode: 'yes', canDetach: true,
+        execute: () => work.promise });
+      work.resolve({ result: payload, isError }); await until(() => TaskRuntime.liveProducerCount() === 0);
+      const recovered = new TaskRuntime(h.store, h.config, { ...h.sink, notify() { throw new Error('must not notify'); } }, [...h.records.values()]);
       try {
         const restored = recovered.result(view.task.id);
         assert.equal(restored.task.isError, isError); assert.deepEqual(restored.result, payload);
@@ -153,23 +154,6 @@ test('recovery retains authoritative outcome flags and raw payload independently
       } finally { await recovered.close(); }
     }
   } finally { await h.close(); }
-});
-
-test('legacy ended unknown records retain original error fallback and cancellation is a no-op', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'pi-bg-legacy-')); const pi = new FakePi('A');
-  const config = validateConfig({ storageRoot: root }); const store = new TaskStore(root, 'A\0/sessions/A.jsonl', config.maxResultBytes);
-  const id = 'bg_00000000-0000-4000-8000-000000000099'; const saved = store.saveResult(id, { content: [{ type: 'text', text: 'legacy abort' }], details: {}, isError: true });
-  store.saveMeta(id, { id, tool: 'legacy', kind: 'tool', mode: 'yes', delivery: 'background', state: 'outcome_unknown', createdAt: 1, endedAt: 2, localRunning: false, notification: 'suppressed', resultPath: saved.path });
-  const instance = install(pi, { config, makeBash: fixtureBash });
-  try {
-    await pi.emit('session_start', { type: 'session_start' });
-    const result = await pi.call('meantime', { action: 'result', id });
-    assert.equal(result.isError, true); assert.ok(result.result.content.some(b => b.type === 'text' && b.text === 'legacy abort'));
-    const cancelled = await pi.call('meantime', { action: 'cancel', id }); assert.equal(cancelled.isError, false);
-    assert.equal((cancelled.result.details as Snapshot).state, 'outcome_unknown');
-    await pi.commands.get('bg')!(`cancel ${id}`, pi.ctx);
-    assert.match(pi.uiMessages.at(-1)!, /No running local call was cancelled/);
-  } finally { await instance.dispose(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test('/bg cancel of an already completed task is visibly idempotent', async () => {

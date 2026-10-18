@@ -7,7 +7,7 @@ import { TaskStore } from '../src/store.ts';
 import { validateConfig } from '../src/config.ts';
 import type { Config } from '../src/config.ts';
 import type { Outcome, Result } from '../src/protocol.ts';
-import type { Snapshot } from '../src/runtime.ts';
+import type { Snapshot, TaskIndex, RuntimeSink } from '../src/runtime.ts';
 export { sleep };
 export function deferred<T>() {
   let resolve!: (value: T) => void; let reject!: (reason: unknown) => void;
@@ -27,8 +27,13 @@ export function runtimeHarness(overrides: Partial<Config> = {}) {
   const config = validateConfig({ storageRoot: root, autoDetachMs: 15, shutdownGraceMs: 10, notifyDebounceMs: 5, ...overrides });
   const notifications: Snapshot[][] = [];
   const store = new TaskStore(root, 'test-owner', config.maxResultBytes);
-  const runtime = new TaskRuntime(store, config, { notify: tasks => notifications.push(tasks) });
-  return { root, config, store, runtime, notifications, async close() {
+  const records = new Map<string, TaskIndex>();
+  const sink: RuntimeSink = { notify: tasks => notifications.push(tasks), index(change) {
+    if ('task' in change) records.set(change.task.id, structuredClone(change.task));
+    else for (const id of change.removed) records.delete(id);
+  } };
+  const runtime = new TaskRuntime(store, config, sink);
+  return { root, config, store, runtime, notifications, records, sink, async close() {
     await runtime.close(); rmSync(root, { recursive: true, force: true });
   } };
 }
