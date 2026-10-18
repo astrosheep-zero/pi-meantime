@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import { matchesKey, SelectList, truncateToWidth, visibleWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
 import type { Config } from './config.ts';
 import type { BashTool, Context, EventHandler, EventMap, Json, Loadout, PiHost, Result, Tool, ToolContext, ToolInfo } from './protocol.ts';
 import { CONTROL, MARKER, decorateSchema, fingerprint, isRecord, matches, proxyName, splitControl } from './schema.ts';
@@ -101,6 +102,76 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   let reconciling = false;
   let installed = true;
   let live = false;
+  let refreshPanel: (() => void) | undefined;
+  let closePanel: (() => void) | undefined;
+
+  async function taskPanel(ctx: Context): Promise<void> {
+    const r = assertRuntime(ctx);
+    closePanel?.();
+    await ctx.ui.custom<void>((tui, theme, _keys, done) => {
+      let selected: string | undefined, expanded: string | undefined;
+      let tasks: Snapshot[] = [];
+      let list: SelectList;
+      let error = '', closed = false;
+      const close = () => { if (closed) return; closed = true; dispose(); done(); };
+      const refresh = () => {
+        tasks = r.list().sort((a, b) => Number(b.localRunning) - Number(a.localRunning) || b.createdAt - a.createdAt);
+        list = new SelectList(tasks.map(task => ({ value: task.id,
+          label: `${taskLabel(task)} | ${Math.max(0, Math.floor(((task.endedAt ?? Date.now()) - task.createdAt) / 1000))}s` })), 10, {
+          selectedPrefix: text => theme.fg('accent', text), selectedText: text => theme.fg('accent', text),
+          description: text => theme.fg('muted', text), scrollInfo: text => theme.fg('dim', text), noMatch: text => theme.fg('muted', text),
+        }, {
+          truncatePrimary({ text, maxWidth }) {
+            // Reserve the elapsed suffix before shortening the command preview.
+            const split = text.lastIndexOf(' | '), elapsed = text.slice(split);
+            if (visibleWidth(elapsed) >= maxWidth) return truncateToWidth(elapsed.trimStart(), maxWidth, '');
+            return truncateToWidth(text.slice(0, split), maxWidth - visibleWidth(elapsed), '…') + elapsed;
+          },
+        });
+        list.setSelectedIndex(Math.max(0, tasks.findIndex(task => task.id === selected)));
+        selected = list.getSelectedItem()?.value;
+        list.onSelectionChange = item => { selected = item.value; error = ''; };
+        list.onSelect = item => { expanded = expanded === item.value ? undefined : item.value; };
+        list.onCancel = close;
+        tui.requestRender();
+      };
+      const timer = setInterval(refresh, 1000);
+      const dispose = () => {
+        clearInterval(timer);
+        if (refreshPanel === refresh) { refreshPanel = undefined; closePanel = undefined; }
+      };
+      refreshPanel = refresh; closePanel = close;
+      refresh();
+      return {
+        render(width) {
+          const task = tasks.find(task => task.id === expanded);
+          const details = task ? [
+            ...(task.command !== undefined ? [`Command: ${cleanText(task.command)}`] : []),
+            ...(task.progress ? [`Progress: ${task.progress}`] : []),
+            ...(!task.localRunning ? [outputTail(r.store, task).trim()] : []),
+            ...(task.resultPath ? [`Output: ${task.resultPath}`] : []),
+          ].filter(Boolean) : [];
+          return [theme.fg('accent', 'Current session tasks'), ...list.render(width),
+            ...details.flatMap(line => wrapTextWithAnsi(line, width)),
+            ...(error ? wrapTextWithAnsi(theme.fg('error', error), width) : []),
+            ...wrapTextWithAnsi('↑/↓ select · Enter expand · c cancel · Esc/q close', width),
+          ].flatMap(line => wrapTextWithAnsi(line, width));
+        },
+        invalidate() { list.invalidate(); },
+        handleInput(data) {
+          if (matchesKey(data, 'q') || matchesKey(data, 'escape')) { close(); return; }
+          if (matchesKey(data, 'c')) {
+            if (selected) {
+              try { r.cancel(selected); error = ''; }
+              catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
+              refresh();
+            }
+          } else { list.handleInput(data); tui.requestRender(); }
+        },
+        dispose,
+      };
+    });
+  }
 
   function assertRuntime(ctx: Context): TaskRuntime {
     if (!runtime || !live || owner(ctx) !== currentOwner) throw new Error('Background runtime is not bound to this session');
@@ -353,7 +424,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
           display: true, details: { taskIds: tasks.map(t => t.id) },
         }, { deliverAs: 'followUp', triggerTurn: true });
       },
-      changed: updateStatus,
+      changed() { updateStatus(); refreshPanel?.(); },
       index(change) {
         if (!live || runtime !== created || currentOwner !== boundOwner) throw new Error('Stale task index target');
         pi.appendEntry('meantime-index', { owner: boundOwner, change });
@@ -365,6 +436,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     scanner.unref();
   }
   async function stop(): Promise<void> {
+    closePanel?.();
     clearInterval(scanner); scanner = undefined;
     // Shutdown may release an unfinished foreground call. Record that handle
     // while Pi still points to its creating session, then retire every callback.
@@ -445,6 +517,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       if (rest.length > 1 || (rest[0] !== undefined && !/^(0|[1-9]\d*)$/.test(rest[0]))) {
         controlFeedback(ctx, 'Usage: /meantime status [offset]. Offset must be a nonnegative integer.'); return;
       }
+      if (ctx.mode === 'tui' && rest.length === 0) { await taskPanel(ctx); return; }
       const offset = Number(rest[0] ?? 0), tasks = assertRuntime(ctx).list();
       if (!Number.isSafeInteger(offset) || (offset >= tasks.length && offset !== 0)) {
         controlFeedback(ctx, `Offset outside ${tasks.length} current session tasks. Use /meantime status.`); return;

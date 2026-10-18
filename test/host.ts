@@ -46,7 +46,7 @@ export class FakePi implements PiHost {
     this.ctx = { cwd: process.cwd(), mode, hasUI: mode === 'tui' || mode === 'rpc',
       signal: undefined, isIdle: () => true,
       sessionManager: { getSessionId: () => session, getSessionFile: () => `/sessions/${session}.jsonl`, getEntries: () => [...this.entries] },
-      ui: { notify: text => { this.uiMessages.push(text); }, setStatus: () => {}, setWidget: (key, lines) => { if (lines) { this.uiWidgets.set(key, [...lines]); this.uiMessages.push(lines.join('\n')); } else this.uiWidgets.delete(key); } },
+      ui: { custom: async () => { throw new Error('Custom UI must be stubbed by the test'); }, notify: text => { this.uiMessages.push(text); }, setStatus: () => {}, setWidget: (key, lines) => { if (lines) { this.uiWidgets.set(key, [...lines]); this.uiMessages.push(lines.join('\n')); } else this.uiWidgets.delete(key); } },
     };
   }
   registerTool(tool: Tool): void {

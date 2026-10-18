@@ -4,7 +4,7 @@
  * the pinned official SDK as part of npm run check.
  */
 import type {
-  AgentToolResult, BeforeAgentStartEventResult, ExtensionAPI, InputEventResult, ToolCallEventResult,
+  AgentToolResult, BeforeAgentStartEventResult, ExtensionAPI, ExtensionContext, InputEventResult, ToolCallEventResult,
   ToolDefinition, ToolLoadout,
 } from '@earendil-works/pi-coding-agent';
 export type Json = Exclude<AgentToolResult<unknown>['structuredContent'], undefined>;
@@ -30,6 +30,7 @@ export interface Context {
   sessionManager: { getSessionId(): string; getSessionFile(): string | undefined;
     getEntries(): { type: string; customType?: string; data?: unknown }[] };
   ui: {
+    custom: ExtensionContext['ui']['custom'];
     notify(message: string, type?: 'info' | 'warning' | 'error'): void;
     setStatus(key: string, value: string | undefined): void;
     setWidget(key: string, content: string[] | undefined): void;

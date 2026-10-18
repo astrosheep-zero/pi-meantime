@@ -63,7 +63,7 @@ test('foreground parent cancellation preserves its AbortSignal reason', async ()
 });
 
 async function commandHarness() {
-  const root = mkdtempSync(join(tmpdir(), 'pi-bg-command-')); const pi = new FakePi('A');
+  const root = mkdtempSync(join(tmpdir(), 'pi-bg-command-')); const pi = new FakePi('A', 'rpc');
   const work = deferred<Outcome>(); let aborts = 0;
   pi.registerTool(basicTool('mcp__test__one', async (_id, _args, signal) => {
     signal?.addEventListener('abort', () => { aborts++; }); return (await work.promise).result;
