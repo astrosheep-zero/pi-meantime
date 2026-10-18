@@ -10,9 +10,9 @@
 - [MCP readiness 和注册](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/src/extensions/mcp/index.ts)
 - [官方 SDK 示例](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/examples/sdk/14-codemode-mcp.ts)
 
-| API | 本 PoC 的使用方式 |
+| API | 本扩展 的使用方式 |
 |---|---|
-| `pi.registerTool` | Bash 同名包装、其他工具不同名代理、bg_task |
+| `pi.registerTool` | Bash 同名包装、其他工具不同名代理、meantime |
 | `pi.getAllTools` | Schema、元数据、exposure、来源签名 |
 | `pi.getSettings` | 执行时读取有效 Shell 设置；加载期不访问 |
 | `prepareLoadout(loadout)` | 观察 callable/registered 定义和 executionMode |
@@ -45,12 +45,12 @@
 
 `hiddenDeclarations` 只影响请求声明；原工具可能仍被其他编排器发现。路由守卫与代理配合，但不作为插件权限安全边界。
 
-嵌套调用的 `nestedCalls` 和 usage 归父工具结果记录。父工具提前返回后，后台结果由本 PoC 自己保存；不会假设原父记录会被 Pi 自动补齐。
+嵌套调用的 `nestedCalls` 和 usage 归父工具结果记录。父工具提前返回后，后台结果由本扩展 自己保存；不会假设原父记录会被 Pi 自动补齐。
 
 原工具的 timeout、HTTP/stdio 连接、MCP cancellation/elicitation 语义继续由 Pi 原生实现决定。后台化不延长 MCP request timeout，也不表示服务器支持 MCP Tasks。
 
 ## 最终结果与取消
 
-ctx.executeTool 的 Outcome.isError 是最终裁决，可能由 afterToolCall 修改而与 result.isError 不同。v0.1.4 将其单独持久化；bg_task result 按最终裁决返回，保留原结果文件。cancelRequestedAt 不参与错误分类。父前台取消传原 signal.reason，手动后台取消发独立 controller.abort()；底层都使用原生 executeTool/MCP 通路。
+ctx.executeTool 的 Outcome.isError 是最终裁决，可能由 afterToolCall 修改而与 result.isError 不同。v0.1.4 将其单独持久化；meantime result 按最终裁决返回，保留原结果文件。cancelRequestedAt 不参与错误分类。父前台取消传原 signal.reason，手动后台取消发独立 controller.abort()；底层都使用原生 executeTool/MCP 通路。
 
 ui_prompt_end 后使用 setImmediate 延后恢复 detach/通知，给原生权限 Promise 的拒绝裁决结算机会。实际 select 菜单与无 UI fallback 分层验证，不把代理模拟选择等同真实用户授权。

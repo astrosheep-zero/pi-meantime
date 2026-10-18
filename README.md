@@ -1,8 +1,12 @@
 # pi-meantime
 
-纯 Pi Extension 的后台工具执行 PoC。目标接口固定为 **Pi 1.3.0**，不修改 Pi 核心，不启动第二个 Agent。
+主命令 `/meantime`；`/bg` 是它的快捷别名，参数与行为完全一致。
 
-`bash` 同名包装；符合条件的 MCP / 扩展工具保留原注册，创建 `<original>_bg` 代理。代理逐个**继承原工具 exposure**：`direct` 仍为 `direct`，`codemode` 仍为 `codemode`，`deferred` 仍为 `deferred`；`hidden`、`model-only` 不生成代理。只有 direct 工具在代理激活后隐藏原工具的模型声明，原工具仍供内部 `ctx.executeTool()` 调用。所有入口共享一个 Runtime，统一支持模型主动后台化、Ctrl+Shift+B、steer 和前台等待超时。Pi 1.3.0 的 MCP 默认 exposure 是 `codemode`，无需为了此 PoC 强制升级为 `direct`。
+纯 Pi Extension 的后台工具执行扩展。目标接口固定为 **Pi 1.3.0**，不修改 Pi 核心，不启动第二个 Agent。
+
+`bash` 同名包装；符合条件的 MCP / 扩展工具保留原注册，创建 `<original>_mt` 代理。代理逐个**继承原工具 exposure**：`direct` 仍为 `direct`，`codemode` 仍为 `codemode`，`deferred` 仍为 `deferred`；`hidden`、`model-only` 不生成代理。只有 direct 工具在代理激活后隐藏原工具的模型声明，原工具仍供内部 `ctx.executeTool()` 调用。所有入口共享一个 Runtime，统一支持模型主动后台化、Ctrl+Shift+B、steer 和前台等待超时。Pi 1.3.0 的 MCP 默认 exposure 是 `codemode`，无需为了此扩展 强制升级为 `direct`。
+
+**v0.2.0**：代理后缀改为 `_mt`，system prompt 新增简短的 meantime 说明；管理工具改名 `meantime`，控制参数改名 `__meantime__`，主命令 `/meantime`，保留 `/bg` 别名。配置改为 `meantime.json` / `PI_MEANTIME_CONFIG`，默认存储目录改为 `meantime-tasks`。从旧版升级时，将旧配置移至新路径；要继续读取旧任务，在新配置中把 `storageRoot` 指向原目录。
 
 **v0.1.6**：`bg_task` 改为 direct，允许模型直接调用和 Codemode 内调用；真实 SDK 冒烟覆盖 detach → 后台完成 → 嵌套读取真实输出。
 
@@ -40,36 +44,36 @@ npm run check
 完整源码包包含一个开发用 MCP stdio 服务器。服务器只有延迟、回显、故障和取消测试能力。
 
 ```sh
-PI_BG_CONFIG="$PWD/examples/bg-poc.json" \
+PI_MEANTIME_CONFIG="$PWD/examples/meantime.json" \
   pi -e ./index.mjs -e ./examples/register-fixture.mjs
 ```
 
-这个测试配置把自动 detach 阈值降为 1 秒。默认配置为 120 秒。`/bg` 或 `/bg status` 分页列出当前会话任务（运行中优先，每页三项，`/bg status 3` 看下一页）；`/bg cancel <完整任务ID>` 请求取消指定任务；不填 ID 会显示用法和任务列表，不猜目标。`/bg rescan` 主动重扫代理。测试服务器由 `pi.registerMcpServer()` 注册，由 Pi 自己建立 MCP 连接。
+这个测试配置把自动 detach 阈值降为 1 秒。默认配置为 120 秒。`/meantime` 或 `/meantime status` 分页列出当前会话任务（运行中优先，每页三项，`/meantime status 3` 看下一页）；`/meantime cancel <完整任务ID>` 请求取消指定任务；不填 ID 会显示用法和任务列表，不猜目标。`/meantime rescan` 主动重扫代理。测试服务器由 `pi.registerMcpServer()` 注册，由 Pi 自己建立 MCP 连接。
 
 模型工具调用示例，不是终端命令：
 
 ```js
-bash({ command: "npm test", __background__: "yes" })
+bash({ command: "npm test", __meantime__: "yes" })
 
 // 下述 fixture 使用 exposure: direct，以展示直接调用。
-// MCP 默认 codemode 时，请从 Codemode 调用同名 _bg 代理。
-mcp__bg_poc_fixture__slow_bg({
+// MCP 默认 codemode 时，请从 Codemode 调用同名 _mt 代理。
+mcp__meantime_fixture__slow_mt({
   ms: 5000,
   text: "fixture finished",
-  __background__: "yes"
+  __meantime__: "yes"
 })
 
-bg_task({ action: "list" })
-bg_task({ action: "status", id: "bg_..." })
-bg_task({ action: "result", id: "bg_..." })
-bg_task({ action: "cancel", id: "bg_..." })
+meantime({ action: "list" })
+meantime({ action: "status", id: "bg_..." })
+meantime({ action: "result", id: "bg_..." })
+meantime({ action: "cancel", id: "bg_..." })
 ```
 
-也可以让模型调用 `slow_bg` 时省略 `__background__`，运行中输入新要求，或按 Ctrl+Shift+B。前台等待释放，底层任务继续，当前工具正常返回句柄。
+也可以让模型调用 `slow_mt` 时省略 `__meantime__`，运行中输入新要求，或按 Ctrl+Shift+B。前台等待释放，底层任务继续，当前工具正常返回句柄。
 
 ## 参数约定
 
-| `__background__` | 意义 |
+| `__meantime__` | 意义 |
 |---|---|
 | `"auto"`，默认 | 从前台开始；允许快捷键、steer、自动等待阈值触发 detach |
 | `"yes"` | 请求立即后台执行；仍要通过原调用进入门槛，遇到当前 UI 审批会延后 detach |
@@ -79,19 +83,21 @@ bg_task({ action: "cancel", id: "bg_..." })
 
 `autoDetachMs` 是“等多久后放到后台”；Bash 原有 `timeout` 仍是“命令最多活多久”。二者分离。
 
-手动命令反馈显示在编辑器附近的 Latest background control 面板，下一次操作替换，不作为永久历史或实时任务状态；任务结束后可用 /bg status 刷新，切会话清理。
+手动命令反馈显示在编辑器附近的 Latest background control 面板，下一次操作替换，不作为永久历史或实时任务状态；任务结束后可用 /meantime status 刷新，切会话清理。
 
-Ctrl+B 保留 Pi 编辑器原有用途。本 PoC 使用 **Ctrl+Shift+B**，终端不能传递该组合键时使用 `/bg detach`。
+Ctrl+B 保留 Pi 编辑器原有用途。本扩展 使用 **Ctrl+Shift+B**，终端不能传递该组合键时使用 `/meantime detach`。
 
 ## 模型看到的形态
 
 ```text
-bash(command, timeout?, __background__?)
-mcp__server__operation_bg(原业务参数..., __background__?)
-bg_task(action, id?, offset?, limit?)
+bash(command, timeout?, __meantime__?)
+mcp__server__operation_mt(原业务参数..., __meantime__?)
+meantime(action, id?, offset?, limit?)
 ```
 
-对于 `codemode`/`deferred`，原工具和 `_bg` 代理可能都列在 Codemode 的候选工具中；默认 `blockOriginalCalls` 阻止通过原名绕过，但不会从 Codemode 列表物理移除原工具。
+对于 `codemode`/`deferred`，原工具和 `_mt` 代理可能都列在 Codemode 的候选工具中；默认 `blockOriginalCalls` 阻止通过原名绕过，但不会从 Codemode 列表物理移除原工具。
+
+System prompt 的 `meantime` 章节简要说明：`_mt` 工具与原工具执行相同操作、接受相同业务参数，只多一个可选的 `__meantime__` 参数（`auto` / `yes` / `no`）。
 
 原 MCP Tool 仍可被内部 `ctx.executeTool(originalName, args, {signal})` 调用。代理名称不同，避免同名递归。
 
@@ -103,21 +109,21 @@ bg_task(action, id?, offset?, limit?)
 {"task":{"id":"bg_...","state":"running","delivery":"background"},"result_available":false}
 ```
 
-完成通知只给元数据；之后 `bg_task(action="result")` 才返回：
+完成通知只给元数据；之后 `meantime(action="result")` 才返回：
 
 ```json
 {"task":{"id":"bg_...","state":"completed"},"result_available":true,"result":{"original":"structured result"}}
 ```
 
-Bash 输出声明为原生输出与句柄的 union；通用代理暂声明 unknown，因为发现接口不提供原输出 Schema。`bg_task` 仍使用任务 envelope。
+Bash 输出声明为原生输出与句柄的 union；通用代理暂声明 unknown，因为发现接口不提供原输出 Schema。`meantime` 仍使用任务 envelope。
 
-同名 bash 的 hook 对前台结果或 detach 句柄触发一次，晚结果不再触发。其他工具代理的内层调用完成时仍经过原工具 hook；读取后台结果另走 `bg_task` hook。
+同名 bash 的 hook 对前台结果或 detach 句柄触发一次，晚结果不再触发。其他工具代理的内层调用完成时仍经过原工具 hook；读取后台结果另走 `meantime` hook。
 
 后台结果读取时，图片不自动塞进模型上下文，保存在结果文件。超大结构化结果的 inline `result` 为 `null`，按 `task.resultPath` 读取保留结果。超过整个结果保留上限时明确标记 `resultTruncated`；不会宣称保留了完整原文。
 
 ## 配置
 
-只读取全局 `~/.pi/agent/bg-poc.json`，或显式绝对路径 `PI_BG_CONFIG`。尊重 `PI_CODING_AGENT_DIR`。不自动加载项目目录中的配置。
+只读取全局 `~/.pi/agent/meantime.json`，或显式绝对路径 `PI_MEANTIME_CONFIG`。尊重 `PI_CODING_AGENT_DIR`。不自动加载项目目录中的配置。
 
 | 配置 | 默认值 |
 |---|---|
@@ -132,7 +138,7 @@ Bash 输出声明为原生输出与句柄的 union；通用代理暂声明 unkno
 | `shutdownGraceMs` | `1000`，取消/关闭等候上限 |
 | `notifyDebounceMs` | `50`，完成通知合并窗口 |
 | `blockOriginalCalls` | `true`，普通直接调用原名时提示使用代理 |
-| `storageRoot` | 全局 agent 目录下 `bg-poc-tasks` |
+| `storageRoot` | 全局 agent 目录下 `meantime-tasks` |
 
 需要包装其他自定义扩展工具时，把名字/模式加入 `include`，例如 `["mcp__*", "my_slow_tool"]`。`hidden`、`model-only`、不可调用或明确 `sequential` 的原工具不包装；不把交互工具、文件写入和强制顺序约束粗暴改成后台。
 
@@ -140,12 +146,12 @@ Bash 输出声明为原生输出与句柄的 union；通用代理暂声明 unkno
 
 已实现：独立取消信号、无 abort 的 detach、参数冲突检测、动态代理同步、原调用验证/权限/结果钩子保留、结果文件、完成通知合并和入队失败重试、任务查询与分页、来源会话隔离、跨 reload 的本地存活配额保护。
 
-需要明确接受的 PoC 边界：
+需要明确接受的边界：
 
 - **会话内后台，不提供跨进程继续执行。** `/reload`、会话切换、树切换、退出都请求取消并停止旧通知。恢复时未完成任务标记 `outcome_unknown`，绝不自动重放。旧 producer 若随后真正完成，同一会话的恢复 runtime 会在 status/list/result 时刷新成功结果；退出不会覆盖终态证据。
 - 取消和原生调用使用相同 AbortSignal/MCP 取消通路。`cancelRequestedAt` 只记录请求事实；原调用最终 `Outcome.isError=true` 映射为 failed，false 映射为 completed，原始结果另行原样保存（在配置的大小上限内）。不从请求取消推断远端结果；远端不合作是原生调用同样存在的边界。真正失去本地执行控制且尚无最终结果时仍显示 outcome_unknown。
 - `ctx.executeTool()` 仍用 Pi 原生嵌套调用队列。不会释放或绕过 Pi 的顺序锁。底层排队时，“yes”可能等待到原调用进入后才返回句柄。
-- 后台工具的晚到 usage 保存在任务结果里；**Pi 会话全局费用统计可能漏掉父工具返回后的 usage**。PoC 不伪造修正值，不重复计费。
+- 后台工具的晚到 usage 保存在任务结果里；**Pi 会话全局费用统计可能漏掉父工具返回后的 usage**。扩展不伪造修正值，不重复计费。
 - 复杂根 Schema 拒绝自动包装。动态工具列表也存在短暂同步窗口，无法凭公开 API 做原子工具注册装饰器。
 - `print/json` 的 `auto` 留在前台，`yes` 返回明确错误，避免进程退出吞掉后台结果。
 - 已打开的 UI 审批期间延后 detach；已经后台化后才发生的 MCP elicitation/交互是尚未完整验收的宿主兼容边界，应对这类工具使用 `no` 或排除规则。
@@ -171,6 +177,6 @@ MIT License。尚未发布 npm。GitHub 仓库：https://github.com/astrosheep-z
 
 ## RPC 客户端接入
 
-TUI 的最近操作面板位于输入编辑器上方；RPC 模式没有内置可视面板。客户端需消费 `extension_ui_request` 的 `setWidget`（键 `bg-control`）、`setStatus`（键 `bg-poc`）及 `notify`。本版未指定 widgetPlacement；客户端负责选择显示位置，字段省略的清除事件也需处理。若客户端忽略这些事件，手动命令反馈可能不可见；当前没有能力协商或降级显示。
+TUI 的最近操作面板位于输入编辑器上方；RPC 模式没有内置可视面板。客户端需消费 `extension_ui_request` 的 `setWidget`（键 `bg-control`）、`setStatus`（键 `meantime`）及 `notify`。本版未指定 widgetPlacement；客户端负责选择显示位置，字段省略的清除事件也需处理。若客户端忽略这些事件，手动命令反馈可能不可见；当前没有能力协商或降级显示。
 
-通过 RPC `prompt` 发送 `/bg status` 或 `/bg cancel <id>`。返回 `success:true, disposition:handled` 仅表示命令已处理，不能据此认定取消成功；错误 ID 的说明另走 `notify(error)`。完成提醒是 `message_end` 的 `customType: bg-poc-completion` 消息并触发 follow-up。原生 RPC `abort` 停止前台回复，不取消已经 detach 的后台任务。`hasUI=true` 表示协议桥接存在，不代表客户端已经渲染。
+通过 RPC `prompt` 发送 `/meantime status` 或 `/meantime cancel <id>`。返回 `success:true, disposition:handled` 仅表示命令已处理，不能据此认定取消成功；错误 ID 的说明另走 `notify(error)`。完成提醒是 `message_end` 的 `customType: meantime-completion` 消息并触发 follow-up。原生 RPC `abort` 停止前台回复，不取消已经 detach 的后台任务。`hasUI=true` 表示协议桥接存在，不代表客户端已经渲染。

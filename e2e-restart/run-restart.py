@@ -88,13 +88,13 @@ def launch(phase, port, session_file=None):
 
     env = {'PATH': str(pathlib.Path(NODE).parent) + ':/usr/bin:/bin', 'HOME': str(DIR / 'home'), 'TERM': 'xterm-256color',
            'LANG': 'C.UTF-8', 'PI_CODING_AGENT_DIR': str(DIR / 'agent'), 'PI_OFFLINE': '1', 'PI_TELEMETRY': '0',
-           'PI_BG_CONFIG': str(DIR / 'bg-config.json'), 'E2E_CASE_DIR': str(DIR), 'E2E_SOURCE_ROOT': str(ROOT),
+           'PI_MEANTIME_CONFIG': str(DIR / 'bg-config.json'), 'E2E_CASE_DIR': str(DIR), 'E2E_SOURCE_ROOT': str(ROOT),
            'E2E_PHASE': phase, 'E2E_TOOL_URL': f'http://127.0.0.1:{port}/work', 'NO_PROXY': '127.0.0.1,localhost'}
     args = [NODE, str(ROOT / 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'),
             '--offline', '--no-extensions', '-e', str(ROOT / 'index.mjs'), '-e', str(ROOT / 'e2e-restart/observer.mjs'),
             '--no-skills', '--no-prompt-templates', '--no-themes', '--no-context-files', '--approve',
             '--provider', 'localmock', '--model', 'mock-model', '--thinking', 'off', '--session-dir', str(DIR / 'sessions'),
-            '--system-prompt', 'Deterministic isolated test. Use only the synthetic localhost fixture and bg_task. Never replay a recovered operation.']
+            '--system-prompt', 'Deterministic isolated test. Use only the synthetic localhost fixture and meantime. Never replay a recovered operation.']
     if session_file:
         if not pathlib.Path(session_file).resolve().is_relative_to(DIR):
             raise RuntimeError('Refusing a non-synthetic session')
@@ -180,7 +180,7 @@ current = None
 status = {'test': 'real-Pi-process-crash-and-official-session-resume', 'plannedCrashExit': None, 'restartExit': None, 'failure': None}
 try:
     dump('source-hashes-before-test.json', source_hashes())
-    dump('agent/settings.json', {'enableInstallTelemetry': False, 'enableAnalytics': False, 'quietStartup': True, 'defaultTools': ['fixture_restart', 'bg_task']})
+    dump('agent/settings.json', {'enableInstallTelemetry': False, 'enableAnalytics': False, 'quietStartup': True, 'defaultTools': ['fixture_restart', 'meantime']})
     dump('bg-config.json', {'include': ['fixture_*'], 'autoDetachMs': 0, 'reconcileMs': 100, 'notifyDebounceMs': 5000, 'shutdownGraceMs': 100, 'storageRoot': str(DIR / 'tasks')})
     server_env = {'PATH': str(pathlib.Path(NODE).parent) + ':/usr/bin:/bin', 'HOME': str(DIR / 'home')}
     server = subprocess.Popen([NODE, str(ROOT / 'e2e-restart/mock-http.mjs'), str(DIR)], cwd=ROOT, env=server_env,

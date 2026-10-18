@@ -39,19 +39,19 @@ const server = http.createServer(async (req, res) => {
     if (n > 12) throw new Error('Request safety limit exceeded');
     let tool, text;
     if (phase === 'before') {
-      if (n === 1) tool = ['fixture_restart_bg', { kind: 'completed', __background__: 'yes' }];
-      else if (n === 2) tool = ['bg_task', { action: 'result', id: (await completedTask()).id }];
-      else if (n === 3) tool = ['fixture_restart_bg', { kind: 'unfinished', __background__: 'yes' }];
+      if (n === 1) tool = ['fixture_restart_mt', { kind: 'completed', __meantime__: 'yes' }];
+      else if (n === 2) tool = ['meantime', { action: 'result', id: (await completedTask()).id }];
+      else if (n === 3) tool = ['fixture_restart_mt', { kind: 'unfinished', __meantime__: 'yes' }];
       else text = 'READY_FOR_PLANNED_PROCESS_CRASH';
     } else {
       const all = tasks(), incomplete = all.find(t => !t.endedAt), complete = all.find(t => t.state === 'completed');
       if (!incomplete || !complete) throw new Error('Missing persisted control/incomplete records');
-      if (n === 1) tool = ['bg_task', { action: 'list' }];
-      else if (n === 2) tool = ['bg_task', { action: 'status', id: incomplete.id }];
-      else if (n === 3) tool = ['bg_task', { action: 'result', id: incomplete.id }];
-      else if (n === 4) tool = ['bg_task', { action: 'cancel', id: incomplete.id }];
-      else if (n === 5) tool = ['bg_task', { action: 'result', id: complete.id }];
-      else if (n === 6) tool = ['bg_task', { action: 'status', id: incomplete.id }];
+      if (n === 1) tool = ['meantime', { action: 'list' }];
+      else if (n === 2) tool = ['meantime', { action: 'status', id: incomplete.id }];
+      else if (n === 3) tool = ['meantime', { action: 'result', id: incomplete.id }];
+      else if (n === 4) tool = ['meantime', { action: 'cancel', id: incomplete.id }];
+      else if (n === 5) tool = ['meantime', { action: 'result', id: complete.id }];
+      else if (n === 6) tool = ['meantime', { action: 'status', id: incomplete.id }];
       else text = 'RESTART_PROBES_DONE';
     }
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });

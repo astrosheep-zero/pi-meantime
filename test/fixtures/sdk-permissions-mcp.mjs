@@ -19,7 +19,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   if (method !== 'tools/call') { if (id !== undefined) send({ id, error: { code: -32601, message: 'Unknown method' } }); return; }
   appendFileSync(callLog, JSON.stringify({ name: params?.name }) + '\n', { mode: 0o600 });
   const args = params?.arguments ?? {};
-  if (params.name !== 'stubborn' || '__background__' in args || typeof args.ms !== 'number') {
+  if (params.name !== 'stubborn' || '__meantime__' in args || typeof args.ms !== 'number') {
     return send({ id, error: { code: -32602, message: 'Invalid fixture arguments' } });
   }
   const timer = setTimeout(() => {

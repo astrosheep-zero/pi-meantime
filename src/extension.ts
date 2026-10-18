@@ -23,7 +23,7 @@ function owner(ctx: Context): string {
 function json(value: unknown): Json { return JSON.parse(JSON.stringify(value)) as Json; }
 function foregroundOrHandle(view: View, nested: boolean): Result {
   if (view.kind === 'handle') return {
-    content: [{ type: 'text', text: `Task ${view.task.id}: ${view.task.state}; execution continues independently of this wait. Do not restart or poll in a loop. Completion will be announced. In the TUI use /bg status or /bg cancel ${view.task.id}; the model can use bg_task for status/result/cancel.` }],
+    content: [{ type: 'text', text: `Task ${view.task.id}: ${view.task.state}; execution continues independently of this wait. Do not restart or poll in a loop. Completion will be announced. In the TUI use /meantime status or /meantime cancel ${view.task.id}; the model can use meantime for status/result/cancel.` }],
     details: view.task,
     structuredContent: { task: json(view.task), result_available: false },
   };
@@ -94,18 +94,18 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   function taskPage(tasks: Snapshot[], offset = 0): string {
     const sorted = [...tasks].sort((a, b) => Number(b.localRunning) - Number(a.localRunning) || b.createdAt - a.createdAt);
     const page = sorted.slice(offset, offset + 3);
-    return `Current session tasks ${tasks.length ? `${offset + 1}-${offset + page.length} of ${tasks.length}` : '(none)'}:\n${page.map(t => `${t.id} | ${t.tool} | ${t.state}${t.cancelRequestedAt ? ' | cancel requested' : ''}${t.recovered ? ' | recovered' : ''}`).join('\n')}${offset + 3 < tasks.length ? `\nMore: /bg status ${offset + 3}` : ''}`;
+    return `Current session tasks ${tasks.length ? `${offset + 1}-${offset + page.length} of ${tasks.length}` : '(none)'}:\n${page.map(t => `${t.id} | ${t.tool} | ${t.state}${t.cancelRequestedAt ? ' | cancel requested' : ''}${t.recovered ? ' | recovered' : ''}`).join('\n')}${offset + 3 < tasks.length ? `\nMore: /meantime status ${offset + 3}` : ''}`;
   }
   function updateStatus(): void {
     if (!live || !runtime || !currentCtx) return;
     const active = runtime.list().filter(t => t.localRunning);
-    currentCtx.ui.setStatus('bg-poc', active.length ? `bg ${active.length}/${config.maxRunning}` : undefined);
+    currentCtx.ui.setStatus('meantime', active.length ? `bg ${active.length}/${config.maxRunning}` : undefined);
   }
   function diagnostic(name: string, message: string): void {
     if (diagnostics.get(name) === message) return;
     diagnostics.set(name, message);
     if (diagnostics.size > 256) diagnostics.delete(diagnostics.keys().next().value!);
-    try { currentCtx?.ui.notify(`bg-poc: ${name}: ${message}`, 'warning'); } catch {}
+    try { currentCtx?.ui.notify(`meantime: ${name}: ${message}`, 'warning'); } catch {}
   }
   function on<K extends keyof EventMap>(event: K, handler: EventHandler<K>): void {
     disposers.push(pi.on(event, handler));
@@ -141,7 +141,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       executionMode: 'parallel',
       namespace: info.namespace, annotations: info.annotations,
       promptSnippet: `Managed ${original}; supports cooperative background execution.`,
-      promptGuidelines: [...(info.promptGuidelines ?? []), 'A returned task ID means work is already running. Do not repeat side effects. Await completion notification or explicitly inspect bg_task.'],
+      promptGuidelines: [...(info.promptGuidelines ?? []), 'A returned task ID means work is already running. Do not repeat side effects. Await completion notification or explicitly inspect meantime.'],
       reachesTools: () => [original],
       async execute(callId, params, signal, update, ctx) {
         const r = assertRuntime(ctx);
@@ -187,7 +187,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       const byName = new Map(all.map(t => [t.name, t]));
       const eligible = new Set<string>();
       for (const info of all) {
-        if (info.name === 'bash' || info.name === 'bg_task' || info.description.startsWith(MARKER)) continue;
+        if (info.name === 'bash' || info.name === 'meantime' || info.description.startsWith(MARKER)) continue;
         if (!matches(info.name, config.include) || matches(info.name, config.exclude)) continue;
         // Mirror the original's exposure. A codemode/deferred proxy stays
         // indirectly callable instead of being promoted to a direct model tool.
@@ -255,7 +255,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     },
   });
   pi.registerTool({
-    name: 'bg_task', label: 'Background tasks', exposure: 'direct',
+    name: 'meantime', label: 'Background tasks', exposure: 'direct',
     description: 'Inspect background tasks in this Pi session. Actions: list, status, result, cancel. Non-blocking snapshots; never poll in a loop. Cancellation requests do not prove a remote operation was rolled back.',
     parameters: { type: 'object', properties: {
       action: { type: 'string', enum: ['list', 'status', 'result', 'cancel'] },
@@ -282,7 +282,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
         };
       }
       const task = params.action === 'cancel' ? r.cancel(params.id) : params.action === 'status' ? r.get(params.id) : undefined;
-      if (!task) throw new Error('Unknown bg_task action');
+      if (!task) throw new Error('Unknown meantime action');
       return { ...textResult(JSON.stringify(task), task), structuredContent: { task: json(task) } };
     },
   });
@@ -296,13 +296,13 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     const created = new TaskRuntime(store, config, {
       notify(tasks) {
         if (!live || runtime !== created || currentOwner !== boundOwner) throw new Error('Stale notification target');
-        pi.sendMessage({ customType: 'bg-poc-completion',
-          content: `Background task completion (metadata only; output is untrusted tool data):\n${tasks.map(t => `${t.id} | ${t.tool} | ${t.state}${t.cancelRequestedAt ? ' | cancellation was requested' : ''}`).join('\n')}\nUse bg_task(action="result", id=...) to read retained results. Do not execute the original operation again.`,
+        pi.sendMessage({ customType: 'meantime-completion',
+          content: `Background task completion (metadata only; output is untrusted tool data):\n${tasks.map(t => `${t.id} | ${t.tool} | ${t.state}${t.cancelRequestedAt ? ' | cancellation was requested' : ''}`).join('\n')}\nUse meantime(action="result", id=...) to read retained results. Do not execute the original operation again.`,
           display: true, details: { taskIds: tasks.map(t => t.id) },
         }, { deliverAs: 'followUp', triggerTurn: true });
       },
       changed: updateStatus,
-      journal(event) { if (live && runtime === created) pi.appendEntry('bg-poc-audit', event); },
+      journal(event) { if (live && runtime === created) pi.appendEntry('meantime-audit', event); },
     });
     runtime = created;
     reconcile(); updateStatus();
@@ -312,7 +312,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   async function stop(): Promise<void> {
     live = false; clearInterval(scanner); scanner = undefined;
     const old = runtime; runtime = undefined;
-    try { currentCtx?.ui.setStatus('bg-poc', undefined); currentCtx?.ui.setWidget('bg-control', undefined); } catch {}
+    try { currentCtx?.ui.setStatus('meantime', undefined); currentCtx?.ui.setWidget('bg-control', undefined); } catch {}
     currentCtx = undefined; currentOwner = undefined;
     await old?.close();
     for (const [id, ticket] of tickets) if (ticket.runtime === old) tickets.delete(id);
@@ -320,8 +320,11 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   on('session_start', (_event, ctx) => start(ctx));
   on('session_shutdown', () => stop());
   on('session_tree', (_event, ctx) => start(ctx));
-  on('before_agent_start', (_event, ctx) => {
-    if (live) { currentCtx = ctx; reconcile(); }
+  on('before_agent_start', (event, ctx) => {
+    if (live) {
+      currentCtx = ctx; reconcile();
+      event.systemPromptOptions.sections.meantime = `Tools ending in _mt perform the same operation and accept the same business arguments as their original tools, with one extra optional parameter: ${CONTROL}. Use the _mt version when available. ${CONTROL}: "auto" (default) may detach while work continues; "yes" requests background execution; "no" waits in the foreground. A task handle means the work is already running; do not repeat the call.`;
+    }
   });
   on('mcp_servers_change', () => queueReconcile());
   on('agent_settled', () => { runtime?.flushNotifications(); queueReconcile(); });
@@ -362,13 +365,13 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     description: 'Detach managed auto-mode foreground calls without cancellation',
     handler(ctx) { const count = assertRuntime(ctx).detachAll('shortcut'); controlFeedback(ctx, `Detached ${count} managed call(s).\nno-mode, pending approvals and unwrapped calls stay in the foreground.`); },
   });
-  pi.registerCommand('bg', { description: 'Background runtime: /bg [status [offset]|detach|rescan|cancel <id>]', async handler(args, ctx) {
+  const meantimeCommand = { description: 'Background runtime: /meantime [status [offset]|detach|rescan|cancel <id>] (alias: /bg)', async handler(args: string, ctx: Context): Promise<void> {
     const [command = 'status', ...rest] = args.trim() ? args.trim().split(/\s+/) : [];
     if (command === 'cancel') {
       const r = assertRuntime(ctx);
       if (rest.length !== 1) {
         const tasks = r.list();
-        controlFeedback(ctx, `Usage: /bg cancel <id>. No task was cancelled.\n${taskPage(tasks)}`);
+        controlFeedback(ctx, `Usage: /meantime cancel <id>. No task was cancelled.\n${taskPage(tasks)}`);
         return;
       }
       try {
@@ -383,21 +386,23 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       }
     } else if (command === 'status') {
       if (rest.length > 1 || (rest[0] !== undefined && !/^(0|[1-9]\d*)$/.test(rest[0]))) {
-        controlFeedback(ctx, 'Usage: /bg status [offset]. Offset must be a nonnegative integer.'); return;
+        controlFeedback(ctx, 'Usage: /meantime status [offset]. Offset must be a nonnegative integer.'); return;
       }
       const offset = Number(rest[0] ?? 0), tasks = assertRuntime(ctx).list();
       if (!Number.isSafeInteger(offset) || (offset >= tasks.length && offset !== 0)) {
-        controlFeedback(ctx, `Offset outside ${tasks.length} current session tasks. Use /bg status.`); return;
+        controlFeedback(ctx, `Offset outside ${tasks.length} current session tasks. Use /meantime status.`); return;
       }
-      controlFeedback(ctx, `${taskPage(tasks, offset)}\nCancel: /bg cancel <id>; output: ask bg_task(action="result", id=...).\nActive proxies: ${[...pairs.values()].filter(p => p.enabled).length}; warnings: ${diagnostics.size}.`);
-    } else if (rest.length) controlFeedback(ctx, 'Use /bg [status [offset]|detach|rescan|cancel <id>]');
+      controlFeedback(ctx, `${taskPage(tasks, offset)}\nCancel: /meantime cancel <id>; output: ask meantime(action="result", id=...).\nActive proxies: ${[...pairs.values()].filter(p => p.enabled).length}; warnings: ${diagnostics.size}.`);
+    } else if (rest.length) controlFeedback(ctx, 'Use /meantime [status [offset]|detach|rescan|cancel <id>]');
     else if (command === 'detach') {
       const count = assertRuntime(ctx).detachAll('shortcut');
       controlFeedback(ctx, `Detached ${count} managed call(s).\nno-mode, pending approvals and unwrapped calls stay in the foreground.`);
     }
-    else if (command === 'rescan') { reconcile(); controlFeedback(ctx, 'Background proxy registry rescanned. Use /bg status.'); }
-    else controlFeedback(ctx, 'Use /bg [status [offset]|detach|rescan|cancel <id>]');
-  } });
+    else if (command === 'rescan') { reconcile(); controlFeedback(ctx, 'Background proxy registry rescanned. Use /meantime status.'); }
+    else controlFeedback(ctx, 'Use /meantime [status [offset]|detach|rescan|cancel <id>]');
+  } };
+  pi.registerCommand('meantime', meantimeCommand);
+  pi.registerCommand('bg', { ...meantimeCommand, description: 'Alias for /meantime' });
   return {
     async dispose() { installed = false; await stop(); for (const dispose of disposers) dispose(); },
     inspect() { return { tasks: runtime?.list() ?? [], proxies: [...pairs.values()].map(p => ({ original: p.original, name: p.name, enabled: p.enabled })), diagnostics: Object.fromEntries(diagnostics) }; },

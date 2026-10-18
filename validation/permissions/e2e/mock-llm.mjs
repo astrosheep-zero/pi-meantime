@@ -16,10 +16,10 @@ const server = http.createServer(async (req, res) => {
     const n = ++state.n; log(scenario, { event: 'request', n, body, authorizationIsLocalStub: req.headers.authorization === 'Bearer localstubkey' });
     if (n > 10) throw new Error('Too many fixture provider calls');
     let tool; let text;
-    if (n === 1) tool = ['mcp__parity__cooperative_bg', { ms: 600, __background__: scenario.includes('_auto_') ? 'auto' : 'yes' }];
+    if (n === 1) tool = ['mcp__parity__cooperative_mt', { ms: 600, __meantime__: scenario.includes('_auto_') ? 'auto' : 'yes' }];
     else if (scenario.endsWith('_deny')) text = 'PERMISSION_DENIED_DONE';
     else if (tasks(scenario).some(task => task.endedAt) && !state.read) {
-      state.read = true; tool = ['bg_task', { action: 'result', id: tasks(scenario)[0].id }];
+      state.read = true; tool = ['meantime', { action: 'result', id: tasks(scenario)[0].id }];
     } else text = state.read ? 'PERMISSION_ALLOW_DONE' : 'PERMISSION_ALLOW_WAIT';
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     const base = { id: `chatcmpl-${scenario}-${n}`, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: 'mock-model' };

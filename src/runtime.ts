@@ -38,6 +38,7 @@ export interface RuntimeSink {
 }
 // Reloaded modules share admission only, not stale Pi contexts. Non-cooperative
 // old producers continue to occupy a slot until they actually settle.
+// Keep the original key so producers from v0.1.x still count after hot reload.
 const LEASES = Symbol.for('pi-bg-poc.live-producer-leases.v1');
 const globalState = globalThis as unknown as Record<symbol, Set<string> | undefined>;
 function leases(): Set<string> { return globalState[LEASES] ??= new Set<string>(); }

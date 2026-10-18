@@ -22,25 +22,25 @@ async function harness() {
 test('real JSON-RPC stdio MCP call is dispatched once, detached, and collected with clean business args', async () => {
   const h = await harness();
   try {
-    const outcome = await h.pi.call('mcp__fixture__slow_bg', { ms: 70, text: 'WIRE_DONE', __background__: 'yes' });
+    const outcome = await h.pi.call('mcp__fixture__slow_mt', { ms: 70, text: 'WIRE_DONE', __meantime__: 'yes' });
     assert.equal(outcome.isError, false);
     const task = (outcome.result.structuredContent as { task: unknown }).task as Snapshot;
     assert.equal(task.state, 'running');
     await until(() => h.pi.notifications.length === 1);
-    const result = await h.pi.call('bg_task', { action: 'result', id: task.id });
+    const result = await h.pi.call('meantime', { action: 'result', id: task.id });
     assert.match(JSON.stringify(result.result), /WIRE_DONE/);
     const requests = h.client.sent.filter(m => m.method === 'tools/call'); assert.equal(requests.length, 1);
-    assert.ok(!JSON.stringify(requests[0]).includes('__background__'));
+    assert.ok(!JSON.stringify(requests[0]).includes('__meantime__'));
   } finally { await h.close(); }
 });
 test('cancelled MCP request keeps its native error without classifying remote execution', async () => {
   const h = await harness(); const marker = join(h.root, 'side-effect.txt');
   try {
-    const outcome = await h.pi.call('mcp__fixture__stubborn_bg', { ms: 150, marker, __background__: 'yes' });
+    const outcome = await h.pi.call('mcp__fixture__stubborn_mt', { ms: 150, marker, __meantime__: 'yes' });
     const task = (outcome.result.structuredContent as { task: unknown }).task as Snapshot;
-    const cancelled = await h.pi.call('bg_task', { action: 'cancel', id: task.id }); assert.equal(cancelled.isError, false);
+    const cancelled = await h.pi.call('meantime', { action: 'cancel', id: task.id }); assert.equal(cancelled.isError, false);
     await sleep(20);
-    const status = await h.pi.call('bg_task', { action: 'status', id: task.id });
+    const status = await h.pi.call('meantime', { action: 'status', id: task.id });
     assert.equal(((status.result.structuredContent as { task: unknown }).task as Snapshot).state, 'failed');
     await until(() => existsSync(marker)); assert.equal(readFileSync(marker, 'utf8'), 'REMOTE_SIDE_EFFECT_COMPLETED');
     assert.equal(h.client.sent.filter(m => m.method === 'tools/call').length, 1);
@@ -50,10 +50,10 @@ test('cancelled MCP request keeps its native error without classifying remote ex
 test('server tool failure is a failed task, not a successful result merely because Promise resolved', async () => {
   const h = await harness();
   try {
-    const outcome = await h.pi.call('mcp__fixture__fail_bg', { ms: 1 });
+    const outcome = await h.pi.call('mcp__fixture__fail_mt', { ms: 1 });
     assert.equal(outcome.isError, true);
     assert.ok(!(outcome.result.structuredContent as { task?: unknown } | undefined)?.task);
-    const list = await h.pi.call('bg_task', { action: 'list' });
+    const list = await h.pi.call('meantime', { action: 'list' });
     assert.equal((list.result.structuredContent as unknown as { tasks: Snapshot[] }).tasks[0]!.state, 'failed');
   } finally { await h.close(); }
 });

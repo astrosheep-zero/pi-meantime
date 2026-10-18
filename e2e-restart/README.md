@@ -1,6 +1,6 @@
 # Real Pi process crash and official session recovery
 
-This isolated fixture launches the installed official Pi CLI twice through a real Python PTY. The first process is deliberately killed with SIGKILL after a completed control and an unfinished background task have written their snapshots. The second process opens the exact saved session using the official `--session` option and probes the production extension through real provider-issued `bg_task` calls.
+This isolated fixture launches the installed official Pi CLI twice through a real Python PTY. The first process is deliberately killed with SIGKILL after a completed control and an unfinished background task have written their snapshots. The second process opens the exact saved session using the official `--session` option and probes the production extension through real provider-issued `meantime` calls.
 
 No production source, SDK file, real provider account, or external service is changed. The provider and synthetic business endpoint are one localhost HTTP server. The driver and all of its children must run in one execution call so that localhost networking is shared.
 

@@ -17,7 +17,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   let message;
   try { message = JSON.parse(line); } catch { return; }
   const { id, method, params } = message;
-  if (method === 'initialize') return send({ id, result: { protocolVersion: '2025-11-25', capabilities: { tools: { listChanged: true } }, serverInfo: { name: 'pi-bg-poc-fixture', version: '0.1.0' } } });
+  if (method === 'initialize') return send({ id, result: { protocolVersion: '2025-11-25', capabilities: { tools: { listChanged: true } }, serverInfo: { name: 'pi-meantime-fixture', version: '0.1.0' } } });
   if (method === 'notifications/initialized') return;
   if (method === 'tools/list') return send({ id, result: { tools } });
   if (method === 'ping') return send({ id, result: {} });
@@ -28,7 +28,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   }
   if (method !== 'tools/call') { if (id !== undefined) send({ id, error: { code: -32601, message: 'Unknown method' } }); return; }
   const args = params?.arguments ?? {};
-  if ('__background__' in args) return send({ id, error: { code: -32602, message: 'Leaked runtime parameter' } });
+  if ('__meantime__' in args) return send({ id, error: { code: -32602, message: 'Leaked runtime parameter' } });
   if (!tools.some(t => t.name === params.name) || typeof args.ms !== 'number' || !Number.isFinite(args.ms) || args.ms < 0 || args.ms > 5000) return send({ id, error: { code: -32602, message: 'Invalid fixture arguments' } });
   const timer = setTimeout(() => {
     timers.delete(id);

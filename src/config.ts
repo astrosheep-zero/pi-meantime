@@ -27,13 +27,13 @@ export const DEFAULT_CONFIG: Config = {
   reconcileMs: 500,
   shutdownGraceMs: 1000,
   notifyDebounceMs: 50,
-  storageRoot: join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), '.pi', 'agent'), 'bg-poc-tasks'),
+  storageRoot: join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), '.pi', 'agent'), 'meantime-tasks'),
   blockOriginalCalls: true,
   detachOnSteer: true,
 };
 export function validateConfig(raw: unknown): Config {
-  if (!isRecord(raw)) throw new Error('bg-poc config must be an object');
-  for (const key of Object.keys(raw)) if (!Object.hasOwn(DEFAULT_CONFIG, key)) throw new Error(`Unknown bg-poc setting: ${key}`);
+  if (!isRecord(raw)) throw new Error('meantime config must be an object');
+  for (const key of Object.keys(raw)) if (!Object.hasOwn(DEFAULT_CONFIG, key)) throw new Error(`Unknown meantime setting: ${key}`);
   const config = { ...DEFAULT_CONFIG, ...raw } as Config;
   for (const key of ['include', 'exclude'] as const) {
     if (!Array.isArray(config[key]) || !config[key].every(v => typeof v === 'string' && v.length > 0)) throw new Error(`${key} must be an array of patterns`);
@@ -55,9 +55,9 @@ export function validateConfig(raw: unknown): Config {
 }
 /** Only explicit/global configuration, never automatically consume untrusted project config. */
 export function loadConfig(): Config {
-  const file = process.env.PI_BG_CONFIG;
-  if (file && !isAbsolute(file)) throw new Error('PI_BG_CONFIG must be an absolute path');
-  const path = file ?? join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), '.pi', 'agent'), 'bg-poc.json');
+  const file = process.env.PI_MEANTIME_CONFIG;
+  if (file && !isAbsolute(file)) throw new Error('PI_MEANTIME_CONFIG must be an absolute path');
+  const path = file ?? join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), '.pi', 'agent'), 'meantime.json');
   try { return validateConfig(JSON.parse(readFileSync(resolve(path), 'utf8'))); }
   catch (error) {
     if (!file && (error as NodeJS.ErrnoException).code === 'ENOENT') return validateConfig({});

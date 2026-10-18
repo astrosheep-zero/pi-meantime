@@ -74,7 +74,7 @@ check('HTTP incomplete work never reported finish', not any(row['event'] == 'wor
 check('no business fixture execute was replayed after restart', len([row for row in fixture if row['event'] == 'start']) == 2 and not any(row['phase'] == 'after' for row in fixture))
 check('all provider requests authenticated only with synthetic localhost stub', all(row['authorizationIsLocalStub'] for row in http if row['event'] == 'request'))
 check('no local mock error or unexpected provider retries', not any(row['event'] == 'error' for row in http) and len([row for row in http if row['event'] == 'request' and row['phase'] == 'before']) == 4 and len([row for row in http if row['event'] == 'request' and row['phase'] == 'after']) == 7)
-check('resume provider calls are only read/cancel recovery probes', all(row.get('tool', ['bg_task'])[0] == 'bg_task' for row in http if row['event'] == 'response' and row['phase'] == 'after' and 'tool' in row))
+check('resume provider calls are only read/cancel recovery probes', all(row.get('tool', ['meantime'])[0] == 'meantime' for row in http if row['event'] == 'response' and row['phase'] == 'after' and 'tool' in row))
 
 if (DIR / 'status-screen.txt').exists():
     screen = (DIR / 'status-screen.txt').read_text()
@@ -83,7 +83,7 @@ if (DIR / 'status-screen.txt').exists():
     check('visible panel displays recovered unknown task on one readable line', f"{incomplete['id']} | fixture_restart | outcome_unknown | recovered" in screen)
     check('visible panel displays completed recovered task on one readable line', f"{complete['id']} | fixture_restart | completed | recovered" in screen)
     check('completed retained result is visibly readable in resumed terminal', 'RESTART_CONTROL_RESULT_V014' in screen)
-    check('visible panel includes concrete cancel/result affordance and no warnings', 'Cancel: /bg cancel <id>; output: ask bg_task(action="result", id=...).' in screen and 'Active proxies: 1; warnings: 0.' in screen)
+    check('visible panel includes concrete cancel/result affordance and no warnings', 'Cancel: /bg cancel <id>; output: ask meantime(action="result", id=...).' in screen and 'Active proxies: 1; warnings: 0.' in screen)
 
 out = {'passed': sum(row['passed'] for row in checks), 'total': len(checks), 'allPassed': all(row['passed'] for row in checks),
        'sessionId': identity['sessionId'], 'unfinishedTaskId': incomplete['id'], 'completedTaskId': complete['id'],

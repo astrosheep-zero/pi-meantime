@@ -26,7 +26,7 @@ def run(case):
    ev=rows(d/'host-events.jsonl');mcp=rows(d/'mcp-server-events.jsonl');http=rows(d/'mock-http.jsonl');jobs=metas(d);begun=[x for x in mcp if x['event']=='work_started'];now=int(time.time()*1000)
    if not sent and time.monotonic()-start>1.5 and any(x['event']['type']=='session_start' for x in ev):send('START_MANUAL_CHECK');sent=True
    if jobs:aid=jobs[0]['id']
-   handles=[x for x in ev if x['event']['type']=='tool_execution_end' and x['event'].get('toolName','').endswith('_bg')]
+   handles=[x for x in ev if x['event']['type']=='tool_execution_end' and x['event'].get('toolName','').endswith('_mt')]
    if case.startswith('mcp_steer'):
     if begun and steers<3 and now>=begun[0]['at']+60+steers*70:steers+=1;send('STEER_REPEAT_'+str(steers))
     delivered=[x for x in ev if x['event']['type']=='message_end' and x['event'].get('message',{}).get('role')=='user' and 'STEER_REPEAT_' in str(x['event']['message'])]

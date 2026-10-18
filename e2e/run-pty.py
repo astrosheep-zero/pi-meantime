@@ -27,7 +27,7 @@ def run(case):
     else:os.write(master,b'\x1b[98;6u')
     interrupt_sent=True
       # Completion is identified from real host events, not the test model's success words alone.
-   completed=any(x['event']['type']=='tool_execution_end' and x['event']['toolName']=='bg_task' and 'result' in json.dumps(x['event'].get('result',{})).lower() for x in ev)
+   completed=any(x['event']['type']=='tool_execution_end' and x['event']['toolName']=='meantime' and 'result' in json.dumps(x['event'].get('result',{})).lower() for x in ev)
    requests=sum(x['event']=='request' for x in req)
    if case=='bash_no' and requests>=2 and not quit_at:quit_at=time.monotonic()+0.5
    if (case.startswith('reload_') or case=='switch_custom') and not reload_sent and requests>=2 and any(x['event']['type']=='agent_settled' for x in ev):
@@ -55,6 +55,6 @@ def run(case):
   except subprocess.TimeoutExpired:os.killpg(p.pid,signal.SIGKILL);p.wait()
  os.close(master)
  ev=rows(d/'host-events.jsonl');req=rows(d/'mock-http.jsonl')
- summary={'case':case,'elapsed_s':round(time.monotonic()-start,2),'processExit':p.returncode,'mode':sorted(set(x.get('mode','') for x in ev)),'requestCount':sum(x['event']=='request' for x in req),'tools':[{'at':x['at'],'name':x['event']['toolName'],'parent':x['event'].get('parentToolCallId'),'isError':x['event'].get('isError'),'durationMs':x['event'].get('durationMs'),'result':x['event'].get('result')} for x in ev if x['event']['type']=='tool_execution_end'],'completionMessages':sum(x['event']['type']=='message_end' and x['event'].get('message',{}).get('customType')=='bg-poc-completion' for x in ev),'shutdowns':sum(x['event']['type']=='session_shutdown' for x in ev)}
+ summary={'case':case,'elapsed_s':round(time.monotonic()-start,2),'processExit':p.returncode,'mode':sorted(set(x.get('mode','') for x in ev)),'requestCount':sum(x['event']=='request' for x in req),'tools':[{'at':x['at'],'name':x['event']['toolName'],'parent':x['event'].get('parentToolCallId'),'isError':x['event'].get('isError'),'durationMs':x['event'].get('durationMs'),'result':x['event'].get('result')} for x in ev if x['event']['type']=='tool_execution_end'],'completionMessages':sum(x['event']['type']=='message_end' and x['event'].get('message',{}).get('customType')=='meantime-completion' for x in ev),'shutdowns':sum(x['event']['type']=='session_shutdown' for x in ev)}
  (d/'summary.json').write_text(json.dumps(summary,indent=2));print(json.dumps({k:v for k,v in summary.items() if k!='tools'}),flush=True)
 for case in sys.argv[1:]:run(case)

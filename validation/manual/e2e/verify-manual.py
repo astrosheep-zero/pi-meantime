@@ -10,8 +10,8 @@ for case in cases:
  ck('normal real CLI/PTY exit',s['processExit']==0 and s['driverFailure'] is None and json.loads((d/'cli-process-status.json').read_text())=={'status':0,'signal':None,'error':None})
  ck('exact frozen production bytes',all(hashlib.sha256((ROOT/f).read_bytes()).hexdigest()==h for f,h in json.loads((d/'source-hashes-at-launch.json').read_text()).items()))
  ck('local mock only',all(x['authorizationIsLocalStub'] for x in http if x['event']=='request'))
- calls=[x for x in wire if x['event']=='request' and x['message']['method']=='tools/call'];cancels=[x for x in wire if x['event']=='cancel_received'];results=[x for x in ev if x['event']['type']=='tool_result'];ends=[x for x in ev if x['event']['type']=='tool_execution_end'];notes=[x for x in ev if x['event']['type']=='message_end' and x['event'].get('message',{}).get('customType')=='bg-poc-completion']
- ck('no business control leakage',all('__background__' not in x['message']['params']['arguments'] for x in calls))
+ calls=[x for x in wire if x['event']=='request' and x['message']['method']=='tools/call'];cancels=[x for x in wire if x['event']=='cancel_received'];results=[x for x in ev if x['event']['type']=='tool_result'];ends=[x for x in ev if x['event']['type']=='tool_execution_end'];notes=[x for x in ev if x['event']['type']=='message_end' and x['event'].get('message',{}).get('customType')=='meantime-completion']
+ ck('no business control leakage',all('__meantime__' not in x['message']['params']['arguments'] for x in calls))
  ck('only expected business calls',len(calls)==(2 if case=='manual_foreign' else 1))
  ck('no duplicate completion notices',len([i for x in notes for i in x['event']['message']['details']['taskIds']])==len(set(i for x in notes for i in x['event']['message']['details']['taskIds'])))
  for t in meta:
@@ -35,7 +35,7 @@ for case in cases:
   ck('single native cancel per actual target',len(cancels)==wanted and len(set((x['instanceId'],x['requestId']) for x in cancels))==wanted)
   ck('returned native error not unknown',target['state']=='failed' and target['isError']==True and target['cancelRequestedAt'])
   payload=json.loads(next(d.glob('tasks/*/'+target['id']+'.result.json')).read_text());ck('native raw result exact',payload=={'content':[{'type':'text','text':'MCP request aborted'}],'details':{}})
-  read=next(x for x in results if x['event']['toolName']=='bg_task' and x['event']['input'].get('action')=='result');ck('outer final error retained',read['event']['isError']==True and any(x.get('text')=='MCP request aborted' for x in read['event']['content']))
+  read=next(x for x in results if x['event']['toolName']=='meantime' and x['event']['input'].get('action')=='result');ck('outer final error retained',read['event']['isError']==True and any(x.get('text')=='MCP request aborted' for x in read['event']['content']))
   ck('visible native cancellation outcome','MCP request aborted' in screen and 'A cancellation was requested' in screen)
   ck('stable latest-control panel','Latest background control:' in screen and 'Cancellation requested for' in screen)
   if case=='manual_foreign':

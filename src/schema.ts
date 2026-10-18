@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { Mode, Schema } from './protocol.ts';
 
-export const CONTROL = '__background__';
-export const MARKER = '[pi-bg-poc proxy]';
+export const CONTROL = '__meantime__';
+export const MARKER = '[pi-meantime proxy]';
 const UNSUPPORTED = ['$ref', '$dynamicRef', '$recursiveRef', 'allOf', 'anyOf', 'oneOf',
   'not', 'if', 'then', 'else', 'patternProperties', 'propertyNames',
   'unevaluatedProperties', 'dependencies', 'dependentSchemas', 'dependentRequired',
@@ -43,10 +43,10 @@ export function splitControl(args: Record<string, unknown>): { mode: Mode; args:
   return { mode: value, args: business };
 }
 export function proxyName(original: string): string {
-  const simple = `${original}_bg`;
+  const simple = `${original}_mt`;
   if (/^[a-zA-Z0-9_-]{1,64}$/.test(simple)) return simple;
   const clean = original.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 45);
-  return `${clean}_${createHash('sha256').update(original).digest('hex').slice(0, 12)}_bg`;
+  return `${clean}_${createHash('sha256').update(original).digest('hex').slice(0, 12)}_mt`;
 }
 export function fingerprint(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');

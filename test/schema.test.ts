@@ -32,7 +32,7 @@ test('nested refs and constraints survive without flattening', () => {
   const decorated = decorateSchema(schema); assert.deepEqual(decorated.$defs, schema.$defs);
 });
 test('names are deterministic, safe and within 64 ASCII characters', () => {
-  assert.equal(proxyName('mcp__docs__search'), 'mcp__docs__search_bg');
+  assert.equal(proxyName('mcp__docs__search'), 'mcp__docs__search_mt');
   const n = proxyName('mcp__' + 'a'.repeat(90)); assert.ok(n.length <= 64);
   assert.match(n, /^[\w-]+$/); assert.equal(n, proxyName('mcp__' + 'a'.repeat(90)));
   assert.notEqual(n, proxyName('mcp__' + 'a'.repeat(89) + 'b'));

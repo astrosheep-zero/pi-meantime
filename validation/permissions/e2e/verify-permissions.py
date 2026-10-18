@@ -15,7 +15,7 @@ for case in CASES:
     end = [row for row in events if row['event']['type']=='ui_prompt_end']
     decision = [row for row in events if row['event']['type']=='permission_gate_decision']
     ended = [row for row in events if row['event']['type']=='tool_execution_end']
-    proxy = [row for row in ended if row['event']['toolName']=='mcp__parity__cooperative_bg']
+    proxy = [row for row in ended if row['event']['toolName']=='mcp__parity__cooperative_mt']
     native = [row for row in ended if row['event']['toolName']=='mcp__parity__cooperative']
     wire_calls = [row for row in wire if row['event']=='request' and row['message'].get('method')=='tools/call']
     work = [row for row in wire if row['event']=='work_started']
@@ -55,7 +55,7 @@ for case in CASES:
         assert proxy[0]['event']['result']['structuredContent']['result_available'] is True
         assert 'PERMISSION_DENIED_BY_USER: fixture not executed.' in result_text
         assert 'execution continues independently' not in result_text
-        assert not any(row['event']['type']=='message_end' and row['event'].get('message',{}).get('customType')=='bg-poc-completion' for row in events)
+        assert not any(row['event']['type']=='message_end' and row['event'].get('message',{}).get('customType')=='meantime-completion' for row in events)
     else:
         assert decision[0]['event']['choice']=='Allow once'
         assert len(wire_calls)==len(work)==1 and work[0]['at']>=decision[0]['at']
@@ -65,7 +65,7 @@ for case in CASES:
         assert proxy[0]['at']<native[0]['at'], 'Background handle must precede business completion'
         assert 'execution continues independently' in result_text and '/bg status or /bg cancel' in result_text
         assert 'NATIVE_MCP_TEST_SUCCESS' in result_text and 'PERMISSION_DENIED_BY_USER' not in result_text
-        fetched = [row for row in ended if row['event']['toolName']=='bg_task']
+        fetched = [row for row in ended if row['event']['toolName']=='meantime']
         assert len(fetched)==1 and fetched[0]['event']['isError'] is False
     result = {'case':case, 'pass':True, 'mode':'tui', 'cliExit':driver['exit'], 'promptDurationMs':end[0]['at']-start[0]['at'],
         'choice':decision[0]['event'].get('choice','dismissed_with_escape'), 'mcpToolsCallCount':len(wire_calls), 'pendingDelivery':pending[0]['delivery'],

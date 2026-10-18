@@ -16,21 +16,21 @@ def run(case):
  def control(action,label=None):return [x for x in events('control_replaced') if x['event'].get('action')==action and (label is None or x['event'].get('label')==label)]
  def marked():return bool([x for x in events('control_mark') if x['event'].get('label')=='A'])
  def ended(name=None):return [x for x in events('tool_execution_end') if name is None or x['event']['toolName']==name]
- def read_results():return [x for x in ended('bg_task') if x['event']['result'].get('structuredContent',{}).get('result_available') is True]
- def bg_handle():return next((x for x in ended() if x['event']['toolName'] in ['fixture_direct_bg','bash'] and task(x['event']['result']).get('delivery')=='background'),None)
+ def read_results():return [x for x in ended('meantime') if x['event']['result'].get('structuredContent',{}).get('result_available') is True]
+ def bg_handle():return next((x for x in ended() if x['event']['toolName'] in ['fixture_direct_mt','bash'] and task(x['event']['result']).get('delivery')=='background'),None)
  def settled_after(at):return any(x['at']>=at for x in events('agent_settled'))
  def seed_done(n):
   x=[x for x in http if x['event']=='response' and x.get('text')=='SEED_SAVED'];return len(x)>=n and settled_after(x[n-1]['at'])
  def job_idle():
   h=bg_handle();return h is not None and settled_after(h['at'])
  def foreign_done():
-  x=[x for x in ended('bg_task') if x['event'].get('isError')];return bool(x) and settled_after(x[-1]['at'])
+  x=[x for x in ended('meantime') if x['event'].get('isError')];return bool(x) and settled_after(x[-1]['at'])
  def foreign_list_done():
-  x=[x for x in ended('bg_task') if x['event']['result'].get('structuredContent',{}).get('tasks')==[]];return bool(x) and settled_after(x[-1]['at'])
+  x=[x for x in ended('meantime') if x['event']['result'].get('structuredContent',{}).get('tasks')==[]];return bool(x) and settled_after(x[-1]['at'])
  def recovered_cancel_done():
-  x=[x for x in ended('bg_task') if 'no live local controller' in json.dumps(x['event']['result'])];return bool(x) and settled_after(x[-1]['at'])
+  x=[x for x in ended('meantime') if 'no live local controller' in json.dumps(x['event']['result'])];return bool(x) and settled_after(x[-1]['at'])
  def early_done():
-  x=[x for x in ended('bg_task') if x['event']['result'].get('structuredContent',{}).get('result_available') is False];return bool(x) and settled_after(x[-1]['at'])
+  x=[x for x in ended('meantime') if x['event']['result'].get('structuredContent',{}).get('result_available') is False];return bool(x) and settled_after(x[-1]['at'])
  def finished():return any(x['phase']=='finish' and x.get('gate')=='job' for x in fixture)
  def final_done():
   h=bg_handle();old_id=task(h['event']['result']).get('id') if h else None
@@ -78,12 +78,12 @@ def run(case):
     elif step==len(steps) and final_done() and time.monotonic()-last_send>0.25:stop()
    else:
     if not sent and events('session_start'):send('START_LONG_TASK');sent=True
-    if case.startswith('cancel_custom') and not released and (case=='cancel_custom_late' and bg_handle() or case in ['cancel_custom_early','cancel_custom_error'] and len(ended('bg_task'))>=2):
+    if case.startswith('cancel_custom') and not released and (case=='cancel_custom_late' and bg_handle() or case in ['cancel_custom_early','cancel_custom_error'] and len(ended('meantime'))>=2):
      send('/e2e-release job');released=True
     if case.startswith('steer_') and fixture and steers<3 and int(time.time()*1000)>=fixture[0]['at']+50*(steers+1):
      send('STEER_REPEAT_'+str(steers+1)+' keep the same job running');steers+=1
     if case=='steer_no_repeat':
-     x=ended('fixture_direct_bg')
+     x=ended('fixture_direct_mt')
      if x and settled_after(x[-1]['at']) and time.monotonic()-last_send>0.3 and len([h for h in http if h['event']=='request'])>=2:stop()
     elif final_done() and time.monotonic()-last_send>0.3:stop()
   if not quit_sent:failure='did not satisfy final real-host result before 35s deadline'
@@ -94,6 +94,6 @@ def run(case):
   except subprocess.TimeoutExpired:os.killpg(p.pid,signal.SIGKILL);p.wait()
  os.close(master)
  ev=rows(d/'host-events.jsonl');http=rows(d/'mock-http.jsonl');fixture=rows(d/'fixture-execution.jsonl')
- summary={'case':case,'elapsed_s':round(time.monotonic()-start,2),'processExit':p.returncode,'driverFailure':failure,'completedSteps':step,'expectedSteps':len(steps),'steersSent':steers,'mode':sorted(set(x.get('mode','') for x in ev if x.get('mode'))),'requestCount':sum(x['event']=='request' for x in http),'tools':[{'at':x['at'],'sessionId':x.get('sessionId'),'sessionFile':x.get('sessionFile'),'staleContext':x.get('staleContext',False),**x['event']} for x in ev if x['event']['type']=='tool_execution_end'],'completionMessages':[{'at':x['at'],'sessionId':x.get('sessionId'),'message':x['event']['message']} for x in ev if x['event']['type']=='message_end' and x['event'].get('message',{}).get('customType')=='bg-poc-completion'],'starts':[{'at':x['at'],'sessionId':x.get('sessionId'),'sessionFile':x.get('sessionFile'),'reason':x['event'].get('reason')} for x in ev if x['event']['type']=='session_start'],'fixtureRuns':fixture}
+ summary={'case':case,'elapsed_s':round(time.monotonic()-start,2),'processExit':p.returncode,'driverFailure':failure,'completedSteps':step,'expectedSteps':len(steps),'steersSent':steers,'mode':sorted(set(x.get('mode','') for x in ev if x.get('mode'))),'requestCount':sum(x['event']=='request' for x in http),'tools':[{'at':x['at'],'sessionId':x.get('sessionId'),'sessionFile':x.get('sessionFile'),'staleContext':x.get('staleContext',False),**x['event']} for x in ev if x['event']['type']=='tool_execution_end'],'completionMessages':[{'at':x['at'],'sessionId':x.get('sessionId'),'message':x['event']['message']} for x in ev if x['event']['type']=='message_end' and x['event'].get('message',{}).get('customType')=='meantime-completion'],'starts':[{'at':x['at'],'sessionId':x.get('sessionId'),'sessionFile':x.get('sessionFile'),'reason':x['event'].get('reason')} for x in ev if x['event']['type']=='session_start'],'fixtureRuns':fixture}
  (d/'summary.json').write_text(json.dumps(summary,indent=2));print(json.dumps({k:v for k,v in summary.items() if k not in ['tools','fixtureRuns','completionMessages','starts']}),flush=True)
 for case in sys.argv[1:]:run(case)

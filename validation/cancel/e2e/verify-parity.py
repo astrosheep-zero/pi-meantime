@@ -25,7 +25,7 @@ for kind in KINDS:
   loaded=json.loads((d/'extension-load-manifest.json').read_text());check(loaded['backgroundExtensionLoaded']==(mode!='native') and loaded['sdkVersion']=='1.3.0','native baseline extension contamination')
   check(any(x['event']=={'type':'session_shutdown','reason':'quit'} for x in events),'no quit')
   requests=[x for x in http if x['event']=='request'];check(requests and all(x['authorizationIsLocalStub'] for x in requests),'not only local stub provider');check(not any(x['event']=='error' for x in http),'provider error')
-  first_tool=next(x for x in http if x['event']=='response')['tool'];check(first_tool[0]=='mcp__parity__'+kind+('' if mode=='native' else '_bg'),'model did not issue correct native/proxy tool')
+  first_tool=next(x for x in http if x['event']=='response')['tool'];check(first_tool[0]=='mcp__parity__'+kind+('' if mode=='native' else '_mt'),'model did not issue correct native/proxy tool')
   calls=[x for x in wire if x['event']=='request' and x['message'].get('method')=='tools/call'];cancel=[x for x in wire if x['event']=='request' and x['message'].get('method')=='notifications/cancelled']
   check(len(calls)==len(cancel)==1,'call/cancel not exactly once')
   check(calls[0]['message']['params']=={'name':kind,'arguments':{'ms':1200},'_meta':{'progressToken':calls[0]['message']['id']}},'arguments rewritten or control leaked')
@@ -46,13 +46,13 @@ for kind in KINDS:
   if mode=='native':
    check(summary['nativeEscape'] is True,'native not cancelled by actual Escape');check(not list(d.glob('tasks/*/*.meta.json')),'native baseline has bg tasks')
   else:
-   check(inner['event'].get('parentToolCallId')==next(x for x in events if x['event']['type']=='tool_execution_end' and x['event']['toolName'].endswith('_bg'))['event']['toolCallId'],'not original nested tool dispatch')
+   check(inner['event'].get('parentToolCallId')==next(x for x in events if x['event']['type']=='tool_execution_end' and x['event']['toolName'].endswith('_mt'))['event']['toolCallId'],'not original nested tool dispatch')
    metas=list(d.glob('tasks/*/*.meta.json'));check(len(metas)==1,'duplicated background task');meta=json.loads(metas[0].read_text());check(meta['state']=='failed' and meta['isError'] is True and meta['cancelRequestedAt']<=meta['endedAt'] and meta['localRunning'] is False,'native final error was not preserved')
    stored=json.loads(next(d.glob('tasks/*/*.result.json')).read_text());check(stored==expected['result'],'saved native payload changed')
    check(meta in json.loads((d/'metadata-before-quit.json').read_text()).values(),'quit changed task metadata')
    if mode=='bg':
-    cancels=[x for x in events if x['event']['type']=='tool_call' and x['event']['toolName']=='bg_task' and x['event']['input'].get('action')=='cancel'];check(len(cancels)==1 and not summary['nativeEscape'],'background cancel not model-issued bg_task')
-    reads=[x for x in summary['tools'] if x['event']['toolName']=='bg_task' and x['event']['result'].get('structuredContent',{}).get('result_available') is True];check(len(reads)==1 and reads[0]['event']['result']['structuredContent']['result']=='MCP request aborted','background original error not readable')
+    cancels=[x for x in events if x['event']['type']=='tool_call' and x['event']['toolName']=='meantime' and x['event']['input'].get('action')=='cancel'];check(len(cancels)==1 and not summary['nativeEscape'],'background cancel not model-issued meantime')
+    reads=[x for x in summary['tools'] if x['event']['toolName']=='meantime' and x['event']['result'].get('structuredContent',{}).get('result_available') is True];check(len(reads)==1 and reads[0]['event']['result']['structuredContent']['result']=='MCP request aborted','background original error not readable')
    else:check(meta['delivery']=='foreground' and 'detachReason' not in meta and summary['nativeEscape'],'no mode detached')
   cases.append({'case':case,'nativeOriginalResult':outcome,'cancelReason':cm,'cancelAfterMcpStartMs':cancel[0]['at']-starts[0]['at'],'localSettlementAfterMcpStartMs':inner['at']-starts[0]['at'],'remoteAfterCancel':'stopped' if stops else 'late error' if kind=='late_error' else 'late success','providerRequests':len(requests),'wrapperAddsOutcomeUnknown':False})
  results.append({'fixture':kind,'nativeCancellationParity':'PASS','nativeUnderlyingResultParity':'PASS','nativeErrorSemantics':'PASS: no cancellation outcome inference','displayEnvelope':'task metadata retained','cases':cases})

@@ -1,6 +1,6 @@
 # 设计说明与决策记录
 
-版本：0.1.5 PoC。宿主目标：Pi 1.3.0。
+版本：0.2.0。宿主目标：Pi 1.3.0。
 
 ## 1. 范围
 
@@ -9,13 +9,13 @@
 实现采用两类 adapter 和一个 runtime：
 
 ```text
-model -> bash + __background__ -> Pi 原生 Bash factory ------+
+model -> bash + __meantime__ -> Pi 原生 Bash factory ------+
                                                            |
-model -> original_bg + __background__ -> ctx.executeTool ---+--> TaskRuntime
+model -> original_mt + __meantime__ -> ctx.executeTool ---+--> TaskRuntime
                                          |                 |      |
                                 原工具校验/权限/钩子         |      +--> TaskStore
                                          |                 |      +--> completion outbox
-                                      MCP/扩展工具          |      +--> bg_task 查询
+                                      MCP/扩展工具          |      +--> meantime 查询
                                                            |
 Ctrl+Shift+B / steer / auto timeout -> 只释放 foreground wait-+
 ```
@@ -38,7 +38,7 @@ delivery: foreground -> background
 
 “completed”表示工具调用成功返回，不自动表示某个工具自行提交的外部作业也已完成。“failed”表示调用返回错误，不宣称副作用被回滚。
 
-运行时持有独立 AbortController。前台阶段，父 signal 的真正取消会转发到任务；detach 时拆除这条关系。detach 以后父回合结束、下一轮的取消，都不会误杀已交给后台的任务。显式 `bg_task cancel` 或 `/bg cancel <id>` 请求取消该任务。
+运行时持有独立 AbortController。前台阶段，父 signal 的真正取消会转发到任务；detach 时拆除这条关系。detach 以后父回合结束、下一轮的取消，都不会误杀已交给后台的任务。显式 `meantime cancel` 或 `/meantime cancel <id>` 请求取消该任务。
 
 所有 detach 触发最终进入同一个方法。没有 `ctx.abort()`，没有捕获再重投用户输入。`input` 返回 `continue`，Pi 自己继续处理输入文本、附件和队列。
 
@@ -54,29 +54,29 @@ delivery: foreground -> background
 
 ## 4. 工具声明、可调用性和绕行
 
-复制原工具的 exposure：`direct`→`direct`、`codemode`→`codemode`、`deferred`→`deferred`；`hidden`、`model-only` 不代理。Pi MCP 默认 `codemode`，因此相应 `_bg` 代理从 Codemode 中调用，**不会升级成模型直连工具**。注意 Codemode 的工具列表也可能同时包含原工具和 `_bg` 代理；默认 `blockOriginalCalls` 阻止绕过，但这不等于从 Codemode 描述中消除原始工具。
+复制原工具的 exposure：`direct`→`direct`、`codemode`→`codemode`、`deferred`→`deferred`；`hidden`、`model-only` 不代理。Pi MCP 默认 `codemode`，因此相应 `_mt` 代理从 Codemode 中调用，**不会升级成模型直连工具**。注意 Codemode 的工具列表也可能同时包含原工具和 `_mt` 代理；默认 `blockOriginalCalls` 阻止绕过，但这不等于从 Codemode 描述中消除原始工具。
 
-原工具保持原 exposure 和注册状态。`bg_task.prepareLoadout` 用 `hiddenDeclarations` 去掉已有代理的原工具直接声明。原工具 `hidden` exposure 不可用于这里，因为它会同时阻断内部调用。
+原工具保持原 exposure 和注册状态。`meantime.prepareLoadout` 用 `hiddenDeclarations` 去掉已有代理的原工具直接声明。原工具 `hidden` exposure 不可用于这里，因为它会同时阻断内部调用。
 
 只有继承 direct 的代理直接向模型声明；codemode/deferred 代理保持间接调用。代理的 `reachesTools` 明确返回原工具名，供 Pi 的 MCP readiness hook 使用。
 
 隐藏声明不等于访问控制。Codemode 的工具发现、历史消息或其他插件仍可能知道原名。默认还用 `tool_call` 路由守卫：只有对应代理 ticket 发起的原调用通过；普通直接调用原名返回使用代理名的提示。这个守卫服务于一致路由，不宣称构成针对恶意扩展的安全沙箱。
 
-权限检查仍在原调用管线发生。某些权限扩展可能同时询问代理和原工具，PoC 不会为消除重复询问而跳过原审批。
+权限检查仍在原调用管线发生。某些权限扩展可能同时询问代理和原工具，扩展不会为消除重复询问而跳过原审批。
 
 ## 5. Schema 装饰与结果契约
 
-`__background__` 是顶层保留属性。包装前检测声明和 required 列表中的冲突。双下划线降低碰撞概率，没有协议级保留名保证。
+`__meantime__` 是顶层保留属性。包装前检测声明和 required 列表中的冲突。双下划线降低碰撞概率，没有协议级保留名保证。
 
 支持显式 object-root 输入 Schema，复制后直接添加控制属性。保留 required、additionalProperties 和所有嵌套 Schema。**不用 Type.Intersect/allOf 拼接**，因为原对象关闭额外属性时，交叉类型会拒绝新控制参数。
 
-根级组合、条件、patternProperties、propertyNames、property-count、const/enum 等需要更复杂的等价变换；PoC 拒绝包装并保留原工具。没有偷偷放松业务约束。调用原工具时再次经过 Pi 的原始参数验证。
+根级组合、条件、patternProperties、propertyNames、property-count、const/enum 等需要更复杂的等价变换；扩展拒绝包装并保留原工具。没有偷偷放松业务约束。调用原工具时再次经过 Pi 的原始参数验证。
 
 未 detach 的调用返回原生结果，不附加 task、不二次截断、不移除图片。运行时把原始内存结果交给前台，清洗/大小限制只影响存储副本；存储失败记入任务元数据，不替换已完成的前台业务结果。Bash 原样重抛执行异常。代理保留嵌套调用 hook 后的结果及最终 Outcome.isError，但不重复上报 Pi 已自动聚合的 usage。
 
-只有真正 detach 才返回 `task + result_available:false`；`bg_task result` 继续返回有预算的任务 envelope。Bash outputSchema 是原生输出与后台句柄的 union，并继承 constrainedSampling。通用代理通过 getAllTools 发现的元数据不含 outputSchema，暂用 `{}`（unknown）描述原生输出或句柄，不再虚报统一 envelope 类型。
+只有真正 detach 才返回 `task + result_available:false`；`meantime result` 继续返回有预算的任务 envelope。Bash outputSchema 是原生输出与后台句柄的 union，并继承 constrainedSampling。通用代理通过 getAllTools 发现的元数据不含 outputSchema，暂用 `{}`（unknown）描述原生输出或句柄，不再虚报统一 envelope 类型。
 
-同名 bash 的 tool_result 在前台结果或 detach 句柄返回时触发一次；detach 后晚结果不再触发该 bash hook。其他工具代理通过 ctx.executeTool 调原名，内层真实完成仍经过原工具 hook。bg_task 读取结果另经过 bg_task 自己的 hook。
+同名 bash 的 tool_result 在前台结果或 detach 句柄返回时触发一次；detach 后晚结果不再触发该 bash hook。其他工具代理通过 ctx.executeTool 调原名，内层真实完成仍经过原工具 hook。meantime 读取结果另经过 meantime 自己的 hook。
 
 ## 6. 动态注册与生命周期
 
@@ -98,7 +98,7 @@ delivery: foreground -> background
 
 最终确认同时验证 tool-call ID 和 task UUID，防止旧会话迟到事件遇到重复 call ID。快完成的前台任务不发第二次通知。
 
-通知只包含 task ID、工具名和状态，不把原始工具输出变成额外的指令消息。模型需要结果时通过 `bg_task result` 读取，仍经过该工具自己的结果管线。
+通知只包含 task ID、工具名和状态，不把原始工具输出变成额外的指令消息。模型需要结果时通过 `meantime result` 读取，仍经过该工具自己的结果管线。
 
 采用 `followUp + triggerTurn:true`；多项完成合成一条消息。同步入队失败最多重试三次。`queued`只表示 sendMessage 调用已成功返回，不等于模型必然收到。宿主接口没有投递确认，进程崩溃时不宣称 exactly-once。重启后不自动投递历史通知，避免旧任务打断新工作。
 
@@ -122,11 +122,11 @@ Bash 使用 Pi 原生进程清理；MCP/一般扩展工具仍经原名 ctx.execu
 
 不保存业务入参和环境变量。结果可能含敏感数据，因此采用私有权限，但不做自动内容脱敏；保留原工具结果钩子的脱敏结果。
 
-运行状态和完成数据分别保存；完成后从内存释放大结果。默认保留最近完成的128个任务；尚未结束的前台调用、等待通知的结果、仍有全局存活租约以及没有 endedAt 的不确定任务暂不淘汰。通知 flush 和最后租约释放后立即再次清理，无需等待新任务。显式读取结果时优先保留刚返回条目，避免同一次调用给出失效的 resultPath；后续清理事件仍可按保留策略淘汰它。恢复时不先 slice(maxRetained)，防止隐藏仍应保护的任务。元数据与对应结果一起删除，删除失败会保留内存记录并暴露 storageError/审计事件。单结果4MiB；超限存储显式截断清单。bg_task 的模型正文/结构化 inline 视图均有预算，任务列表默认10条、最多32条并支持 offset。
+运行状态和完成数据分别保存；完成后从内存释放大结果。默认保留最近完成的128个任务；尚未结束的前台调用、等待通知的结果、仍有全局存活租约以及没有 endedAt 的不确定任务暂不淘汰。通知 flush 和最后租约释放后立即再次清理，无需等待新任务。显式读取结果时优先保留刚返回条目，避免同一次调用给出失效的 resultPath；后续清理事件仍可按保留策略淘汰它。恢复时不先 slice(maxRetained)，防止隐藏仍应保护的任务。元数据与对应结果一起删除，删除失败会保留内存记录并暴露 storageError/审计事件。单结果4MiB；超限存储显式截断清单。meantime 的模型正文/结构化 inline 视图均有预算，任务列表默认10条、最多32条并支持 offset。
 
-入站工具已经构造出来的超大结果，在截断前仍可能占内存，PoC 无法用结果截断阻止上游一次性分配。用户移除整个结果目录时会失去历史数据；PoC 不自动跨会话清理其他目录。
+入站工具已经构造出来的超大结果，在截断前仍可能占内存，扩展无法用结果截断阻止上游一次性分配。用户移除整个结果目录时会失去历史数据；扩展不自动跨会话清理其他目录。
 
-原始 `usage` 在任务结果中保留。前台嵌套 usage 由 Pi 自动归到父调用，包装器不重复加一次；后台晚到 usage 的 Pi 全局汇总可能不完整。PoC 不修改 Pi 的历史费用记录。这是明确的已知宿主集成缺口，不是通过测试的指标。
+原始 `usage` 在任务结果中保留。前台嵌套 usage 由 Pi 自动归到父调用，包装器不重复加一次；后台晚到 usage 的 Pi 全局汇总可能不完整。扩展不修改 Pi 的历史费用记录。这是明确的已知宿主集成缺口，不是通过测试的指标。
 
 ## 10. 验收层级
 
@@ -141,6 +141,6 @@ Bash 使用 Pi 原生进程清理；MCP/一般扩展工具仍经原名 ctx.execu
 
 Pi 的 ui_prompt_end 可能早于权限钩子的 Promise 结算。prompt 结束后保留一轮 setImmediate 屏障，期间所有 detach、通知排队/flush 继续暂停，让原生拒绝先成为错误结果；不能用“菜单已关闭”推断“审批通过”。这覆盖本次验证的同步 select 结果后直接返回裁决，不为任意插件另加的长期异步裁决作保证。
 
-/bg cancel 必须一个完整 ID；缺失/多参数只显示当前会话列表与用法。查找仅限会话 owner，完成后的重复取消不再发 AbortSignal。/bg status 展示 ID、工具、状态、取消请求/recovered 标志，不展示内部 producerId 大 JSON。后台回执保留结构化元数据，同时告诉人可输入的命令。
+/meantime cancel 必须一个完整 ID；缺失/多参数只显示当前会话列表与用法。查找仅限会话 owner，完成后的重复取消不再发 AbortSignal。/meantime status 展示 ID、工具、状态、取消请求/recovered 标志，不展示内部 producerId 大 JSON。后台回执保留结构化元数据，同时告诉人可输入的命令。
 
-操作反馈使用公开 ui.setWidget 的同 key 字符串数组，标记 Latest background control，仅显示最近一次操作，不污染模型上下文、不抢焦点。原因是 Pi 1.3.0 info notify 的旧状态行会在重绘时引用最新共享文本；本扩展不修改该上游实现。状态列表运行中优先、每页三项，/bg status <offset> 可访问后续项；会话停止和开始均清面板。它不是永久操作历史。
+操作反馈使用公开 ui.setWidget 的同 key 字符串数组，标记 Latest background control，仅显示最近一次操作，不污染模型上下文、不抢焦点。原因是 Pi 1.3.0 info notify 的旧状态行会在重绘时引用最新共享文本；本扩展不修改该上游实现。状态列表运行中优先、每页三项，/meantime status <offset> 可访问后续项；会话停止和开始均清面板。它不是永久操作历史。

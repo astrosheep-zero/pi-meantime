@@ -26,9 +26,9 @@ const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 process.env.PI_CODING_AGENT_DIR = join(root, 'agent');
 const events = []; const checks = []; const errors = []; const calls = new Map();
 const original = 'sdk_fixture_judgment';
-const proxy = `${original}_bg`;
+const proxy = `${original}_mt`;
 const mcpOriginal = 'mcp__sdk_permissions__stubborn';
-const mcpProxy = `${mcpOriginal}_bg`;
+const mcpProxy = `${mcpOriginal}_mt`;
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 let session; let extension; let pendingChoice; let gate;
@@ -71,7 +71,7 @@ function assertReleased() {
 }
 
 try {
-  const settingsManager = sdk.SettingsManager.inMemory({ defaultTools: ['bash', 'bg_task', original] });
+  const settingsManager = sdk.SettingsManager.inMemory({ defaultTools: ['bash', 'meantime', original] });
   const loader = new sdk.DefaultResourceLoader({ cwd: root, agentDir: join(root, 'agent'), settingsManager,
     extensionFactories: [sdk.createMcpExtension(), pi => {
       pi.registerMcpServer('sdk_permissions', { command: process.execPath,
@@ -125,7 +125,7 @@ try {
   } };
   await session.bindExtensions({ mode: 'rpc', uiContext, onError: error => errors.push({ event: error.event, error: error.error }) });
   await until(() => session.getAllTools().some(tool => tool.name === mcpProxy), 'MCP proxy registration timed out', 10000);
-  session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), original, proxy, mcpOriginal, mcpProxy, 'bg_task'])]);
+  session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), original, proxy, mcpOriginal, mcpProxy, 'meantime'])]);
   await turn();
 
   for (const [rawError, finalError] of [[true, false], [false, true]]) {
@@ -136,7 +136,7 @@ try {
       assert.equal(native.isError, finalError, 'SDK final outcome is authoritative');
       assert.deepEqual(native.result.content, makeResult(rawError, 'hook-native').content);
       assert.deepEqual(native.result.structuredContent, makeResult(rawError, 'hook-native').structuredContent);
-      const wrapped = await invoke(proxy, { rawError, finalError, tag: 'hook-wrapped', __background__: 'no' });
+      const wrapped = await invoke(proxy, { rawError, finalError, tag: 'hook-wrapped', __meantime__: 'no' });
       const task = wrapped.result.structuredContent.task;
       const retained = JSON.parse(readFileSync(task.resultPath, 'utf8'));
       assert.equal(wrapped.isError, finalError);
@@ -149,7 +149,7 @@ try {
       assert.deepEqual(retained.structuredContent, makeResult(rawError, 'hook-wrapped').structuredContent);
       assert.deepEqual(wrapped.result.structuredContent.result, retained.structuredContent);
       assert.ok(wrapped.result.content.some(block => block.text === 'RAW:hook-wrapped'));
-      const fetched = await invoke('bg_task', { action: 'result', id: task.id });
+      const fetched = await invoke('meantime', { action: 'result', id: task.id });
       assert.equal(fetched.isError, finalError, 'explicit retained-result lookup uses final SDK verdict');
       assert.deepEqual(fetched.result.structuredContent.result, retained.structuredContent);
       await turn(); assertReleased();
@@ -169,7 +169,7 @@ try {
     nativeController.abort();
     const native = await nativePending;
     const wrappedController = new AbortController();
-    const wrappedPending = invoke(proxy, { rawError: true, tag: `${tag}-wrapped`, waitForAbort: true, __background__: 'no',
+    const wrappedPending = invoke(proxy, { rawError: true, tag: `${tag}-wrapped`, waitForAbort: true, __meantime__: 'no',
       ...(finalError === undefined ? {} : { finalError }) }, { signal: wrappedController.signal });
     await until(() => calls.has(`${tag}-wrapped`), 'wrapped body did not start');
     wrappedController.abort();
@@ -191,7 +191,7 @@ try {
     gate = { name: proxy };
     const beforeTasks = tasks().length; const beforeCalls = bodyCount(); const beforeEvents = events.length;
     let settled = false;
-    const pending = invoke(proxy, { rawError: false, tag: 'outer-denied', __background__: 'yes' }).then(value => { settled = true; return value; });
+    const pending = invoke(proxy, { rawError: false, tag: 'outer-denied', __meantime__: 'yes' }).then(value => { settled = true; return value; });
     await until(() => pendingChoice, 'outer permission selector did not open');
     await delay(50);
     assert.equal(settled, false); assert.equal(tasks().length, beforeTasks); assert.equal(bodyCount(), beforeCalls);
@@ -207,7 +207,7 @@ try {
     gate = { name: original };
     const beforeCalls = bodyCount(); const beforeEvents = events.length;
     let settled = false;
-    const pending = invoke(proxy, { rawError: false, tag: 'inner-denied', __background__: 'yes' }).then(value => { settled = true; return value; });
+    const pending = invoke(proxy, { rawError: false, tag: 'inner-denied', __meantime__: 'yes' }).then(value => { settled = true; return value; });
     await until(() => pendingChoice, 'nested permission selector did not open');
     await delay(50);
     assert.equal(settled, false, 'explicit background must not resolve while approval is pending');
@@ -236,7 +236,7 @@ try {
     const marker = join(root, 'mcp-forbidden-side-effect');
     const beforeMcpCalls = mcpCallCount();
     let settled = false;
-    const pending = invoke(mcpProxy, { ms: 1, marker, __background__: 'yes' }).then(value => { settled = true; return value; });
+    const pending = invoke(mcpProxy, { ms: 1, marker, __meantime__: 'yes' }).then(value => { settled = true; return value; });
     await until(() => pendingChoice, 'MCP permission selector did not open');
     await delay(50); assert.equal(settled, false); assert.equal(existsSync(marker), false);
     pendingChoice('No'); const outcome = await pending;
@@ -254,7 +254,7 @@ try {
   await check('approved_mcp_request_reuses_capacity_and_runs_once', async () => {
     gate = { name: mcpOriginal };
     const marker = join(root, 'mcp-approved-side-effect'); const beforeMcpCalls = mcpCallCount();
-    const pending = invoke(mcpProxy, { ms: 60, marker, __background__: 'yes' });
+    const pending = invoke(mcpProxy, { ms: 60, marker, __meantime__: 'yes' });
     await until(() => pendingChoice, 'MCP approval selector did not open');
     assert.equal(mcpCallCount(), beforeMcpCalls);
     pendingChoice('Yes'); const outcome = await pending;
@@ -271,7 +271,7 @@ try {
     gate = { name: original }; const beforeCalls = bodyCount(); const beforeEvents = events.length;
     session.extensionRunner.setUIContext(undefined, 'print');
     try {
-      const outcome = await invoke(proxy, { rawError: false, tag: 'no-ui-denied', __background__: 'no' });
+      const outcome = await invoke(proxy, { rawError: false, tag: 'no-ui-denied', __meantime__: 'no' });
       await turn();
       assert.equal(outcome.isError, true); assert.equal(bodyCount(), beforeCalls); assertReleased();
       assert.ok(outcome.result.content.some(block => block.text?.includes('FIXTURE_NO_UI_DENY')));
@@ -283,7 +283,7 @@ try {
   await check('plain_tool_call_block_is_not_claimed_as_permission_ui', async () => {
     gate = { name: original, plainBlock: true };
     const beforeEvents = events.length; const beforeCalls = bodyCount();
-    const outcome = await invoke(proxy, { rawError: false, tag: 'hook-block', __background__: 'no' });
+    const outcome = await invoke(proxy, { rawError: false, tag: 'hook-block', __meantime__: 'no' });
     await turn();
     assert.equal(outcome.isError, true); assert.equal(bodyCount(), beforeCalls); assertReleased();
     assert.equal(events.slice(beforeEvents).filter(event => event.type.startsWith('ui_prompt_')).length, 0);
