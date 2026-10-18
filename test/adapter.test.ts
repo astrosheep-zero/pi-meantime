@@ -1,3 +1,6 @@
+import { initTheme, ToolExecutionComponent } from '@earendil-works/pi-coding-agent';
+import type { ToolRenderers } from '@earendil-works/pi-coding-agent';
+import { Text } from '@earendil-works/pi-tui';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -305,6 +308,76 @@ test('global nested sequential queue is respected; a queued request cannot claim
     a.resolve(ok().result); const next = await second; assert.equal(snapshot(next).state, 'running');
   } finally { a.resolve(ok().result); b.resolve(ok().result); await h.close(); }
 });
+test('short management receipts retain structured data and cancellation semantics', async () => {
+  const pending = deferred<Result>();
+  const h = await setup([basicTool('mcp__t__receipt', () => pending.promise)]);
+  const text = (result: Result) => result.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+  try {
+    const handle = await h.pi.call('mcp__t__receipt_mt', { __meantime__: 'yes' });
+    const task = snapshot(handle);
+    assert.match(text(handle.result), new RegExp(`^Meantime ${task.id} running in background`));
+    const page = await h.pi.call('meantime', { action: 'list', limit: 1 });
+    const data = page.result.structuredContent as unknown as { tasks: Snapshot[]; next_offset: null; total: number };
+    assert.equal(data.tasks[0]!.id, task.id);
+    assert.deepEqual(data, JSON.parse(JSON.stringify(page.result.details)));
+    assert.match(text(page.result), new RegExp(`^${task.id} \\| mcp__t__receipt \\| running \\| \\d+s$`));
+    const status = await h.pi.call('meantime', { action: 'status', id: task.id });
+    assert.deepEqual(status.result.structuredContent, { task: JSON.parse(JSON.stringify(status.result.details)) });
+    assert.ok(!text(status.result).includes('{'));
+    const cancelled = await h.pi.call('meantime', { action: 'cancel', id: task.id });
+    assert.match(text(cancelled.result), /cancellation requested; native outcome may not be settled/);
+    assert.deepEqual(cancelled.result.structuredContent, { task: JSON.parse(JSON.stringify(cancelled.result.details)) });
+    const missing = await h.pi.call('meantime', { action: 'status', id: 'missing' });
+    assert.equal(missing.isError, true);
+    assert.match(text(missing.result), /No task with that id in this session/);
+  } finally { pending.resolve(ok().result); await h.close(); }
+});
+
+test('public renderer expands task details and delegates native foreground results', async () => {
+  const h = await setup();
+  type Render = NonNullable<ToolRenderers['renderResult']>;
+  const theme = { fg: (_color: string, value: string) => value } as Parameters<Render>[2];
+  const context = {} as Parameters<Render>[3];
+  const task: Snapshot = { id: 'mt_sample', tool: 'bash', kind: 'bash', state: 'failed',
+    command: 'printf first\\nprintf second', createdAt: 1000, endedAt: 6000,
+    mode: 'yes', delivery: 'background', localRunning: false, notification: 'observed',
+    progress: 'last update', isError: true, resultPath: '/tmp/sample.result.json' };
+  try {
+    const resolve = h.pi.renderers[0]!;
+    const renderer = resolve('meantime', () => undefined)!;
+    const result: Result = { content: [], details: { task: { ...task, exitCode: 7 } } };
+    const render = (expanded: boolean) => renderer.renderResult!(result, { expanded, isPartial: false }, theme, context).render(200).join('\n');
+    assert.equal(render(false).trimEnd(), 'mt_sample | bash | failed | 5s');
+    const expanded = render(true);
+    for (const expected of ['Command: printf first', 'printf second', 'Progress: last update', 'Exit: 7', 'isError: true', 'Output: /tmp/sample.result.json']) assert.ok(expanded.includes(expected), expected);
+    for (const name of ['bash', 'mcp__t__one_mt']) {
+      const native = new Text('NATIVE', 0, 0);
+      const managed = resolve(name, () => ({ renderResult: () => native }))!;
+      assert.equal(managed.renderResult!(ok().result, { expanded: false, isPartial: false }, theme, context), native);
+      // Real Pi only passes content/details to result renderers.
+      const handle = { content: result.content, details: task };
+      assert.match(managed.renderResult!(handle, { expanded: false, isPartial: false }, theme, context).render(200).join('\n'), /mt_sample \| bash \| failed \| 5s/);
+    }
+    assert.equal(resolve('read', () => undefined), undefined);
+    // Exercise Pi's actual fallback and wrapper, not a hand-written rendering
+    // expectation: collapsed previews, expansion hints and expanded output match.
+    initTheme('dark', false);
+    const ui = { requestRender() {} } as ConstructorParameters<typeof ToolExecutionComponent>[5];
+    const makeComponent = (renderers: ToolRenderers) => new ToolExecutionComponent(
+      'mcp__t__one_mt', 'foreground', {}, { showImages: false }, renderers, ui, process.cwd());
+    const plain = makeComponent({});
+    const managed = makeComponent(resolve('mcp__t__one_mt', () => ({}))!);
+    const foreground = { content: [{ type: 'text', text: Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n') }], details: undefined, isError: false };
+    plain.updateResult(foreground); managed.updateResult(foreground);
+    assert.deepEqual(managed.render(200), plain.render(200));
+    assert.ok(!managed.render(200).join('\n').includes('line 11'));
+    assert.match(managed.render(200).join('\n'), /20 more lines/);
+    plain.setExpanded(true); managed.setExpanded(true);
+    assert.deepEqual(managed.render(200), plain.render(200));
+    assert.match(managed.render(200).join('\n'), /line 30/);
+  } finally { await h.close(); }
+});
+
 test('management results are paginated rather than dumping the full registry into model context', async () => {
   const h = await setup([basicTool('mcp__t__one', async () => { await sleep(10); return ok().result; })]);
   try {
@@ -315,6 +388,7 @@ test('management results are paginated rather than dumping the full registry int
     const page = await h.pi.call('meantime', { action: 'list', limit: 5 });
     const value = page.result.structuredContent as { tasks: unknown[]; next_offset: number; total: number };
     assert.equal(value.tasks.length, 5); assert.equal(value.next_offset, 5); assert.equal(value.total, 12);
+    assert.match(page.result.content.filter(b => b.type === 'text').map(b => b.text).join('\n'), /\nMore: offset=5$/);
   } finally { await h.close(); }
 });
 test('multi-task wait exposes settled and pending tasks, validates ids, and shares one inline text budget', async () => {

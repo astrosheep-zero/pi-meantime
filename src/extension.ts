@@ -1,5 +1,7 @@
 import { resolve } from 'node:path';
-import { matchesKey, SelectList, truncateToWidth, visibleWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
+import { keyHint } from '@earendil-works/pi-coding-agent';
+import { Text, getCapabilities, getImageDimensions, imageFallback, stripTerminalSequences,
+  matchesKey, SelectList, truncateToWidth, visibleWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
 import type { Config } from './config.ts';
 import type { BashTool, Context, EventHandler, EventMap, Json, Loadout, PiHost, Result, Tool, ToolContext, ToolInfo } from './protocol.ts';
 import { CONTROL, MARKER, decorateSchema, fingerprint, isRecord, matches, proxyName, splitControl } from './schema.ts';
@@ -24,7 +26,7 @@ function owner(ctx: Context): string {
 function json(value: unknown): Json { return JSON.parse(JSON.stringify(value)) as Json; }
 function foregroundOrHandle(view: View, nested: boolean): Result {
   if (view.kind === 'handle') return {
-    content: [{ type: 'text', text: `Task ${view.task.id}: ${view.task.state}; execution continues independently of this wait. Do not restart or poll in a loop. Completion will be announced. In the TUI use /meantime status or /meantime cancel ${view.task.id}; the model can use meantime for status/result/cancel.` }],
+    content: [{ type: 'text', text: `Meantime ${view.task.id} running in background; execution continues independently of this wait. Do not restart or poll in a loop. Completion will be announced. In the TUI use /meantime status or /meantime cancel ${view.task.id}; the model can use meantime for status/result/cancel.` }],
     details: view.task,
     structuredContent: { task: json(view.task), result_available: false },
   };
@@ -42,6 +44,12 @@ function commandPreview(command: string): string {
 }
 function taskLabel(task: Snapshot): string {
   return `${task.id} | ${task.tool} | ${task.state}${task.command !== undefined ? ` | ${commandPreview(task.command)}` : ''}`;
+}
+function elapsed(task: Snapshot): string {
+  return `${Math.max(0, Math.floor(((task.endedAt ?? Date.now()) - task.createdAt) / 1000))}s`;
+}
+function taskReceipt(task: Snapshot): string {
+  return `${taskLabel(task)} | ${elapsed(task)}${task.cancelRequestedAt ? ' | cancellation requested; native outcome may not be settled' : ''}`;
 }
 const TAIL_BYTES = 1024;
 /** Last ~1KB of a finished task's text output, fenced as untrusted data. */
@@ -317,6 +325,55 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     } finally { reconciling = false; }
   }
 
+  pi.registerToolRenderer((name, next) => {
+    const native = next();
+    if (name !== 'meantime' && name !== 'bash' && !name.endsWith('_mt')) return native;
+    return {
+      ...native,
+      renderResult(result, renderOptions, theme, context) {
+        const details = result.details;
+        // Pi projects renderer input to content/details; structuredContent is
+        // model/programmatic data and is not passed to this callback.
+        const handle = isRecord(details) && details.delivery === 'background'
+          && typeof details.id === 'string' && typeof details.createdAt === 'number';
+        if (name !== 'meantime' && !handle) {
+          if (native?.renderResult) return native.renderResult(result, renderOptions, theme, context);
+          // Match Pi's generic result preview for tools without a renderer.
+          const blocks = result.content.filter(block => block.type === 'text').map(block =>
+            stripTerminalSequences(block.text).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\uFFF9-\uFFFB\r]/g, ''));
+          if (!getCapabilities().images || !context.showImages) {
+            blocks.push(...result.content.filter(block => block.type === 'image').map(block =>
+              imageFallback(block.mimeType, getImageDimensions(block.data, block.mimeType) ?? undefined)));
+          }
+          const lines = blocks.join('\n').split('\n');
+          const shown = renderOptions.expanded ? lines : lines.slice(0, 10);
+          const remaining = lines.length - shown.length;
+          const text = shown.map(line => theme.fg('toolOutput', line)).join('\n');
+          return new Text(text + (remaining ? `${theme.fg('muted', `\n... (${remaining} more lines,`)} ${keyHint('app.tools.expand', 'to expand')}${theme.fg('muted', ')')}` : ''), 0, 0);
+        }
+        const tasks = isRecord(details) && Array.isArray(details.tasks) ? details.tasks
+          : isRecord(details) && isRecord(details.task) ? [details.task]
+          : isRecord(details) && typeof details.id === 'string' ? [details] : [];
+        if (!tasks.length) return new Text(result.content.filter(b => b.type === 'text').map(b => b.text).join('\n'), 0, 0);
+        const lines = tasks.map(value => {
+          const task = value as Snapshot;
+          const summary = `${task.id} | ${task.tool} | ${task.state} | ${elapsed(task)}`;
+          if (!renderOptions.expanded) return summary;
+          return [summary,
+            task.command !== undefined ? `Command: ${task.command}` : '',
+            task.progress !== undefined ? `Progress: ${task.progress}` : '',
+            value.exitCode !== undefined ? `Exit: ${value.exitCode}` : '',
+            task.isError !== undefined ? `isError: ${task.isError}` : '',
+            task.resultPath ? `Output: ${task.resultPath}` : '',
+            task.cancelRequestedAt ? 'Cancellation requested; the native outcome may not be settled.' : '',
+          ].filter(Boolean).join('\n');
+        });
+        if (isRecord(details) && details.next_offset != null) lines.push(`More: offset=${details.next_offset}`);
+        return new Text(theme.fg('toolOutput', cleanText(lines.join('\n'))), 0, 0);
+      },
+    };
+  });
+
   const base = options.baseBash ?? options.makeBash(process.cwd());
   if (base.name !== 'bash') throw new Error('makeBash must return Pi\'s built-in bash definition');
   pi.registerTool({
@@ -367,7 +424,8 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
         const limit = Number.isInteger(params.limit) && Number(params.limit) > 0 ? Math.min(32, Number(params.limit)) : 10;
         const all = r.list(); const tasks = all.slice(offset, offset + limit).map(t => ({ ...t, command: t.command === undefined ? undefined : commandPreview(t.command), progress: t.progress?.slice(0, 256) }));
         const page = { tasks, next_offset: offset + limit < all.length ? offset + limit : null, total: all.length };
-        const result = textResult(JSON.stringify(page), page); result.structuredContent = json(page); return result;
+        const text = tasks.map(taskReceipt).join('\n') || 'No meantime tasks.';
+        const result = textResult(`${text}${page.next_offset !== null ? `\nMore: offset=${page.next_offset}` : ''}`, page); result.structuredContent = json(page); return result;
       }
       if (params.action === 'wait') {
         if ((params.id !== undefined) === (params.ids !== undefined)) throw new Error('wait requires exactly one of id or ids');
@@ -397,7 +455,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       }
       const task = params.action === 'cancel' ? r.cancel(params.id) : params.action === 'status' ? r.get(params.id) : undefined;
       if (!task) throw new Error('Unknown meantime action');
-      return { ...textResult(JSON.stringify(task), task), structuredContent: { task: json(task) } };
+      return { ...textResult(taskReceipt(task), task), structuredContent: { task: json(task) } };
     },
   });
 

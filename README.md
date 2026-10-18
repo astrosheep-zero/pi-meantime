@@ -99,6 +99,8 @@ meantime(action, id?, ids?, mode?, timeout_ms?, offset?, limit?)
 
 对于 `codemode`/`deferred`，原工具和 `_mt` 代理可能都列在 Codemode 的候选工具中；默认 `blockOriginalCalls` 阻止通过原名绕过，但不会从 Codemode 列表物理移除原工具。
 
+`list` / `status` / `cancel` 向模型返回简短任务行（含耗时），分页时附 `More: offset=N`；结构化数据仍保留在 `structuredContent` 和 `details` 中。TUI 中任务默认显示 ID、工具、状态和耗时，展开后显示已有的完整命令、进度、错误标志及输出路径。托管调用只有返回后台句柄时使用此视图，前台结果仍保留原生行为。
+
 System prompt 的 `meantime` 章节简要说明：`_mt` 工具与原工具执行相同操作、接受相同业务参数，只多一个可选的 `__meantime__` 参数（`auto` / `yes` / `no`）。
 
 原 MCP Tool 仍可被内部 `ctx.executeTool(originalName, args, {signal})` 调用。代理名称不同，避免同名递归。
