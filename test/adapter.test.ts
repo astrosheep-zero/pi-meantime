@@ -317,3 +317,36 @@ test('management results are paginated rather than dumping the full registry int
     assert.equal(value.tasks.length, 5); assert.equal(value.next_offset, 5); assert.equal(value.total, 12);
   } finally { await h.close(); }
 });
+test('multi-task wait exposes settled and pending tasks, validates ids, and shares one inline text budget', async () => {
+  const a = deferred<Result>(), b = deferred<Result>();
+  const h = await setup([basicTool('mcp__t__a', () => a.promise), basicTool('mcp__t__b', () => b.promise)]);
+  try {
+    const first = snapshot(await h.pi.call('mcp__t__a_mt', { __meantime__: 'yes' }));
+    const second = snapshot(await h.pi.call('mcp__t__b_mt', { __meantime__: 'yes' }));
+    const waiting = h.pi.call('meantime', { action: 'wait', ids: [first.id.slice(3), second.id], mode: 'any' });
+    a.resolve(ok('A'.repeat(20 * 1024)).result);
+    const any = await waiting;
+    assert.equal(any.isError, false);
+    const value = any.result.structuredContent as { tasks: { id: string; result_available: boolean }[]; pending: { id: string }[] };
+    assert.deepEqual(value.tasks.map(task => [task.id, task.result_available]), [[first.id, true]]);
+    assert.deepEqual(value.pending.map(task => task.id), [second.id]);
+    assert.match(JSON.stringify(any.result.content), new RegExp(`Pending: ${second.id}`));
+    for (const args of [{}, { id: first.id, ids: [second.id] }, { ids: [] }, { ids: [first.id, 'missing'] }]) {
+      const invalid = await h.pi.call('meantime', { action: 'wait', ...args });
+      assert.equal(invalid.isError, true);
+    }
+    const timedOut = await h.pi.call('meantime', { action: 'wait', ids: [first.id, second.id], timeout_ms: 5 });
+    assert.equal((timedOut.result.structuredContent as typeof value).pending[0]!.id, second.id);
+    b.resolve(ok('B'.repeat(20 * 1024)).result);
+    const all = await h.pi.call('meantime', { action: 'wait', ids: [second.id, first.id] });
+    assert.deepEqual((all.result.structuredContent as typeof value).tasks.map(task => task.id), [second.id, first.id]);
+    assert.deepEqual((all.result.structuredContent as typeof value).pending, []);
+    const blocks = all.result.content.filter(block => block.type === 'text').map(block => block.text);
+    assert.equal(blocks.filter(text => /^(A+|B+)$/.test(text)).reduce((bytes, text) => bytes + Buffer.byteLength(text), 0), 32 * 1024);
+    const text = blocks.join('\n');
+    assert.ok(text.indexOf(`Task ${second.id}`) < text.indexOf(`Task ${first.id}`));
+    const single = await h.pi.call('meantime', { action: 'wait', id: first.id });
+    assert.equal(snapshot(single).id, first.id);
+    assert.equal((single.result.structuredContent as { result_available: boolean }).result_available, true);
+  } finally { a.resolve(ok().result); b.resolve(ok().result); await h.close(); }
+});

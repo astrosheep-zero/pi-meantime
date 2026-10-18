@@ -225,12 +225,30 @@ export class TaskRuntime {
   async wait(id: string, timeoutMs: number, signal?: AbortSignal): Promise<{ task: Snapshot; result?: Result }> {
     signal?.throwIfAborted();
     const task = this.lookup(id);
-    if (task.meta.localRunning && task.done) {
+    await this.waitUntil(task.meta.localRunning ? task.done : undefined, timeoutMs, signal);
+    return this.result(task.meta.id);
+  }
+  async waitMany(ids: string[], mode: 'any' | 'all', timeoutMs: number, signal?: AbortSignal): Promise<{ tasks: { task: Snapshot; result?: Result }[]; pending: Snapshot[] }> {
+    signal?.throwIfAborted();
+    // Resolve every prefix before waiting or acknowledging any result.
+    const tasks = [...new Set(ids.map(id => this.lookup(id)))];
+    const done = tasks.map(task => task.meta.localRunning ? task.done : undefined);
+    await this.waitUntil(mode === 'any' ? Promise.race(done) : Promise.all(done), timeoutMs, signal);
+    const settled: { task: Snapshot; result?: Result }[] = [], pending: Snapshot[] = [];
+    for (const task of tasks) {
+      const snapshot = this.get(task.meta.id);
+      if (!snapshot.localRunning && snapshot.endedAt !== undefined) settled.push(this.result(task.meta.id));
+      else pending.push(snapshot);
+    }
+    return { tasks: settled, pending };
+  }
+  private async waitUntil(done: Promise<unknown> | undefined, timeoutMs: number, signal?: AbortSignal): Promise<void> {
+    if (done) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       let onAbort: (() => void) | undefined;
       try {
         await Promise.race([
-          task.done,
+          done,
           new Promise<void>(resolve => {
             let remaining = timeoutMs;
             const schedule = () => {
@@ -251,7 +269,6 @@ export class TaskRuntime {
         clearTimeout(timer); if (onAbort) signal?.removeEventListener('abort', onAbort);
       }
     }
-    return this.result(task.meta.id);
   }
   // A late producer writes only its completion file, never another session's index.
   private refresh(task: Task): void {

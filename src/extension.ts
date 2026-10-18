@@ -10,7 +10,7 @@ export interface InstallOptions { config: Config; baseBash?: BashTool; makeBash(
 interface Pair { original: string; name: string; signature: string; definition: Tool; enabled: boolean }
 interface Ticket { original: string; started: boolean; runtime: TaskRuntime }
 const RESULT_SCHEMA = {
-  type: 'object', properties: { task: { type: 'object' }, result: {}, tasks: { type: 'array', items: { type: 'object' } }, result_available: { type: 'boolean' } },
+  type: 'object', properties: { task: { type: 'object' }, result: {}, tasks: { type: 'array', items: { type: 'object' } }, pending: { type: 'array', items: { type: 'object' } }, result_available: { type: 'boolean' } },
 };
 function textResult(text: string, details?: unknown, isError = false): Result {
   return { content: [{ type: 'text', text }], details, isError };
@@ -55,20 +55,20 @@ function outputTail(store: TaskStore, task: Snapshot): string {
     return `\n<untrusted-output-tail${start > 0 || task.resultTruncated ? ' truncated' : ''}>\n${tail}\n</untrusted-output-tail>`;
   } catch { return ''; }
 }
-function storedResult(task: Snapshot, source: Result): Result {
+function storedResult(task: Snapshot, source: Result, budget = { remaining: 32 * 1024 }): Result {
   // Bounded context, persisted original, including structured/image data when it
   // fits the configured retention cap. Do not silently lose where full data lives.
-  let budget = 32 * 1024;
+  const available = budget.remaining;
   const content = source.content.flatMap(block => {
     if (block.type !== 'text') return []; // Images stay in the result file; no accidental huge prompts.
-    const text = truncateUtf8(cleanText(block.text), budget);
-    budget -= Buffer.byteLength(text);
+    const text = truncateUtf8(cleanText(block.text), budget.remaining);
+    budget.remaining -= Buffer.byteLength(text);
     return text ? [{ type: 'text' as const, text }] : [];
   });
   content.unshift({ type: 'text', text: `Task ${task.id}: ${task.state}. ${task.cancelRequestedAt ? 'A cancellation was requested; the native outcome is shown below. ' : ''}Result file: ${task.resultPath ?? 'unavailable'}.` });
   const hadImages = source.content.some(b => b.type === 'image');
   const rawTextBytes = Buffer.byteLength(source.content.filter(b => b.type === 'text').map(b => b.text).join(''));
-  if (hadImages || rawTextBytes > 32 * 1024) content.push({ type: 'text', text: 'Inline view omits image blocks or excess text. The stored result contains retained original blocks and structured data.' });
+  if (hadImages || rawTextBytes > available) content.push({ type: 'text', text: 'Inline view omits image blocks or excess text. The stored result contains retained original blocks and structured data.' });
   return {
     content, details: { task },
     structuredContent: {
@@ -278,10 +278,12 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   });
   pi.registerTool({
     name: 'meantime', label: 'Background tasks', exposure: 'direct',
-    description: 'Inspect background tasks in this Pi session. Actions: list, status, result, cancel, wait. wait blocks until the task settles or timeout_ms passes (default 30000, no upper limit), then returns like result. Other actions are non-blocking; never poll in a loop. Ids accept a unique prefix. Cancellation requests do not prove a remote operation was rolled back.',
+    description: 'Inspect background tasks in this Pi session. Actions: list, status, result, cancel, wait. wait blocks until the task settles or timeout_ms passes (default 30000, no upper limit), then returns like result. For multiple tasks, use ids with mode any or all (default all); returns settled results and pending tasks. Other actions are non-blocking; never poll in a loop. Ids accept a unique prefix. Cancellation requests do not prove a remote operation was rolled back.',
     parameters: { type: 'object', properties: {
       action: { type: 'string', enum: ['list', 'status', 'result', 'cancel', 'wait'] },
       id: { type: 'string' },
+      ids: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 32 },
+      mode: { type: 'string', enum: ['any', 'all'] },
       timeout_ms: { type: 'integer', minimum: 0 },
       offset: { type: 'integer', minimum: 0 },
       limit: { type: 'integer', minimum: 1, maximum: 32 },
@@ -295,6 +297,23 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
         const all = r.list(); const tasks = all.slice(offset, offset + limit).map(t => ({ ...t, command: t.command === undefined ? undefined : commandPreview(t.command), progress: t.progress?.slice(0, 256) }));
         const page = { tasks, next_offset: offset + limit < all.length ? offset + limit : null, total: all.length };
         const result = textResult(JSON.stringify(page), page); result.structuredContent = json(page); return result;
+      }
+      if (params.action === 'wait') {
+        if ((params.id !== undefined) === (params.ids !== undefined)) throw new Error('wait requires exactly one of id or ids');
+        if (params.mode !== undefined && params.mode !== 'any' && params.mode !== 'all') throw new Error('mode must be any or all');
+        if (params.ids !== undefined) {
+          if (!Array.isArray(params.ids) || params.ids.length < 1 || params.ids.length > 32 || !params.ids.every(id => typeof id === 'string')) throw new Error('ids must contain 1 to 32 task ids');
+          const timeout = Number.isInteger(params.timeout_ms) && Number(params.timeout_ms) >= 0 ? Number(params.timeout_ms) : 30_000;
+          const { tasks, pending } = await r.waitMany(params.ids as string[], params.mode === 'any' ? 'any' : 'all', timeout, signal);
+          const budget = { remaining: 32 * 1024 };
+          const views = tasks.map(({ task, result }) => result ? storedResult(task, result, budget) : textResult(`Task ${task.id}: ${task.state}. Result is not available. Do not relaunch the operation.`));
+          const page = { tasks: tasks.map(({ task, result }) => ({ ...task, result_available: result !== undefined })), pending };
+          return {
+            content: [...views.flatMap(view => view.content), { type: 'text', text: `Pending: ${pending.map(task => task.id).join(', ') || '(none)'}` }],
+            details: page, structuredContent: json(page),
+            isError: views.some(view => view.isError),
+          };
+        }
       }
       if (typeof params.id !== 'string') throw new Error('id is required for this action');
       if (params.action === 'result' || params.action === 'wait') {

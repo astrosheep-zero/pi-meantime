@@ -67,6 +67,7 @@ meantime({ action: "list" })
 meantime({ action: "status", id: "mt_1234abcd" })
 meantime({ action: "result", id: "1234" }) // 唯一前缀，可省 mt_
 meantime({ action: "wait", id: "1234", timeout_ms: 30000 })
+meantime({ action: "wait", ids: ["1234", "mt_5678abcd"], mode: "any", timeout_ms: 30000 })
 meantime({ action: "cancel", id: "mt_1234abcd" })
 ```
 
@@ -93,7 +94,7 @@ Ctrl+B 保留 Pi 编辑器原有用途。本扩展 使用 **Ctrl+Shift+B**，终
 ```text
 bash(command, timeout?, __meantime__?)
 mcp__server__operation_mt(原业务参数..., __meantime__?)
-meantime(action, id?, timeout_ms?, offset?, limit?)
+meantime(action, id?, ids?, mode?, timeout_ms?, offset?, limit?)
 ```
 
 对于 `codemode`/`deferred`，原工具和 `_mt` 代理可能都列在 Codemode 的候选工具中；默认 `blockOriginalCalls` 阻止通过原名绕过，但不会从 Codemode 列表物理移除原工具。
@@ -115,6 +116,8 @@ System prompt 的 `meantime` 章节简要说明：`_mt` 工具与原工具执行
 ```json
 {"task":{"id":"mt_1234abcd","state":"completed"},"result_available":true,"result":{"original":"structured result"}}
 ```
+
+`wait` 也接受 `ids`（1–32 个任务 ID 或唯一前缀），与 `id` 必须二选一。`mode: "all"`（默认）等待所有任务，`mode: "any"` 等待任意一个任务结束；两者均受 `timeout_ms` 限制，中止只停止等待、不取消任务。已结束的结果按传入 ID 顺序拼接，共享单次结果的 32KB 正文预算，末尾 `Pending: ...` 列出尚未结束的任务。结构化输出为 `{ tasks: [...任务元数据及 result_available], pending: [...任务元数据] }`；成功读取确认已读，任何 ID 未知或前缀不唯一时在等待和确认前报错。
 
 Bash 输出声明为原生输出与句柄的 union；通用代理暂声明 unknown，因为发现接口不提供原输出 Schema。`meantime` 仍使用任务 envelope。
 
