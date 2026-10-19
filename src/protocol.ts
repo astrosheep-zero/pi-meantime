@@ -141,6 +141,6 @@ export interface PiHost {
     description: string; handler: (args: string, ctx: Context) => Promise<void>;
   }): void;
   sendMessage(message: { customType: string; content: string; display: boolean; details?: unknown },
-    options: { deliverAs: 'followUp'; triggerTurn: true }): void;
+    options: { deliverAs: 'steer'; triggerTurn: true }): void;
   appendEntry(customType: string, data?: unknown): void;
 }

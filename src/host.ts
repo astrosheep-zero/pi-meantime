@@ -7,6 +7,7 @@ import { decorateSchema, isRecord, matches, splitControl } from './schema.ts';
 
 /** Pi 1.3 port: only the shared before/after methods are private seams. */
 export interface HostSession {
+  readonly isStreaming: boolean;
   getAllTools: PiHost['getAllTools'];
   getToolDefinition(name: string): Tool | undefined;
   readonly agent: { toolExecution?: 'parallel' | 'sequential' };

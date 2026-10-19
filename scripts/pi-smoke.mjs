@@ -33,7 +33,7 @@ if (sdk) {
     for (const scenario of ['outer-approval', 'outer-denial', 'codemode-startup', 'body', 'disabled', 'execution-start']) {
       await earlySteerRace(sdk, root, scenario);
     }
-    for (const scenario of ['in-flight', 'before-wait', 'unobserved', 'partial', 'timeout', 'compact', 'compact-cancel', 'tree', 'tree-cancel']) {
+    for (const scenario of ['active-tool', 'in-flight', 'before-wait', 'unobserved', 'partial', 'timeout', 'compact', 'compact-cancel', 'tree', 'tree-cancel']) {
       await completionRace(sdk, root, scenario);
     }
     await controlGuidance(sdk, root);
@@ -356,7 +356,7 @@ async function completionRace(sdk, root, scenario) {
   const trace = [], waitResults = [];
   let extension, session, requests = 0;
   const compact = scenario.startsWith('compact'), tree = scenario.startsWith('tree');
-  const unread = scenario === 'unobserved' || compact || tree;
+  const unread = scenario === 'unobserved' || scenario === 'active-tool' || compact || tree;
   const settingsManager = sdk.SettingsManager.inMemory({ defaultTools: ['bash', 'meantime'],
     compaction: { enabled: false, keepRecentTokens: 1, reserveTokens: 1024 } });
   const loader = new sdk.DefaultResourceLoader({
@@ -376,14 +376,16 @@ async function completionRace(sdk, root, scenario) {
             let calls = [];
             if (n === 1) {
               calls = [{ id: 'start-a', name: 'bash', arguments: { command: 'sleep 0.12; printf RACE_A' } }];
-              if (scenario === 'partial') calls.push({ id: 'start-b', name: 'bash', arguments: { command: 'sleep 0.12; printf RACE_B' } });
+              if (scenario === 'partial') calls.push({ id: 'start-b', name: 'bash', arguments: { command: 'sleep 0.06; printf RACE_B' } });
+            } else if (n === 2 && scenario === 'active-tool') {
+              calls = [{ id: 'foreground-work', name: 'bash', arguments: { command: 'sleep 0.35; printf FOREGROUND_DONE', __background__: 'no' } }];
             } else if (n === 2 && !unread) {
               // The second request is already streaming when the producer ends.
               // Delay tool selection to put completion handoff before wait's ack.
-              if (scenario === 'before-wait' || scenario === 'partial') await new Promise(r => setTimeout(r, 350));
+              if (scenario === 'before-wait') await new Promise(r => setTimeout(r, 350));
               const task = extension.inspect().tasks.find(t => t.command?.includes('RACE_A'));
               trace.push(`before wait: notification=${task.notification}, running=${task.localRunning}`);
-              assert.equal(task.localRunning, scenario === 'in-flight' || scenario === 'timeout');
+              assert.equal(task.localRunning, scenario === 'in-flight' || scenario === 'timeout' || scenario === 'partial');
               calls = [{ id: 'collect', name: 'meantime', arguments: {
                 action: 'wait', id: task.id, timeout: scenario === 'timeout' ? 0 : 2,
               } }];
@@ -432,11 +434,12 @@ async function completionRace(sdk, root, scenario) {
         return scenario === 'tree-cancel' ? { cancel: true } : undefined;
       });
       pi.on('tool_execution_end', event => {
-        if (event.toolName === 'bash') {
+        if (event.toolName === 'bash' && event.toolCallId !== 'foreground-work') {
           trace.push(`handle ${event.toolCallId}: ${event.result.structuredContent?.task?.detachReason}`);
           assert.equal(event.result.structuredContent?.task?.detachReason, 'timeout');
         }
         if (event.toolName === 'meantime') {
+          if (scenario === 'partial') assert.equal(extension.inspect().tasks.find(t => t.command?.includes('RACE_B')).notification, 'queued', 'B queues while wait(A) is in progress');
           waitResults.push(event.result);
           trace.push(`wait returned: available=${event.result.structuredContent?.result_available}`);
         }
@@ -494,9 +497,14 @@ async function completionRace(sdk, root, scenario) {
       assert.equal(waitResults[0].structuredContent.result_available, true);
       assert.equal(waitResults[0].structuredContent.result.output, 'RACE_A');
     }
-    assert.equal(messages.length, observed && scenario !== 'partial' ? 0 : 1);
-    assert.equal(requests, scenario === 'timeout' || scenario === 'partial' || scenario === 'tree-cancel' ? 4 : 3);
+    assert.equal(messages.length, observed && !['partial', 'before-wait'].includes(scenario) ? 0 : 1);
+    if (scenario === 'active-tool') {
+      assert.ok(trace.indexOf('request 3: completion visible=1') < trace.indexOf('agent_settled'), 'completion enters the next model request before settled');
+      assert.equal(requests, 3);
+    }
+    if (scenario === 'in-flight') assert.equal(requests, 3, 'active wait consumes its task without another notification turn');
     if (scenario === 'partial') {
+      assert.ok(trace.indexOf('request 3: completion visible=1') < trace.indexOf('agent_settled'));
       assert.match(messages[0].content, /RACE_B/);
       assert.doesNotMatch(messages[0].content, /RACE_A/);
     }

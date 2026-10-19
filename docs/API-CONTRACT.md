@@ -16,7 +16,7 @@
 | `tool_execution_start/end` | 存活调用/父链、frame 清理及句柄发布确认 |
 | `session.subscribe()` | 不随 runner 换代失效的 execution-end 清理，覆盖没有 after 阶段的原生 immediate result |
 | `ui_prompt_start/end` | 审批期间暂停 detach 和通知 |
-| `sendMessage()` / `appendEntry()` | followUp 完成通知；非模型上下文的任务索引 |
+| `sendMessage()` / `appendEntry()` | steer 完成通知，空闲时 triggerTurn；非模型上下文的任务索引 |
 | session、settled、compact、tree 事件 | 生命周期隔离及通知重试 |
 
 `registerTool` 仅添加 meantime 控制工具，不替代 Bash 或注册受管工具别名。原 prepareLoadout、exposure、来源与描述保留；builtin Codemode 和 tool_search 不替换。不存在 blockOriginalCalls 路由守卫、注册表轮询配置或旧代理兼容层。

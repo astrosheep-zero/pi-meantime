@@ -39,7 +39,7 @@ interface Task {
   done?: Promise<void>; notifyAttempts: number; finishSequence?: number; waiters: number;
 }
 export interface RuntimeSink {
-  /** false defers handoff until the host's next idle flush. */
+  /** false defers handoff until the host can accept messages. */
   notify(tasks: Snapshot[]): void | false;
   changed?(): void;
   index(change: IndexChange): void;
