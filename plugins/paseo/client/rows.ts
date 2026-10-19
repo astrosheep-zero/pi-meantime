@@ -5,6 +5,7 @@ import { elapsedSeconds } from "../shared/tasks.js";
 export function stateColor(state: string, colors: PluginTheme["colors"]): string {
   switch (state) {
     case "running":
+    case "started":
       return colors.accent;
     case "completed":
       return colors.statusSuccess;

@@ -23,13 +23,15 @@ export function MeantimeTaskCard({ item, theme, layout }: PluginTimelineItemProp
 
   const header = data.source === "handle"
     ? "Background task"
-    : `meantime${data.action ? ` · ${data.action}` : ""}`;
+    : data.source === "completion"
+      ? "Task completion"
+      : `meantime${data.action ? ` · ${data.action}` : ""}`;
 
   return (
     <View style={styles.card}>
       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-          <Icon name="Layers" size={11} color={colors.foregroundMuted} />
+          <Icon name={data.source === "completion" ? "CircleCheck" : "Layers"} size={11} color={colors.foregroundMuted} />
           <SectionLabel text={header} colors={colors} />
         </View>
         {data.phase === "streaming" ? (

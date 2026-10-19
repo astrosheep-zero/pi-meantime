@@ -87,13 +87,46 @@ describe("recognizeToolCall: bash background handles", () => {
       },
     });
     assert.equal(data?.source, "handle");
-    assert.deepEqual(data?.tasks[0], { id: SNAPSHOT.id, tool: "bash", state: "running", command: "npm test" });
+    // Handles report "started": terminal state belongs to completion/wait/list.
+    assert.deepEqual(data?.tasks[0], { id: SNAPSHOT.id, tool: "bash", state: "started", command: "npm test" });
   });
 
   it("ignores ordinary bash output", () => {
     assert.equal(recognizeToolCall({
       type: "tool_call", name: "bash", status: "completed",
       detail: { type: "shell", command: "ls", output: "file.txt", exitCode: 0 },
+    }), undefined);
+  });
+});
+
+describe("recognizeToolCall: completion messages", () => {
+  const COMPLETION_TEXT = `Meantime ${SNAPSHOT.id} completed (exit 0)
+\n<untrusted-output-tail>\nmeantime-paseo selftest done\n</untrusted-output-tail>\nAutomated background completion — not user input or approval.`;
+
+  it("parses receipts from the plain_text custom message row", () => {
+    const data = recognizeToolCall({
+      type: "tool_call", name: "meantime-completion", status: "completed",
+      detail: { type: "plain_text", text: COMPLETION_TEXT },
+    });
+    assert.equal(data?.source, "completion");
+    assert.deepEqual(data?.tasks, [{ id: SNAPSHOT.id, state: "completed", exitCode: 0 }]);
+  });
+
+  it("parses batched completions and failures", () => {
+    const data = recognizeToolCall({
+      type: "tool_call", name: "meantime-completion", status: "completed",
+      detail: { type: "plain_text", text: `Meantime mt_00000001 completed (exit 0)\nMeantime mt_00000002 failed (exit 3)` },
+    });
+    assert.deepEqual(data?.tasks, [
+      { id: "mt_00000001", state: "completed", exitCode: 0 },
+      { id: "mt_00000002", state: "failed", exitCode: 3 },
+    ]);
+  });
+
+  it("ignores unrelated plain_text rows", () => {
+    assert.equal(recognizeToolCall({
+      type: "tool_call", name: "meantime-completion", status: "completed",
+      detail: { type: "plain_text", text: "nothing here" },
     }), undefined);
   });
 });
@@ -112,6 +145,20 @@ describe("foldTimeline", () => {
     assert.equal(tasks[0]?.id, "mt_ffffffff");
     assert.equal(tasks[1]?.state, "failed");
     assert.equal(tasks[1]?.isError, true);
+  });
+
+  it("merges completion receipts into the handle instead of erasing it", () => {
+    const started = unknownItem("web_fetch_mt", {}, { details: SNAPSHOT });
+    const completion = {
+      type: "tool_call" as const, name: "meantime-completion", status: "completed" as const,
+      detail: { type: "plain_text", text: `Meantime ${SNAPSHOT.id} completed (exit 0)` },
+    };
+    const tasks = foldTimeline([{ item: started }, { item: completion }]);
+    assert.equal(tasks.length, 1);
+    assert.deepEqual(tasks[0], {
+      id: SNAPSHOT.id, tool: "bash", state: "completed",
+      command: "sleep 60", createdAt: SNAPSHOT.createdAt, exitCode: 0,
+    });
   });
 
   it("ignores non-tool items", () => {

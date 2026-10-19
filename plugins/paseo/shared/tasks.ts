@@ -21,10 +21,12 @@ import { z } from "zod";
 export const TASK_ID = /^mt_[a-f0-9]{8}$/;
 /** First line of the background handle text (pi-meantime src/extension.ts). */
 const HANDLE_TEXT = /^Meantime (mt_[a-f0-9]{8}) running in background/;
+/** Completion receipt lines inside the meantime-completion custom message text. */
+const RECEIPT = /^Meantime (mt_[a-f0-9]{8}) (\w+)(?: \(exit (\d+)\))?/gm;
 
 export const taskSummarySchema = z.object({
   id: z.string(),
-  tool: z.string(),
+  tool: z.string().optional(),
   state: z.string(),
   command: z.string().optional(),
   progress: z.string().optional(),
@@ -39,7 +41,7 @@ export const taskSummarySchema = z.object({
 export type TaskSummary = z.output<typeof taskSummarySchema>;
 
 export const cardDataSchema = z.object({
-  source: z.enum(["handle", "meantime"]),
+  source: z.enum(["handle", "meantime", "completion"]),
   action: z.string().optional(),
   tasks: z.array(taskSummarySchema),
   moreOffset: z.number().optional(),
@@ -131,21 +133,40 @@ export function recognizeToolCall(item: ToolCallItemLike): Omit<MeantimeCardData
   if (name === "bash" && detail.type === "shell" && typeof detail.output === "string") {
     const match = HANDLE_TEXT.exec(detail.output);
     if (!match) return undefined;
+    // A handle only proves the task STARTED. Reporting "running" here would
+    // stay on the timeline as a lie after the task finishes; terminal state
+    // arrives via the meantime-completion message or wait/list snapshots.
     return {
       source: "handle",
       tasks: [{
         id: match[1]!,
         tool: "bash",
-        state: "running",
+        state: "started",
         ...(text(detail.command) ? { command: detail.command as string } : {}),
       }],
     };
   }
 
+  if (name === "meantime-completion" && detail.type === "plain_text" && typeof detail.text === "string") {
+    // Paseo's pi provider turns the custom completion message into a
+    // plain_text tool row; metadata.details.taskIds exists but the receipt
+    // text alone carries state and exit codes, so parse that.
+    const tasks: TaskSummary[] = [];
+    for (const match of detail.text.matchAll(RECEIPT)) {
+      tasks.push({
+        id: match[1]!,
+        state: match[2]!,
+        ...(match[3] !== undefined ? { exitCode: Number(match[3]) } : {}),
+      });
+    }
+    if (tasks.length === 0) return undefined;
+    return { source: "completion", tasks };
+  }
+
   return undefined;
 }
 
-const ACTIVE_STATES = new Set(["running", "cancel_requested"]);
+const ACTIVE_STATES = new Set(["running", "cancel_requested", "started"]);
 
 export function isActiveTask(task: TaskSummary): boolean {
   return ACTIVE_STATES.has(task.state);
@@ -165,7 +186,9 @@ export function foldItem(byId: Map<string, TaskSummary>, item: unknown): boolean
   if (!isRecord(item) || item.type !== "tool_call") return false;
   const data = recognizeToolCall(item as unknown as ToolCallItemLike);
   if (!data) return false;
-  for (const task of data.tasks) byId.set(task.id, task);
+  // Merge, don't replace: completion receipts carry only id/state/exitCode
+  // and would otherwise erase the command/createdAt the handle provided.
+  for (const task of data.tasks) byId.set(task.id, { ...byId.get(task.id), ...task });
   return true;
 }
 

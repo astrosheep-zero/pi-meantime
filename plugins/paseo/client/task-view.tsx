@@ -51,9 +51,11 @@ export function TaskLine({ task, colors, layout, now }: {
           <Text style={{ color: colors.foreground, fontSize: 12.5, fontFamily: mono }} numberOfLines={1}>
             {task.id}
           </Text>
-          <Text style={{ color: colors.foregroundMuted, fontSize: 11 }} numberOfLines={1}>
-            {task.tool}
-          </Text>
+          {task.tool ? (
+            <Text style={{ color: colors.foregroundMuted, fontSize: 11 }} numberOfLines={1}>
+              {task.tool}
+            </Text>
+          ) : null}
         </View>
         {sub ? (
           <Text style={{ color: colors.foregroundMuted, fontSize: 11, fontFamily: mono }} numberOfLines={1}>
