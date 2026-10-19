@@ -28,6 +28,7 @@ if (sdk) {
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = join(root, 'agent');
   try {
+    await batchCodemodeParity(sdk, root);
     for (const scenario of ['outer-approval', 'outer-denial', 'codemode-startup', 'body', 'disabled', 'execution-start']) {
       await earlySteerRace(sdk, root, scenario);
     }
@@ -208,6 +209,66 @@ if (sdk) {
     }
   }
   console.log('REAL_PI_SMOKE_PASS: official SDK registration, nested MCP and native Bash; shutdown cleanup completed. No external model call; scripted provider completion-ordering regression passed. SDK RPC-mode detach and nested result retrieval passed; no actual TUI/CLI transport exercised.');
+}
+
+/** Real QuickJS scripts, compared with the identical tools without meantime. */
+async function batchCodemodeParity(sdk, root) {
+  const observed = [];
+  for (const managed of [false, true]) {
+    let session, extension;
+    const settingsManager = sdk.SettingsManager.inMemory({ defaultTools: ['codemode', 'meantime'] });
+    const loader = new sdk.DefaultResourceLoader({ cwd: root, agentDir: join(root, `batch-${managed}`), settingsManager,
+      noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true,
+      extensionFactories: [sdk.createCodemodeExtension({ mode: 'only' }), pi => {
+        for (const structured of [true, false]) pi.registerTool({
+          name: structured ? 'fixture_data' : 'fixture_text', label: 'fixture', description: 'Return a fixture value',
+          exposure: 'codemode', executionMode: 'parallel',
+          parameters: { type: 'object', properties: {} },
+          ...(structured ? { outputSchema: { type: 'object', properties: { value: { type: 'string' } } } } : {}),
+          async execute(_id, args) {
+            assert.deepEqual(args, {}, 'execution control must not reach the original');
+            await new Promise(resolve => setTimeout(resolve, 20));
+            return { content: [{ type: 'text', text: structured ? 'DATA' : 'TEXT' }], details: undefined,
+              ...(structured ? { structuredContent: { value: 'DATA' } } : {}) };
+          },
+        });
+        if (managed) extension = install(pi, { config: validateConfig({ include: ['fixture_*'], autoDetachMs: 0 }),
+          makeBash: cwd => sdk.createBashToolDefinition(cwd) });
+      }] });
+    try {
+      await loader.reload();
+      const manager = sdk.SessionManager.inMemory(root);
+      manager.appendMessage({ role: 'assistant', content: [{ type: 'toolCall', id: `batch-${managed}`, name: 'codemode', arguments: {} }],
+        api: 'openai-completions', provider: 'fixture', model: 'fixture', stopReason: 'toolUse', timestamp: Date.now(),
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
+      ({ session } = await sdk.createAgentSession({ cwd: root, resourceLoader: loader, settingsManager,
+        sessionManager: manager }));
+      await session.bindExtensions({ mode: 'rpc' });
+      const code = managed ? `
+        const handles = await Promise.all([tools.fixture_data_mt({__background__: 'yes'}), tools.fixture_text_mt({__background__: 'yes'})]);
+        const ids = handles.map(h => h.task.id);
+        const singles = await Promise.all(ids.map(id => tools.meantime({action: 'wait', id})));
+        const batch = await tools.meantime({action: 'wait', ids, timeout: 0});
+        return {singles: singles.map(s => s.result), batch};`
+        : 'return [await tools.fixture_data({}), await tools.fixture_text({})];';
+      const result = await session.agent.state.tools.find(t => t.name === 'codemode')
+        .execute(`batch-${managed}`, { code }, new AbortController().signal);
+      assert.equal(result.isError ?? false, false, JSON.stringify(result));
+      const text = result.content.filter(b => b.type === 'text').map(b => b.text).join('');
+      observed.push(JSON.parse(text.slice(text.indexOf('Output:\n') + 'Output:\n'.length)));
+    } finally {
+      if (session) await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
+      await extension?.dispose(); session?.dispose();
+    }
+  }
+  const [native, managed] = observed;
+  console.log(`BATCH_CODEMODE: ${JSON.stringify({ native, singles: managed.singles,
+    batch: managed.batch.tasks.map(t => ({ id: t.id, result_available: t.result_available, result: t.result })), pending: managed.batch.pending })}`);
+  assert.deepEqual(managed.singles, native, 'single wait matches tools without meantime');
+  assert.deepEqual(managed.batch.tasks.map(t => t.result), native, 'batch wait must expose the same native structured/text results to scripts');
+  assert.ok(managed.batch.tasks.every(t => t.result_available));
+  assert.deepEqual(managed.batch.pending, []);
 }
 
 /** Alignment baseline: the same real MCP server/tool without meantime installed. */
