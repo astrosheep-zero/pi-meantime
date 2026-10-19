@@ -41,19 +41,24 @@ export function TaskCommand({ task, colors, layout }: { task: TaskSummary; color
 }
 
 /** Aligned S | TIME+ | ID | COMMAND columns, without status decorations. */
-export function TaskLine({ task, colors, layout }: { task: TaskSummary; colors: Colors; layout: Layout }) {
+export function TaskLine({ task, colors, layout, compact }: { task: TaskSummary; colors: Colors; layout: Layout; compact?: boolean }) {
   const mono = monoFont(layout.platform);
   const cell = { fontFamily: mono, fontSize: 10, lineHeight: 16, color: secondaryColor(colors) };
+  const elapsed = formatElapsed(task);
   return (
     <View>
-      <View style={{ flexDirection: "row", alignItems: "baseline", gap: 7 }}>
-        <Text accessibilityLabel={taskStateLabel(task)} style={{ ...cell, width: 15, color: stateColor(task.state, colors) }} numberOfLines={1}>
+      <View style={{ flexDirection: "row", alignItems: "baseline", gap: 6 }}>
+        <Text accessibilityLabel={taskStateLabel(task)} style={{ ...cell, width: 13, color: stateColor(task.state, colors) }} numberOfLines={1}>
           {taskStateCode(task)}
         </Text>
-        <Text style={{ ...cell, width: 36 }} numberOfLines={1}>{formatElapsed(task) ?? "—"}</Text>
-        <Text accessibilityLabel={task.id} selectable style={{ ...cell, width: 25 }} numberOfLines={1}>
-          {task.id.replace(/^mt_/, "").slice(0, 4)}
-        </Text>
+        {!compact || elapsed ? (
+          <Text style={{ ...cell, width: 30 }} numberOfLines={1}>{elapsed ?? "—"}</Text>
+        ) : null}
+        {!compact ? (
+          <Text accessibilityLabel={task.id} selectable style={{ ...cell, width: 24 }} numberOfLines={1}>
+            {task.id.replace(/^mt_/, "").slice(0, 4)}
+          </Text>
+        ) : null}
         <TaskCommand task={task} colors={colors} layout={layout} />
       </View>
       <TaskNotes task={task} colors={colors} layout={layout} />
@@ -75,10 +80,12 @@ export function TaskNotes({ task, colors, layout }: { task: TaskSummary; colors:
 
 export function TaskTable({ tasks, colors, layout }: { tasks: readonly TaskSummary[]; colors: Colors; layout: Layout }) {
   const running = tasks.filter(task => task.state === "running").length;
+  const compact = tasks.length === 1;
+  const shortId = compact ? tasks[0]!.id.replace(/^mt_/, "").slice(0, 4) : undefined;
   return (
-    <TaskPanel title={<>meantime ─ <Text style={{ color: running ? stateColor("running", colors) : secondaryColor(colors) }}>
+    <TaskPanel title={<>meantime{shortId ? ` ${shortId}` : ""} ─ <Text style={{ color: running ? stateColor("running", colors) : secondaryColor(colors) }}>
       {running ? `${running} R` : "snapshots"}</Text></>} colors={colors} layout={layout}>
-      {tasks.map(task => <TaskLine key={task.id} task={task} colors={colors} layout={layout} />)}
+      {tasks.map(task => <TaskLine key={task.id} task={task} colors={colors} layout={layout} compact={compact} />)}
     </TaskPanel>
   );
 }
