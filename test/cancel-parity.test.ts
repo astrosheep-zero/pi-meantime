@@ -123,7 +123,7 @@ test('permission denial settles before pending detach resumes after ui_prompt_en
   const h = runtimeHarness({ autoDetachMs: 0 }); const work = deferred<Outcome>();
   try {
     h.runtime.prompt(true);
-    const waiting = h.runtime.run({ tool: 'guarded', kind: 'tool', callId: 'guarded', mode: 'yes', canDetach: true, execute: () => work.promise });
+    const waiting = h.runtime.run({ tool: 'guarded', kind: 'tool', callId: 'guarded', mode: 'no', canDetach: true, execute: () => work.promise });
     await sleep(5); h.runtime.prompt(false);
     assert.equal(h.runtime.detachAll('steer'), 0, 'steer must not overtake the approval continuation');
     await Promise.resolve();

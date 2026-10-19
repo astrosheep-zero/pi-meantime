@@ -30,7 +30,7 @@ export function decorateSchema(original: unknown): Schema {
       ...(copy.properties as Record<string, unknown> | undefined),
       [CONTROL]: {
         type: 'string', enum: ['auto', 'yes', 'no'],
-        description: 'Pi execution control, removed before dispatch. auto (default): foreground, may detach on timeout, Ctrl+Shift+B or steer; yes: request immediate background; no: never detach. Detach does not cancel the operation.',
+        description: 'Pi execution control, removed before dispatch. auto (default): foreground, may detach on timeout, Ctrl+Shift+B or steer; yes: request immediate background; no: disables automatic backgrounding. Detach does not cancel the operation.',
       },
     },
   };

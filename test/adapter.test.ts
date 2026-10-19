@@ -37,7 +37,13 @@ test('model-facing execution control reflects the configured auto-detach timer',
       for (const text of texts) {
         if (autoDetachMs) assert.ok(text.includes(`detaches after ${autoDetachMs / 1000}s if still running`));
         else { assert.match(text, /never detaches on a timer/); assert.doesNotMatch(text, /\b0s\b/); }
-        assert.match(text, /"no" stays in the foreground/);
+        assert.match(text, /"no" disables automatic backgrounding\./);
+        assert.doesNotMatch(text, /"no" (?:stays|always)|always foreground/);
+      }
+      for (const name of ['bash', 'mcp__model_text_mt']) {
+        const parameters = h.pi.definitions.get(name)!.parameters as { properties: Record<string, { description: string }> };
+        assert.match(parameters.properties.__meantime__!.description, /no: disables automatic backgrounding\./);
+        assert.doesNotMatch(parameters.properties.__meantime__!.description, /never detach/);
       }
     } finally { await h.close(); }
   }
@@ -171,11 +177,11 @@ test('model explicit background continues in parallel with another tool and fini
     assert.equal(h.pi.trace.filter(e => e.type === 'execute' && e.name === 'mcp__t__slow').length, 1);
   } finally { work.resolve(ok().result); await h.close(); }
 });
-test('steer releases foreground without abort or consuming text/images', async () => {
+test('steer releases no-mode foreground without abort or consuming text/images', async () => {
   const work = deferred<Result>(); let childSignal: AbortSignal | undefined;
   const h = await setup([basicTool('mcp__t__slow', (_id, _a, signal) => { childSignal = signal; return work.promise; })]);
   try {
-    const running = h.pi.call('mcp__t__slow_mt', {}); await until(() => !!childSignal);
+    const running = h.pi.call('mcp__t__slow_mt', { __meantime__: 'no' }); await until(() => !!childSignal);
     const images: Content[] = [{ type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' }];
     const event = { type: 'input' as const, text: 'change direction', streamingBehavior: 'steer' as const, source: 'interactive' as const, images };
     const responses = await h.pi.emit('input', event); const out = await running;
@@ -198,6 +204,24 @@ test('disabled steer detach keeps input intact; explicit detach still works', as
     assert.equal(snapshot(await running).delivery, 'background');
     assert.throws(() => validateConfig({ detachOnSteer: 'false' }), /detachOnSteer/);
   } finally { work.resolve(ok().result); await h.close(); }
+});
+test('shortcut and detach command release no-mode calls once without cancellation', async () => {
+  for (const trigger of ['shortcut', 'command'] as const) {
+    const work = deferred<Result>(); let signal: AbortSignal | undefined;
+    const h = await setup([basicTool('mcp__t__slow', (_id, _args, s) => { signal = s; return work.promise; })], { autoDetachMs: 5 });
+    try {
+      const running = h.pi.call('mcp__t__slow_mt', { __meantime__: 'no' });
+      await until(() => !!signal); await sleep(15);
+      assert.equal((h.instance.inspect() as { tasks: Snapshot[] }).tasks[0]!.delivery, 'foreground');
+      if (trigger === 'shortcut') await h.pi.shortcuts.get('ctrl+shift+b')!(h.pi.ctx);
+      else await h.pi.commands.get('meantime')!('detach', h.pi.ctx);
+      const task = snapshot(await running);
+      assert.equal(task.detachReason, 'shortcut'); assert.equal(task.mode, 'no'); assert.equal(signal!.aborted, false);
+      assert.match(h.pi.uiMessages.at(-1)!, /Detached 1 managed call/);
+      assert.doesNotMatch(h.pi.uiMessages.at(-1)!, /no-mode/);
+      assert.equal(h.pi.trace.filter(e => e.type === 'execute' && e.name === 'mcp__t__slow').length, 1);
+    } finally { work.resolve(ok().result); await h.close(); }
+  }
 });
 test('shortcut and auto timer both release managed waiters', async () => {
   for (const trigger of ['shortcut', 'timeout'] as const) {

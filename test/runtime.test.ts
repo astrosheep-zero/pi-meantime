@@ -42,15 +42,30 @@ test('steer and shortcut share the detach transition, later parent abort is disc
     const view = await wait; parent.abort(); assert.equal(signal!.aborted, false); assert.equal(view.task.detachReason, 'steer');
   } finally { work.resolve(ok()); await h.close(); }
 });
-test('no mode refuses every detach trigger but is cancellable', async () => {
+test('no mode disables timed detachment but remains cancellable', async () => {
   const h = runtimeHarness(); let aborted = false;
   try {
     const wait = h.runtime.run({ tool: 'strict', kind: 'tool', callId: 'c1', mode: 'no', canDetach: true,
       execute: signal => new Promise((_resolve, reject) => { signal.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')); }); }) });
-    await sleep(1); assert.equal(h.runtime.detachAll('steer'), 0); assert.equal(h.runtime.detachAll('shortcut'), 0);
+    await sleep(h.config.autoDetachMs + 10);
+    assert.equal(h.runtime.detachAll('timeout'), 0);
+    assert.equal(h.runtime.list()[0]!.delivery, 'foreground'); assert.equal(h.records.size, 0);
     const id = h.runtime.list()[0]!.id; h.runtime.cancel(id); const view = await wait;
     assert.equal(aborted, true); assert.equal(view.task.state, 'failed'); assert.equal(view.task.isError, true);
   } finally { await h.close(); }
+});
+test('no-mode user detachment waits for approval and nested-call readiness', async () => {
+  const h = runtimeHarness(); const work = deferred<Outcome>(); let ready = false;
+  try {
+    h.runtime.prompt(true);
+    const wait = h.runtime.run({ tool: 'guarded', kind: 'tool', callId: 'c1', mode: 'no', canDetach: true,
+      readyToDetach: () => ready, execute: () => work.promise });
+    assert.equal(h.runtime.detachAll('steer'), 0);
+    h.runtime.prompt(false); await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(h.runtime.list()[0]!.delivery, 'foreground'); assert.equal(h.records.size, 0);
+    ready = true; h.runtime.ready('c1'); const view = await wait;
+    assert.equal(view.kind, 'handle'); assert.equal(view.task.detachReason, 'steer'); assert.equal(h.records.size, 1);
+  } finally { work.resolve(ok()); await h.close(); }
 });
 test('approval gate defers detach until prompt closes', async () => {
   const h = runtimeHarness(); const work = deferred<Outcome>();
@@ -126,6 +141,14 @@ test('pre-aborted calls and print-mode explicit background never execute', async
     assert.throws(() => h.runtime.run({ ...request, parentSignal: ctrl.signal }), /cancelled before/);
     assert.throws(() => h.runtime.run({ ...request, canDetach: false }), /unavailable/); assert.equal(calls, 0);
   } finally { await h.close(); }
+});
+test('no-mode user triggers cannot bypass print/json detach admission', async () => {
+  const h = runtimeHarness(); const work = deferred<Outcome>();
+  try {
+    const wait = h.runtime.run({ tool: 'one', kind: 'tool', callId: 'print', mode: 'no', canDetach: false, execute: () => work.promise });
+    assert.equal(h.runtime.detachAll('steer'), 0); assert.equal(h.runtime.detachAll('shortcut'), 0);
+    work.resolve(ok()); assert.equal((await wait).kind, 'result'); assert.equal(h.records.size, 0);
+  } finally { work.resolve(ok()); await h.close(); }
 });
 test('progress stops being sent to the old foreground callback after detach', async () => {
   const h = runtimeHarness(); const work = deferred<Outcome>(); let update: ((r: ReturnType<typeof ok>['result']) => void) | undefined; const visible: string[] = [];

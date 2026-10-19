@@ -42,7 +42,7 @@ delivery: foreground -> background
 
 所有 detach 触发最终进入同一个方法。没有 `ctx.abort()`，没有捕获再重投用户输入。`input` 返回 `continue`，Pi 自己继续处理输入文本、附件和队列。
 
-`no` 模式是严格前台，用户快捷键也不强行破坏它。`detachOnSteer` 默认 true；false 时 input 仍返回 continue，但不触发 detach。快捷键、显式命令和自动阈值独立工作。
+`no` 模式只关闭计时转后台；用户 steer、快捷键和 `/meantime detach` 仍可请求转后台，且共用审批、调用进入和索引保存门槛。`detachOnSteer` 默认 true；false 时 input 仍返回 continue，但不触发 detach。快捷键、显式命令和自动阈值独立工作。模型说明只表述 `no` 关闭自动转后台，不展开用户覆盖细节。
 
 ## 3. 调用进入门槛
 

@@ -141,7 +141,7 @@ export class TaskRuntime {
     return count;
   }
   private detach(task: Task, reason: DetachReason): boolean {
-    if (!this.open || task.viewSettled || !task.canDetach || task.meta.mode === 'no' || task.meta.state !== 'running') return false;
+    if (!this.open || task.viewSettled || !task.canDetach || (task.meta.mode === 'no' && reason === 'timeout') || task.meta.state !== 'running') return false;
     if (this.promptDepth > 0 || this.promptResume || (task.readyToDetach && !task.readyToDetach())) { task.requestedDetach = reason; return false; }
     task.meta.detachReason = reason;
     return this.releaseToBackground(task);

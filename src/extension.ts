@@ -93,7 +93,7 @@ function storedResult(task: Snapshot, source: Result, budget?: { remaining: numb
  * direct invocation of another extension's execute implementation. */
 export function install(pi: PiHost, options: InstallOptions): { dispose(): Promise<void>; inspect(): unknown } {
   const { config } = options;
-  const executionControl = `Optional ${CONTROL} (interactive sessions): "auto" (default) starts in the foreground and ${config.autoDetachMs > 0 ? `the timer detaches after ${config.autoDetachMs / 1000}s if still running` : 'never detaches on a timer'}; it may detach sooner on Ctrl+Shift+B, /meantime detach or steer (if enabled). "yes" requests background execution; "no" stays in the foreground. Detaching does not cancel the operation.`;
+  const executionControl = `Optional ${CONTROL} (interactive sessions): "auto" (default) starts in the foreground and ${config.autoDetachMs > 0 ? `the timer detaches after ${config.autoDetachMs / 1000}s if still running` : 'never detaches on a timer'}; it may detach sooner on Ctrl+Shift+B, /meantime detach or steer (if enabled). "yes" requests background execution; "no" disables automatic backgrounding. Detaching does not cancel the operation.`;
   const pairs = new Map<string, Pair>();
   const tickets = new Map<string, Ticket>();
   const diagnostics = new Map<string, string>();
@@ -557,8 +557,8 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     return { action: 'continue' };
   });
   pi.registerShortcut('ctrl+shift+b', {
-    description: 'Detach managed auto-mode foreground calls without cancellation',
-    handler(ctx) { const count = assertRuntime(ctx).detachAll('shortcut'); controlFeedback(ctx, `Detached ${count} managed call(s).\nno-mode, pending approvals and unwrapped calls stay in the foreground.`); },
+    description: 'Detach managed foreground calls without cancellation',
+    handler(ctx) { const count = assertRuntime(ctx).detachAll('shortcut'); controlFeedback(ctx, `Detached ${count} managed call(s).\nPending approvals and unwrapped calls stay in the foreground.`); },
   });
   const meantimeCommand = { description: 'Background runtime: /meantime [detach|rescan|cancel <id>] (alias: /bg)', async handler(args: string, ctx: Context): Promise<void> {
     const [command, ...rest] = args.trim() ? args.trim().split(/\s+/) : [];
@@ -585,7 +585,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     } else if (rest.length) controlFeedback(ctx, 'Use /meantime [detach|rescan|cancel <id>]');
     else if (command === 'detach') {
       const count = assertRuntime(ctx).detachAll('shortcut');
-      controlFeedback(ctx, `Detached ${count} managed call(s).\nno-mode, pending approvals and unwrapped calls stay in the foreground.`);
+      controlFeedback(ctx, `Detached ${count} managed call(s).\nPending approvals and unwrapped calls stay in the foreground.`);
     }
     else if (command === 'rescan') { reconcile(); controlFeedback(ctx, 'Background proxy registry rescanned. Use /meantime.'); }
     else controlFeedback(ctx, 'Use /meantime [detach|rescan|cancel <id>]');

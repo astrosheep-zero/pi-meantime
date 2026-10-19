@@ -57,7 +57,8 @@ test('failed index append keeps normal detach in the foreground without an uncau
   const h = runtimeHarness(); const work = deferred<Outcome>();
   const runtime = new TaskRuntime(h.store, h.config, { notify() {}, index() { throw new Error('disk full'); } });
   try {
-    const wait = run(runtime, 'one', work.promise);
+    const wait = runtime.run({ tool: 'one', kind: 'tool', callId: 'one', mode: 'no', canDetach: true, execute: () => work.promise });
+    assert.equal(runtime.detachAll('shortcut'), 0);
     await sleep(5); assert.equal(runtime.list()[0]!.delivery, 'foreground');
     assert.match(runtime.list()[0]!.storageError!, /disk full/);
     work.resolve(ok()); assert.equal((await wait).kind, 'result');
