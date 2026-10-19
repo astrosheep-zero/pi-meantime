@@ -427,6 +427,34 @@ test('public renderer expands task details and delegates native foreground resul
   } finally { await h.close(); }
 });
 
+test('wait previews show single and batch bodies through the existing generic renderer', async () => {
+  const body = Array.from({ length: 25 }, (_, i) => `RETAINED_BODY_${i + 1}`).join('\n');
+  const h = await setup([basicTool('mcp__t__preview', async () => { await sleep(5); return ok(body).result; })]);
+  try {
+    const ids = [];
+    for (let i = 0; i < 2; i++) ids.push(snapshot(await h.pi.call('mcp__t__preview_mt', { __background__: 'yes' })).id);
+    initTheme('dark', false);
+    const ui = { requestRender() {} } as ConstructorParameters<typeof ToolExecutionComponent>[5];
+    const renderer = h.pi.renderers[0]!('meantime', () => undefined)!;
+    for (const args of [{ action: 'wait', id: ids[0] }, { action: 'wait', ids }]) {
+      const outcome = await h.pi.call('meantime', args);
+      const result = { ...outcome.result, isError: outcome.isError };
+      const make = (renderers: ToolRenderers) => new ToolExecutionComponent(
+        'meantime', 'preview', args, { showImages: false }, renderers, ui, process.cwd());
+      const plain = make({}), managed = make(renderer);
+      plain.updateResult(result); managed.updateResult(result);
+      assert.match(managed.render(200).join('\n'), /RETAINED_BODY_1\b/, 'collapsed wait must show output, not just task metadata');
+      assert.doesNotMatch(managed.render(200).join('\n'), /RETAINED_BODY_25\b/);
+      assert.match(managed.render(200).join('\n'), /more lines/);
+      assert.deepEqual(managed.render(200), plain.render(200), 'reuse Pi-compatible preview and expansion hint');
+      plain.setExpanded(true); managed.setExpanded(true);
+      assert.deepEqual(managed.render(200), plain.render(200));
+      assert.match(managed.render(200).join('\n'), /RETAINED_BODY_25\b/);
+      if ('ids' in args) assert.equal(managed.render(200).join('\n').match(/RETAINED_BODY_25\b/g)?.length, 2);
+    }
+  } finally { await h.close(); }
+});
+
 test('management results are paginated rather than dumping the full registry into model context', async () => {
   const h = await setup([basicTool('mcp__t__one', async () => { await sleep(10); return ok().result; })]);
   try {

@@ -344,7 +344,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
         // model/programmatic data and is not passed to this callback.
         const handle = isRecord(details) && details.delivery === 'background'
           && typeof details.id === 'string' && typeof details.createdAt === 'number';
-        if (name !== 'meantime' && !handle) {
+        if (!handle && (name !== 'meantime' || (isRecord(context.args) && context.args.action === 'wait'))) {
           if (native?.renderResult) return native.renderResult(result, renderOptions, theme, context);
           // Match Pi's generic result preview for tools without a renderer.
           const blocks = result.content.filter(block => block.type === 'text').map(block =>
