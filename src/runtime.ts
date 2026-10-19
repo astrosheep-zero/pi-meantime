@@ -27,6 +27,7 @@ export interface RunRequest {
   tool: string; kind: 'bash' | 'tool'; callId: string; mode: Mode; command?: string;
   canDetach: boolean; parentSignal?: AbortSignal; onUpdate?: Update;
   readyToDetach?: () => boolean;
+  userDetach?: 'steer' | 'shortcut';
   execute(signal: AbortSignal, update: Update): Promise<Outcome>;
 }
 interface Task {
@@ -130,6 +131,11 @@ export class TaskRuntime {
       // whether it is safe to release the observer. Later remote elicitation
       // remains an upstream limitation, documented in DESIGN.md.
       setImmediate(() => { if (this.open) this.detach(task, 'explicit'); });
+    }
+    if (request.userDetach) {
+      // Inherited pre-admission intent still passes the normal prompt/readiness
+      // gates, after the producer has entered its native dispatch pipeline.
+      setImmediate(() => this.detach(task, request.userDetach!));
     }
     this.changed();
     return view;

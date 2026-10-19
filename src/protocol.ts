@@ -110,6 +110,8 @@ export interface EventMap {
   session_tree: { type: 'session_tree' };
   session_compact: { type: 'session_compact' };
   session_compact_failed: { type: 'session_compact_failed' };
+  turn_end: { type: 'turn_end' };
+  tool_execution_start: { type: 'tool_execution_start'; toolCallId: string; parentToolCallId?: string };
   before_agent_start: { type: 'before_agent_start'; systemPromptOptions: { sections: Record<string, string> } };
   agent_settled: { type: 'agent_settled'; aborted?: boolean };
   mcp_servers_change: { type: 'mcp_servers_change' };
@@ -125,6 +127,8 @@ export interface EventResultMap {
   session_tree: void;
   session_compact: void;
   session_compact_failed: void;
+  turn_end: void;
+  tool_execution_start: void;
   before_agent_start: BeforeAgentStartEventResult;
   agent_settled: void;
   mcp_servers_change: void;

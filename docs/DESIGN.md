@@ -50,6 +50,10 @@ delivery: foreground -> background
 
 代理为每个父调用创建 ticket。只有看到匹配的嵌套 `tool_call`，才允许 detach。此时原调用已由 Pi 的管线建立上下文。这个门槛不会绕过原来的权限或队列；如果原调用尚未进入，后台请求会等待。
 
+用户 steer 或手动 detach 可能早于 wrapper `execute` / runtime admission：例如外层代理正在审批，或真正的 Codemode worker 尚在启动。扩展从公开 `tool_execution_start` 记录当前 in-flight call ID 和 `parentToolCallId`；用户操作只给**当时已存在的调用**标记临时意图，同时尝试释放已 admission 的任务。后来进入的 Bash/代理 wrapper 沿自身及仍存活的父链查找意图，将它作为 `run` 的初始用户 detach 请求，仍经过现有 prompt、readiness、交互模式和索引保存门槛；不把意图视为授权，不提前执行业务。`detachOnSteer=false` 不记录或应用 steer 意图，手动操作独立。
+
+意图不持久化；`tool_execution_end` 删除对应身份，`turn_end`、`agent_settled` 和 session shutdown/start 清空调用表。已结束的祖先、后来独立开始的 sibling、下一模型回合和新会话均不能继承旧意图。不用全局 sticky boolean、ID 前缀推测、轮询或 consume/resubmit 输入。runtime admission 后的待释放请求继续由 task 自己管理。
+
 这提供更稳的归属关系，但不把嵌套调用 API 变成官方独立任务 API。多层嵌套、SDK 自定义全局顺序模式和晚到 UI 交互仍要在实际宿主中验收。
 
 ## 4. 工具声明、可调用性和绕行

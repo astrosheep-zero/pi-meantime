@@ -543,3 +543,55 @@ test('multi-task wait shares its text budget for Bash and MCP, reports omission,
     } finally { work.resolve(ok().result); await h.close(); }
   }
 });
+
+// Public-contract double only; actual SDK approval/startup races live in pi-smoke.
+test('early manual detach is call-scoped, not sticky for a later sibling', async () => {
+  const approval = deferred<void>(), entered = deferred<void>();
+  const work = deferred<Result>(); let bodies = 0, first = true;
+  const h = await setup([basicTool('mcp__t__held', () => { bodies++; return work.promise; })]);
+  h.pi.on('tool_call', async event => {
+    if (event.toolName === 'mcp__t__held_mt' && first) {
+      first = false; entered.resolve(); await approval.promise;
+    }
+  });
+  try {
+    const original = h.pi.call('mcp__t__held_mt', {});
+    await entered.promise;
+    assert.equal((h.instance.inspect() as { tasks: unknown[] }).tasks.length, 0);
+    await h.pi.commands.get('meantime')!('detach', h.pi.ctx);
+    const sibling = h.pi.call('mcp__t__held_mt', {});
+    await until(() => bodies === 1);
+    approval.resolve();
+    assert.equal(snapshot(await original).detachReason, 'shortcut');
+    const tasks = (h.instance.inspect() as { tasks: Snapshot[] }).tasks;
+    assert.equal(tasks.filter(task => task.delivery === 'foreground').length, 1);
+    work.resolve(ok('complete').result);
+    assert.equal(((await sibling).result.structuredContent as { task?: unknown }).task, undefined);
+  } finally { approval.resolve(); work.resolve(ok().result); await h.close(); }
+});
+
+test('a detached producer cannot pass old steer to descendants in a later model turn', async () => {
+  const launch = deferred<void>(), entered = deferred<void>(), child = deferred<Result>();
+  let innerResult: Result | undefined;
+  const h = await setup([
+    basicTool('mcp__t__outer', async (_id, _args, _signal, _update, ctx) => {
+      entered.resolve(); await launch.promise;
+      innerResult = (await ctx.executeTool('mcp__t__inner_mt', {})).result;
+      return innerResult;
+    }),
+    basicTool('mcp__t__inner', () => child.promise),
+  ]);
+  try {
+    const outer = h.pi.call('mcp__t__outer_mt', {}); await entered.promise;
+    await h.pi.emit('input', { type: 'input', text: 'next', source: 'rpc', streamingBehavior: 'steer' });
+    assert.equal(snapshot(await outer).detachReason, 'steer');
+    await h.pi.emit('turn_end', { type: 'turn_end' });
+    launch.resolve();
+    await until(() => h.pi.trace.some(e => e.type === 'execute' && e.name === 'mcp__t__inner'));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(innerResult, undefined, 'new descendant must remain foreground');
+    child.resolve(ok('inner').result);
+    await until(() => innerResult !== undefined);
+    assert.equal((innerResult!.structuredContent as { task?: unknown }).task, undefined);
+  } finally { launch.resolve(); child.resolve(ok().result); await h.close(); }
+});

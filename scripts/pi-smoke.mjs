@@ -26,6 +26,9 @@ if (sdk) {
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = join(root, 'agent');
   try {
+    for (const scenario of ['outer-approval', 'outer-denial', 'codemode-startup', 'body', 'disabled', 'execution-start']) {
+      await earlySteerRace(sdk, root, scenario);
+    }
     for (const scenario of ['in-flight', 'before-wait', 'unobserved', 'partial', 'timeout', 'compact', 'compact-cancel', 'tree', 'tree-cancel']) {
       await completionRace(sdk, root, scenario);
     }
@@ -327,5 +330,175 @@ async function completionRace(sdk, root, scenario) {
     if (session) await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
     await extension?.dispose();
     session?.dispose();
+  }
+}
+
+/** Real dispatch, approvals and QuickJS worker startup; no synthetic tool/input events.
+ * Deferred gates hold producer completion so a handle alone cannot fake success. */
+async function earlySteerRace(sdk, root, scenario) {
+  const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
+  const tick = () => new Promise(r => setImmediate(r));
+  const bounded = async promise => {
+    let timer;
+    try { return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`early steer timeout: ${scenario}: ${trace.join('; ')}`)), 8000);
+    })]); } finally { clearTimeout(timer); }
+  };
+  const trace = [], results = [], bodies = new Set();
+  const firstBody = deferred(), nextBody = deferred(), firstRelease = deferred(), nextRelease = deferred();
+  const freshBody = deferred(), freshRelease = deferred();
+  const approval = deferred(), choice = deferred(), outerCall = deferred(), primaryEnd = deferred();
+  const denied = scenario === 'outer-denial', approvalCase = scenario.startsWith('outer-');
+  const nested = scenario === 'codemode-startup', disabled = scenario === 'disabled';
+  let extension, session, requests = 0, earlyInput;
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  const settingsManager = sdk.SettingsManager.inMemory({ defaultTools: ['fixture', 'fixture_mt', 'meantime', 'codemode'], compaction: { enabled: false } });
+  const loader = new sdk.DefaultResourceLoader({ cwd: root, agentDir: join(root, 'early-' + scenario), settingsManager,
+    noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true,
+    extensionFactories: [sdk.createCodemodeExtension(), pi => {
+      pi.registerTool({ name: 'fixture', label: 'fixture', description: 'Held producer', executionMode: 'parallel',
+        parameters: { type: 'object', properties: { tag: { type: 'string' } }, required: ['tag'] },
+        async execute(_id, { tag }, signal) {
+          bodies.add(tag); trace.push(`body ${tag}`);
+          (tag === 'first' ? firstBody : tag === 'fresh' ? freshBody : nextBody).resolve();
+          await (tag === 'first' ? firstRelease : tag === 'fresh' ? freshRelease : nextRelease).promise;
+          assert.equal(signal.aborted, false, 'detached producer must retain its independent signal');
+          trace.push(`finished ${tag}`);
+          return { content: [{ type: 'text', text: tag }], details: undefined };
+        } });
+      pi.registerProvider('early-fixture', { api: 'openai-completions', baseUrl: 'https://fixture.invalid', apiKey: 'unused',
+        models: [{ id: 'fixture', name: 'fixture', reasoning: false, input: ['text'], cost: usage.cost, contextWindow: 32000, maxTokens: 1024 }],
+        streamSimple(model, context) {
+          const n = ++requests, stream = createAssistantMessageEventStream();
+          trace.push(`request ${n}`);
+          if (n === 2) assert.ok(JSON.stringify(context.messages).includes('early-redirect-marker'), 'Pi must preserve steer input');
+          const call = n === 1 ? { id: 'outer', name: nested ? 'codemode' : 'fixture_mt',
+            arguments: nested ? { code: "return await tools.fixture_mt({tag: 'first'});" }
+              : { tag: 'first', ...(scenario === 'outer-approval' ? { __meantime__: 'no' } : {}) } }
+            : n === 2 ? { id: 'unrelated', name: 'fixture_mt', arguments: { tag: 'next' } }
+            : n === 4 ? { id: 'outer', name: 'fixture_mt', arguments: { tag: 'fresh' } } : undefined;
+          const message = { role: 'assistant', api: model.api, provider: model.provider, model: model.id,
+            content: call ? [{ type: 'toolCall', ...call }] : [{ type: 'text', text: 'done' }], usage,
+            stopReason: call ? 'toolUse' : 'stop', timestamp: Date.now() };
+          stream.push({ type: 'start', partial: message });
+          if (call) {
+            stream.push({ type: 'toolcall_start', contentIndex: 0, partial: message });
+            stream.push({ type: 'toolcall_end', contentIndex: 0, toolCall: message.content[0], partial: message });
+          }
+          stream.push({ type: 'done', reason: message.stopReason, message }); stream.end(); return stream;
+        } });
+      extension = install(pi, { config: validateConfig({ include: ['fixture'], storageRoot: join(root, 'early-tasks-' + scenario),
+        autoDetachMs: 0, detachOnSteer: !disabled, notifyDebounceMs: 5000 }), makeBash: cwd => sdk.createBashToolDefinition(cwd) });
+      pi.on('tool_execution_start', async event => {
+        trace.push(`start ${event.toolCallId} parent=${event.parentToolCallId ?? '-'} tasks=${extension.inspect().tasks.length}`);
+        if ((scenario === 'execution-start' || disabled) && event.toolCallId === 'outer') {
+          assert.equal(extension.inspect().tasks.length, 0);
+          earlyInput = session.steer('early-redirect-marker', undefined, { source: 'rpc' });
+          await earlyInput;
+        }
+      });
+      pi.on('tool_call', async (event, ctx) => {
+        if (event.toolCallId === 'outer') {
+          trace.push('outer hook'); outerCall.resolve();
+          if (approvalCase && requests === 1) {
+            const granted = await ctx.ui.confirm('approval', 'fixture');
+            trace.push(`approval ${granted}`);
+            if (!granted) return { block: true, reason: 'fixture denied' };
+          }
+        }
+      });
+      pi.on('input', event => trace.push(`input ${event.streamingBehavior} tasks=${extension.inspect().tasks.length}`));
+      pi.on('tool_execution_end', event => {
+        trace.push(`end ${event.toolCallId} handle=${event.result.structuredContent?.task?.detachReason ?? '-'}`);
+        results.push(event);
+        if (event.toolCallId === 'outer') primaryEnd.resolve(event);
+      });
+    }] });
+  try {
+    await loader.reload(); assert.deepEqual(loader.getExtensions().errors, []);
+    const modelRuntime = await sdk.ModelRuntime.create({ authPath: join(root, 'auth.json'), modelsPath: join(root, 'models.json') });
+    ({ session } = await sdk.createAgentSession({ cwd: root, resourceLoader: loader, settingsManager, modelRuntime,
+      sessionManager: sdk.SessionManager.inMemory(root) }));
+    await session.bindExtensions({ mode: 'rpc', uiContext: { ...session.extensionRunner.getUIContext(),
+      confirm: async () => { approval.resolve(); return choice.promise; } } });
+    await session.setModel(modelRuntime.getModel('early-fixture', 'fixture'));
+    session.setActiveToolsByName(['fixture', 'fixture_mt', 'codemode', 'meantime']);
+    const run = session.prompt('start early steer race');
+    if (approvalCase) await bounded(approval.promise);
+    else if (nested || scenario === 'execution-start' || disabled) await bounded(outerCall.promise);
+    else await bounded(firstBody.promise);
+    if (scenario === 'execution-start' || disabled) await earlyInput;
+    else {
+      if (approvalCase || nested) assert.equal(extension.inspect().tasks.length, 0, 'intent must precede runtime admission');
+      await session.steer('early-redirect-marker', undefined, { source: 'rpc' });
+    }
+    trace.push('steer submitted');
+    if (approvalCase) {
+      await tick();
+      assert.equal(results.length, 0, 'approval must not be bypassed');
+      assert.equal(bodies.size, 0);
+      choice.resolve(!denied);
+    }
+    if (disabled) {
+      await bounded(firstBody.promise);
+      await tick(); await tick();
+      assert.equal(extension.inspect().tasks[0].delivery, 'foreground');
+      assert.equal(requests, 1);
+      firstRelease.resolve();
+    } else if (!denied) {
+      await bounded(firstBody.promise);
+      await bounded(primaryEnd.promise);
+      const task = extension.inspect().tasks.find(t => t.tool === 'fixture');
+      assert.equal(task.delivery, 'background'); assert.equal(task.detachReason, 'steer');
+      if (scenario === 'outer-approval') assert.equal(task.mode, 'no', 'user intent overrides timer-only no mode');
+      assert.equal(task.localRunning, true, 'producer must still be held when Pi continues');
+    }
+    const firstEnd = await bounded(primaryEnd.promise);
+    if (denied) {
+      assert.equal(firstEnd.isError, true); assert.equal(bodies.has('first'), false);
+      assert.equal(extension.inspect().tasks.length, 0, 'denial creates no handle');
+    }
+    await bounded(nextBody.promise); await tick(); await tick();
+    const foreground = extension.inspect().tasks.filter(t => t.delivery === 'foreground');
+    assert.equal(foreground.length, 1, 'next model turn must not inherit intent');
+    assert.equal(requests, 2, 'unrelated call must still be waiting');
+    nextRelease.resolve(); await bounded(run);
+    firstRelease.resolve();
+    // Wait via public meantime, not a polling loop, and acknowledge the detached result.
+    const task = extension.inspect().tasks.find(t => t.delivery === 'background');
+    if (task) {
+      const tool = session.agent.state.tools.find(t => t.name === 'meantime');
+      const result = await tool.execute('collect', { action: 'wait', id: task.id, timeout: 2 }, new AbortController().signal);
+      assert.equal(result.structuredContent.result_available, true); assert.equal(result.isError, false);
+    }
+    assert.equal(requests, 3);
+    assert.equal(results.find(e => e.toolCallId === 'unrelated').result.structuredContent?.task, undefined);
+    if (denied) {
+      // A real session replacement retires extension contexts; reload resources
+      // before binding the new owner and reusing the former outer call ID.
+      await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'switch' });
+      session.dispose();
+      await extension.dispose();
+      await loader.reload();
+      ({ session } = await sdk.createAgentSession({ cwd: root, resourceLoader: loader, settingsManager, modelRuntime,
+        sessionManager: sdk.SessionManager.inMemory(root) }));
+      await session.bindExtensions({ mode: 'rpc' });
+      await session.setModel(modelRuntime.getModel('early-fixture', 'fixture'));
+      session.setActiveToolsByName(['fixture', 'fixture_mt', 'meantime']);
+      const freshRun = session.prompt('unrelated new session');
+      await bounded(freshBody.promise); await tick(); await tick();
+      assert.equal(requests, 4);
+      assert.equal(extension.inspect().tasks.length, 1);
+      assert.equal(extension.inspect().tasks[0].delivery, 'foreground', 'new session cannot inherit prior intent');
+      freshRelease.resolve(); await bounded(freshRun);
+      assert.equal(requests, 5);
+      assert.equal(results.at(-1).result.structuredContent?.task, undefined);
+    }
+    console.log(`EARLY_STEER ${scenario}: ${JSON.stringify(trace)}`);
+  } finally {
+    choice.resolve(false); firstRelease.resolve(); nextRelease.resolve(); freshRelease.resolve();
+    if (session) await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
+    await extension?.dispose(); session?.dispose();
   }
 }

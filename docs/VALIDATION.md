@@ -8,6 +8,7 @@
 - 无模型调用的真实 SDK smoke：原生 Bash、本地 MCP、后台结果嵌套读取；使用磁盘 SessionManager，确认前台无扩展文件/索引，重开会话文件并重新加载扩展后读回 completion 文本。小 Bash 无文件，超大 Bash 引用 Pi 原生文件，超大扩展工具文本只写一个 `.txt`；恢复保留路径及预览，图片/结构化数据不持久化。
 - `no` 只关闭计时转后台：runtime/适配器回归覆盖 steer、快捷键、`/meantime detach`，以及审批拒绝、调用进入、索引失败和 print/json admission 门槛；模型说明与 Schema 描述同步验证。不代表真实终端快捷键验收。
 - 官方 SDK 结果钩子、取消和权限检查通过；选择器由测试适配器提供，不代表真实终端菜单验收。
+- `node scripts/pi-smoke.mjs` 的 `EARLY_STEER` 使用真实 AgentSession、脚本化 provider 和真正的 Codemode/QuickJS worker（无外部模型请求）。覆盖外层代理审批前 steer（`no` 模式批准后仍响应用户 steer；拒绝不执行）、Codemode 尚无 managed task 时的 steer、公开 execution-start 精确 admission 边界、已有 producer 的 steer、`detachOnSteer=false`。批准前没有业务执行/句柄；拒绝不运行 producer；批准后句柄出现时 producer 仍被 gate 持有、后续独立完成且 signal 未取消。每例证明 steer 文本进入下一 provider context、下一模型回合的无关 held task 仍在前台；拒绝例再关闭旧会话、重载资源并绑定新的 AgentSession，复用 call ID，证明新会话无旧意图。日志打印调用/父 ID、任务数、审批、执行、句柄和模型请求顺序；不把真实 RPC-mode SDK 当作 RPC transport 或 TUI 验收。
 
 ## 0.1.4 历史验证
 

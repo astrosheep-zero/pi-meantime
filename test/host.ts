@@ -109,6 +109,7 @@ export class FakePi implements PiHost {
   private async dispatch(name: string, args: Record<string, unknown>, id: string, parent: string | undefined,
     signal?: AbortSignal, onUpdate?: Update): Promise<Outcome> {
     this.trace.push({ type: 'start', name, id });
+    await this.emit('tool_execution_start', { type: 'tool_execution_start', toolCallId: id, parentToolCallId: parent });
     const definition = this.definitions.get(name);
     let result: Result;
     let release: (() => void) | undefined;

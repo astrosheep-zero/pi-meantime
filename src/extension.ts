@@ -96,6 +96,20 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   const executionControl = `Optional ${CONTROL} (interactive sessions): "auto" (default) starts in the foreground and ${config.autoDetachMs > 0 ? `the timer detaches after ${config.autoDetachMs / 1000}s if still running` : 'never detaches on a timer'}; it may detach sooner on Ctrl+Shift+B, /meantime detach or steer (if enabled). "yes" requests background execution; "no" disables automatic backgrounding. Detaching does not cancel the operation.`;
   const pairs = new Map<string, Pair>();
   const tickets = new Map<string, Ticket>();
+  // Only live public call identities may donate intent to later nested calls.
+  const calls = new Map<string, { parent?: string; intent?: 'steer' | 'shortcut' }>();
+  function userDetach(reason: 'steer' | 'shortcut'): number {
+    for (const call of calls.values()) call.intent = reason;
+    return runtime?.detachAll(reason) ?? 0;
+  }
+  function inheritedDetach(id: string): 'steer' | 'shortcut' | undefined {
+    let call = calls.get(id);
+    while (call) {
+      if (call.intent) return call.intent;
+      call = call.parent ? calls.get(call.parent) : undefined;
+    }
+    return undefined;
+  }
   const diagnostics = new Map<string, string>();
   const capabilities = new Map<string, 'parallel' | 'sequential' | undefined>();
   const disposers: (() => void)[] = [];
@@ -253,6 +267,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
           const view = await r.run({
             tool: original, kind: 'tool', callId, mode: split.mode,
             canDetach: interactive(ctx), parentSignal: signal, onUpdate: update,
+            userDetach: inheritedDetach(callId),
             readyToDetach: () => ticket.started,
             execute: async (jobSignal, onUpdate) => {
               producerStarted = true;
@@ -392,6 +407,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       const view = await r.run({ tool: 'bash', kind: 'bash', callId, mode: split.mode,
         command: typeof split.args.command === 'string' ? split.args.command : undefined,
         canDetach: interactive(ctx), parentSignal: signal, onUpdate: update,
+        userDetach: inheritedDetach(callId),
         execute: async (jobSignal, onUpdate) => {
           const result = await native.execute(callId, split.args, jobSignal, onUpdate, ctx);
           return { result, isError: result.isError === true };
@@ -504,7 +520,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     live = false; runtime = undefined;
     try { currentCtx?.ui.setStatus('meantime', undefined); currentCtx?.ui.setWidget('bg-control', undefined); } catch {}
     currentCtx = undefined; currentOwner = undefined;
-    tickets.clear();
+    tickets.clear(); calls.clear();
   }
   on('session_start', (_event, ctx) => start(ctx));
   on('session_shutdown', () => stop());
@@ -516,7 +532,8 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     }
   });
   on('mcp_servers_change', () => queueReconcile());
-  on('agent_settled', () => { runtime?.flushNotifications(); queueReconcile(); });
+  on('agent_settled', () => { calls.clear(); runtime?.flushNotifications(); queueReconcile(); });
+  on('turn_end', () => { calls.clear(); });
   on('session_compact_failed', () => runtime?.flushNotifications());
   for (const event of ['session_compact', 'session_tree'] as const) on(event, () => {
     // Pi clears busy after these handlers return. Resume once, not by polling.
@@ -525,7 +542,12 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   });
   on('ui_prompt_start', () => runtime?.prompt(true));
   on('ui_prompt_end', () => runtime?.prompt(false));
-  on('tool_execution_end', event => {
+  on('tool_execution_start', (event, ctx) => {
+    if (live && owner(ctx) === currentOwner) calls.set(event.toolCallId, { parent: event.parentToolCallId });
+  });
+  on('tool_execution_end', (event, ctx) => {
+    if (!live || owner(ctx) !== currentOwner) return;
+    calls.delete(event.toolCallId);
     const data = event.result.structuredContent;
     const details = event.result.details;
     const task = isRecord(data) && isRecord(data.task) ? data.task
@@ -552,13 +574,13 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     }
   });
   on('input', event => {
-    if (config.detachOnSteer && event.streamingBehavior === 'steer') runtime?.detachAll('steer');
+    if (config.detachOnSteer && event.streamingBehavior === 'steer') userDetach('steer');
     // No abort, no consume/resubmit, no lost images or changed queue semantics.
     return { action: 'continue' };
   });
   pi.registerShortcut('ctrl+shift+b', {
     description: 'Detach managed foreground calls without cancellation',
-    handler(ctx) { const count = assertRuntime(ctx).detachAll('shortcut'); controlFeedback(ctx, `Detached ${count} managed call(s).\nPending approvals and unwrapped calls stay in the foreground.`); },
+    handler(ctx) { assertRuntime(ctx); const count = userDetach('shortcut'); controlFeedback(ctx, `Detached ${count} managed call(s).\nPending approvals and unwrapped calls stay in the foreground.`); },
   });
   const meantimeCommand = { description: 'Background runtime: /meantime [detach|rescan|cancel <id>] (alias: /bg)', async handler(args: string, ctx: Context): Promise<void> {
     const [command, ...rest] = args.trim() ? args.trim().split(/\s+/) : [];
@@ -584,7 +606,8 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       controlFeedback(ctx, `${taskList(assertRuntime(ctx).list())}\nCancel: /meantime cancel <id>; output: ask meantime(action="wait", id=..., timeout=0).\nActive proxies: ${[...pairs.values()].filter(p => p.enabled).length}; warnings: ${diagnostics.size}.`);
     } else if (rest.length) controlFeedback(ctx, 'Use /meantime [detach|rescan|cancel <id>]');
     else if (command === 'detach') {
-      const count = assertRuntime(ctx).detachAll('shortcut');
+      assertRuntime(ctx);
+      const count = userDetach('shortcut');
       controlFeedback(ctx, `Detached ${count} managed call(s).\nPending approvals and unwrapped calls stay in the foreground.`);
     }
     else if (command === 'rescan') { reconcile(); controlFeedback(ctx, 'Background proxy registry rescanned. Use /meantime.'); }
