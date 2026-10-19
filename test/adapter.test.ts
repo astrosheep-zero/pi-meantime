@@ -32,19 +32,22 @@ test('model-facing execution control reflects the configured auto-detach timer',
     try {
       const event = { type: 'before_agent_start' as const, systemPromptOptions: { sections: {} as Record<string, string> } };
       await h.pi.emit('before_agent_start', event);
-      const texts = [event.systemPromptOptions.sections.meantime!,
-        h.pi.definitions.get('bash')!.description, h.pi.definitions.get('mcp__model_text_mt')!.description];
-      for (const text of texts) {
-        if (autoDetachMs) assert.ok(text.includes(`detaches after ${autoDetachMs / 1000}s if still running`));
-        else { assert.match(text, /never detaches on a timer/); assert.doesNotMatch(text, /\b0s\b/); }
-        assert.match(text, /"no" disables automatic backgrounding\./);
-        assert.doesNotMatch(text, /"no" (?:stays|always)|always foreground/);
-      }
+      const text = event.systemPromptOptions.sections.meantime!;
+      if (autoDetachMs) assert.ok(text.includes(`detaches after ${autoDetachMs / 1000}s if still running`));
+      else { assert.match(text, /never detaches on a timer/); assert.doesNotMatch(text, /\b0s\b/); }
+      assert.match(text, /"no" disables automatic backgrounding\./);
+      assert.doesNotMatch(text, /"no" (?:stays|always)|always foreground/);
+      assert.match(text, /Managed bash accepts the same control; timeout remains a hard command timeout/);
       for (const name of ['bash', 'mcp__model_text_mt']) {
-        const parameters = h.pi.definitions.get(name)!.parameters as { properties: Record<string, { description: string }> };
-        assert.match(parameters.properties.__background__!.description, /no: disables automatic backgrounding\./);
-        assert.doesNotMatch(parameters.properties.__background__!.description, /never detach/);
+        const tool = h.pi.definitions.get(name)!;
+        assert.ok(tool.description.length < 200, 'only a short control pointer is added per tool');
+        assert.match(tool.description, /__background__/);
+        assert.doesNotMatch(tool.description, /detaches after|never detaches on a timer|Detaching does not cancel/);
+        const parameters = tool.parameters as { properties: Record<string, unknown>; required?: string[] };
+        assert.deepEqual(parameters.properties.__background__, { type: 'string', enum: ['auto', 'yes', 'no'] });
+        assert.ok(!parameters.required?.includes('__background__'));
       }
+      assert.match(h.pi.definitions.get('mcp__model_text_mt')!.description, /Proxy for mcp__model_text;/);
     } finally { await h.close(); }
   }
 });

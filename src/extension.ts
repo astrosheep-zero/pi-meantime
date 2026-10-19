@@ -238,7 +238,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     const original = info.name;
     return {
       name, label: name,
-      description: `${MARKER} ${info.description}\n${executionControl} This field is Pi-only execution control. The original tool is ${original}; use this proxy instead of calling it directly.`,
+      description: `${MARKER} ${info.description}\nProxy for ${original}; optional ${CONTROL}.`,
       // Discovery metadata lacks outputSchema; native output or a handle is
       // unknown, not the old task envelope promised for every invocation.
       parameters: decorateSchema(info.parameters), outputSchema: {},
@@ -248,8 +248,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       // the original tool's sequential contract just to enable detachment.
       executionMode: 'parallel',
       namespace: info.namespace, annotations: info.annotations,
-      promptSnippet: `Managed ${original}; supports cooperative background execution.`,
-      promptGuidelines: [...(info.promptGuidelines ?? []), 'A returned task ID means work is already running. Do not repeat side effects. Await completion notification or explicitly inspect meantime.'],
+      promptGuidelines: info.promptGuidelines ? [...info.promptGuidelines] : undefined,
       reachesTools: () => [original],
       async execute(callId, params, signal, update, ctx) {
         const r = assertRuntime(ctx);
@@ -394,7 +393,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       type: 'object', properties: { task: { type: 'object' }, result_available: { const: false } },
       required: ['task', 'result_available'],
     }] } : {},
-    description: `${base.description}\nManaged by pi-meantime. ${executionControl} timeout remains a hard command timeout.`,
+    description: `${base.description}\nManaged by pi-meantime; optional ${CONTROL}.`,
     // Preserve direct access from codemode. A built-in factory, not executeTool('bash'),
     // is used below, so the same-name override has no recursive dispatch.
     exposure: 'direct',
@@ -525,7 +524,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   on('before_agent_start', (event, ctx) => {
     if (live) {
       currentCtx = ctx; reconcile();
-      event.systemPromptOptions.sections.meantime = `Tools ending in _mt perform the same operation and accept the same business arguments as their original tools, with one extra optional parameter: ${CONTROL}. Use the _mt version when available. ${executionControl} A task handle means the work is already running; do not repeat the call.`;
+      event.systemPromptOptions.sections.meantime = `Tools ending in _mt perform the same operation and accept the same business arguments as their original tools, with one extra optional parameter: ${CONTROL}. Use the _mt version when available. ${executionControl} Managed bash accepts the same control; timeout remains a hard command timeout. A task handle means the work is already running; do not repeat the call. Await completion notification or explicitly inspect meantime.`;
     }
   });
   on('mcp_servers_change', () => queueReconcile());

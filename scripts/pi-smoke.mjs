@@ -34,6 +34,7 @@ if (sdk) {
     for (const scenario of ['in-flight', 'before-wait', 'unobserved', 'partial', 'timeout', 'compact', 'compact-cancel', 'tree', 'tree-cancel']) {
       await completionRace(sdk, root, scenario);
     }
+    await controlGuidance(sdk, root);
     const baseline = await nativeMcpBaseline(sdk, root, largeMcpText);
     outputs.push({ path: baseline.details.fullOutputPath });
     const settingsManager = sdk.SettingsManager.inMemory({ defaultTools: ['bash', 'meantime'] });
@@ -424,6 +425,109 @@ async function completionRace(sdk, root, scenario) {
     if (session) await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
     await extension?.dispose();
     session?.dispose();
+  }
+}
+
+/** Real provider prompt and QuickJS discovery for direct, codemode and deferred proxies. */
+async function controlGuidance(sdk, root) {
+  const originalDescription = 'Return the supplied fixture value.';
+  const fixtures = ['direct', 'codemode', 'deferred'].map(exposure => ({ exposure, name: `mcp__fixture__${exposure}` }));
+  const providerContexts = [], calls = [], scriptResults = [];
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  let session, extension, requests = 0;
+  try {
+    const settingsManager = sdk.SettingsManager.inMemory({ defaultTools: ['codemode', 'meantime'] });
+    const loader = new sdk.DefaultResourceLoader({ cwd: root, agentDir: join(root, 'control-agent'), settingsManager,
+      noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true,
+      extensionFactories: [sdk.createCodemodeExtension({ mode: 'only' }), pi => {
+        for (const { name, exposure } of fixtures) pi.registerTool({ name, exposure,
+          label: name, description: originalDescription, executionMode: 'parallel',
+          parameters: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'], additionalProperties: false },
+          outputSchema: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'] },
+          async execute(_id, args) {
+            calls.push({ name, args });
+            return { content: [{ type: 'text', text: args.value }], structuredContent: args, details: undefined };
+          },
+        });
+        pi.registerProvider('control-fixture', { api: 'openai-completions', baseUrl: 'https://fixture.invalid', apiKey: 'unused',
+          models: [{ id: 'fixture', name: 'fixture', reasoning: false, input: ['text'], cost: usage.cost, contextWindow: 32000, maxTokens: 2048 }],
+          streamSimple(model, context) {
+            providerContexts.push(structuredClone(context));
+            const first = ++requests === 1, stream = createAssistantMessageEventStream();
+            const code = `
+              const names = ${JSON.stringify(fixtures.map(f => f.name + '_mt'))};
+              const found = await searchTools('mcp__fixture__deferred_mt', {limit: 8});
+              const descriptions = await Promise.all(names.map(name => describeTool(name)));
+              const results = await Promise.all(names.map(name => tools[name]({value: name, __background__: 'no'})));
+              return {found, descriptions, results};`;
+            const message = { role: 'assistant', api: model.api, provider: model.provider, model: model.id, usage,
+              content: first ? [{ type: 'toolCall', id: 'discover', name: 'codemode', arguments: { code } }] : [{ type: 'text', text: 'done' }],
+              stopReason: first ? 'toolUse' : 'stop', timestamp: Date.now() };
+            stream.push({ type: 'start', partial: message });
+            if (first) {
+              stream.push({ type: 'toolcall_start', contentIndex: 0, partial: message });
+              stream.push({ type: 'toolcall_end', contentIndex: 0, toolCall: message.content[0], partial: message });
+            }
+            stream.push({ type: 'done', reason: message.stopReason, message }); stream.end(); return stream;
+          },
+        });
+        pi.on('tool_execution_end', event => { if (event.toolName === 'codemode') scriptResults.push(event.result); });
+        extension = install(pi, { config: validateConfig({ autoDetachMs: 1750 }), makeBash: cwd => sdk.createBashToolDefinition(cwd) });
+      }] });
+    await loader.reload();
+    const modelRuntime = await sdk.ModelRuntime.create({ authPath: join(root, 'auth.json'), modelsPath: join(root, 'models.json') });
+    ({ session } = await sdk.createAgentSession({ cwd: root, resourceLoader: loader, settingsManager, modelRuntime,
+      sessionManager: sdk.SessionManager.inMemory(root) }));
+    await session.bindExtensions({ mode: 'rpc' });
+    await session.setModel(modelRuntime.getModel('control-fixture', 'fixture'));
+    await session.prompt('Discover indirect fixture tools and return their values with automatic backgrounding disabled.');
+    assert.equal(requests, 2);
+    assert.equal(scriptResults.length, 1);
+    assert.equal(scriptResults[0].isError ?? false, false, JSON.stringify(scriptResults));
+    const output = scriptResults[0].content.filter(b => b.type === 'text').map(b => b.text).join('');
+    const discovered = JSON.parse(output.slice(output.indexOf('Output:\n') + 'Output:\n'.length));
+    assert.ok(discovered.found.some(t => t.name === 'mcp__fixture__deferred_mt'), 'QuickJS search discovers deferred proxy');
+    assert.deepEqual(discovered.results, fixtures.map(f => ({ value: f.name + '_mt' })));
+    assert.deepEqual(calls.map(c => c.args), fixtures.map(f => ({ value: f.name + '_mt' })), 'control never reaches business tool');
+    const all = session.getAllTools();
+    const sizes = fixtures.map(({ name, exposure }, i) => {
+      const proxy = all.find(t => t.name === name + '_mt');
+      assert.equal(proxy.exposure, exposure, 'indirect tools must not be promoted');
+      assert.ok(discovered.descriptions[i].includes(name));
+      assert.ok(discovered.descriptions[i].includes(originalDescription));
+      assert.match(discovered.descriptions[i], /__background__\?/);
+      for (const mode of ['auto', 'yes', 'no']) assert.ok(discovered.descriptions[i].includes(`"${mode}"`));
+      assert.deepEqual(proxy.parameters.properties.__background__.enum, ['auto', 'yes', 'no']);
+      assert.ok(!proxy.parameters.required.includes('__background__'));
+      return { name: proxy.name, description: proxy.description.length,
+        controlSchema: JSON.stringify(proxy.parameters.properties.__background__).length,
+        discovery: discovered.descriptions[i].length };
+    });
+    const system = providerContexts[0].messages.filter(m => m.role === 'system');
+    const section = system.map(m => m.sections?.meantime).find(Boolean);
+    assert.ok(section, 'meantime instructions reach the actual provider even in codemode-only mode');
+    for (const phrase of ['__background__', '"auto" (default)', 'detaches after 1.75s', '"yes" requests background execution', '"no" disables automatic backgrounding']) {
+      assert.ok(section.includes(phrase), phrase);
+    }
+    const meaningsInRequest = JSON.stringify(system).split('Detaching does not cancel the operation.').length - 1;
+    const proxyChars = sizes.reduce((sum, s) => sum + s.description + s.controlSchema, 0);
+    const discoveryChars = sizes.reduce((sum, s) => sum + s.discovery, 0);
+    const bash = all.find(t => t.name === 'bash');
+    console.log(`CONTROL_GUIDANCE: ${JSON.stringify({ sizes, proxyChars, discoveryChars, bashDescriptionChars: bash.description.length,
+      sectionChars: section.length, meaningsInRequest, exposures: fixtures.map(f => f.exposure), calls: calls.length })}`);
+    assert.equal(meaningsInRequest, 1, 'full control meaning must appear once, not per listed proxy');
+    for (const { name } of fixtures) {
+      const proxy = all.find(t => t.name === name + '_mt');
+      assert.ok(proxy.description.length < originalDescription.length + 100, 'proxy adds only original name/control pointer');
+    }
+    // Measured with the same real SDK fixtures at main 9bb40ce; counts are characters, not tokens.
+    assert.ok(proxyChars < 2449, 'registered description/control schemas must shrink from the measured baseline');
+    assert.ok(discoveryChars < 3248, 'actual QuickJS discovery text must shrink too');
+    console.log('CONTROL_GUIDANCE_PASS: real provider prompt, codemode-only discovery and deferred calls retain control meaning.');
+  } finally {
+    if (session) await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
+    await extension?.dispose(); session?.dispose();
   }
 }
 
