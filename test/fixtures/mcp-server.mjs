@@ -28,7 +28,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   }
   if (method !== 'tools/call') { if (id !== undefined) send({ id, error: { code: -32601, message: 'Unknown method' } }); return; }
   const args = params?.arguments ?? {};
-  if ('__meantime__' in args) return send({ id, error: { code: -32602, message: 'Leaked runtime parameter' } });
+  if ('__background__' in args) return send({ id, error: { code: -32602, message: 'Leaked runtime parameter' } });
   if (!tools.some(t => t.name === params.name) || typeof args.ms !== 'number' || !Number.isFinite(args.ms) || args.ms < 0 || args.ms > 5000) return send({ id, error: { code: -32602, message: 'Invalid fixture arguments' } });
   const timer = setTimeout(() => {
     timers.delete(id);

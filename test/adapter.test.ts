@@ -42,8 +42,8 @@ test('model-facing execution control reflects the configured auto-detach timer',
       }
       for (const name of ['bash', 'mcp__model_text_mt']) {
         const parameters = h.pi.definitions.get(name)!.parameters as { properties: Record<string, { description: string }> };
-        assert.match(parameters.properties.__meantime__!.description, /no: disables automatic backgrounding\./);
-        assert.doesNotMatch(parameters.properties.__meantime__!.description, /never detach/);
+        assert.match(parameters.properties.__background__!.description, /no: disables automatic backgrounding\./);
+        assert.doesNotMatch(parameters.properties.__background__!.description, /never detach/);
       }
     } finally { await h.close(); }
   }
@@ -84,7 +84,7 @@ test('codemode/deferred proxies inherit exposure and dispatch through the real o
       assert.ok(h.pi.callable().some(t => t.name === name), 'original still callable');
       assert.ok(h.pi.callable().some(t => t.name === name + '_mt'), 'proxy available to codemode/tool_search');
       assert.deepEqual(proxy?.parameters.required, ['query']);
-      const output = await h.pi.call(name + '_mt', { query: exposure, __meantime__: 'no' });
+      const output = await h.pi.call(name + '_mt', { query: exposure, __background__: 'no' });
       assert.equal(output.isError, false);
       assert.match(JSON.stringify(output.result), new RegExp(`RESULT:${exposure}`));
       const raw = await h.pi.call(name, { query: 'raw' });
@@ -97,7 +97,7 @@ test('codemode/deferred proxies inherit exposure and dispatch through the real o
 test('codemode script can call codemode _mt proxy but not the unwrapped original', async () => {
   const original = basicTool('mcp__private__slow', async () => ok('CODERESULT').result, { exposure: 'codemode' });
   const caller = basicTool('codemode_fixture', async (_id, args, _s, _u, ctx) => {
-    return (await ctx.executeTool(String(args.target), { __meantime__: 'no' })).result;
+    return (await ctx.executeTool(String(args.target), { __background__: 'no' })).result;
   }, { parameters: { type: 'object', properties: { target: { type: 'string' } }, required: ['target'] } });
   const h = await setup([original, caller]);
   try {
@@ -130,7 +130,7 @@ test('business args are stripped correctly and the original permission hooks sti
   const h = await setup([basicTool('mcp__t__echo', async (_id, args) => { seen = args; return ok('echo').result; }, { parameters: { type: 'object', properties: { text: { type: 'string' } }, additionalProperties: false } })]);
   h.pi.on('tool_call', event => { if (event.toolName === 'mcp__t__echo') allowedChecks++; });
   try {
-    const out = await h.pi.call('mcp__t__echo_mt', { text: 'hello', __meantime__: 'no' });
+    const out = await h.pi.call('mcp__t__echo_mt', { text: 'hello', __background__: 'no' });
     assert.equal(out.isError, false); assert.deepEqual(seen, { text: 'hello' }); assert.equal(allowedChecks, 1);
     assert.ok(h.pi.trace.some(e => e.type === 'execute' && e.name === 'mcp__t__echo' && e.id!.includes('/')));
   } finally { await h.close(); }
@@ -162,7 +162,7 @@ test('model explicit background continues in parallel with another tool and fini
   const work = deferred<Result>();
   const h = await setup([basicTool('mcp__t__slow', () => work.promise), basicTool('local_fast')]);
   try {
-    const out = await h.pi.call('mcp__t__slow_mt', { __meantime__: 'yes' }); const task = snapshot(out);
+    const out = await h.pi.call('mcp__t__slow_mt', { __background__: 'yes' }); const task = snapshot(out);
     assert.equal(task.delivery, 'background'); assert.equal(task.state, 'running');
     const fast = await h.pi.call('local_fast', {}); assert.equal(fast.isError, false);
     work.resolve(ok('slow result').result); await until(() => h.pi.notifications.length === 1);
@@ -181,7 +181,7 @@ test('steer releases no-mode foreground without abort or consuming text/images',
   const work = deferred<Result>(); let childSignal: AbortSignal | undefined;
   const h = await setup([basicTool('mcp__t__slow', (_id, _a, signal) => { childSignal = signal; return work.promise; })]);
   try {
-    const running = h.pi.call('mcp__t__slow_mt', { __meantime__: 'no' }); await until(() => !!childSignal);
+    const running = h.pi.call('mcp__t__slow_mt', { __background__: 'no' }); await until(() => !!childSignal);
     const images: Content[] = [{ type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' }];
     const event = { type: 'input' as const, text: 'change direction', streamingBehavior: 'steer' as const, source: 'interactive' as const, images };
     const responses = await h.pi.emit('input', event); const out = await running;
@@ -210,7 +210,7 @@ test('shortcut and detach command release no-mode calls once without cancellatio
     const work = deferred<Result>(); let signal: AbortSignal | undefined;
     const h = await setup([basicTool('mcp__t__slow', (_id, _args, s) => { signal = s; return work.promise; })], { autoDetachMs: 5 });
     try {
-      const running = h.pi.call('mcp__t__slow_mt', { __meantime__: 'no' });
+      const running = h.pi.call('mcp__t__slow_mt', { __background__: 'no' });
       await until(() => !!signal); await sleep(15);
       assert.equal((h.instance.inspect() as { tasks: Snapshot[] }).tasks[0]!.delivery, 'foreground');
       if (trigger === 'shortcut') await h.pi.shortcuts.get('ctrl+shift+b')!(h.pi.ctx);
@@ -249,7 +249,7 @@ test('late registration, schema replacement, disappearance and reappearance are 
   } finally { await h.close(); }
 });
 test('schema/name collisions leave originals visible, never overwrite unrelated tools', async () => {
-  const name = 'mcp__t__collision'; const blocked = basicTool(name, undefined, { parameters: { type: 'object', properties: { __meantime__: { type: 'number' } } } });
+  const name = 'mcp__t__collision'; const blocked = basicTool(name, undefined, { parameters: { type: 'object', properties: { __background__: { type: 'number' } } } });
   const claimed = basicTool('mcp__t__claimed_mt', undefined, { description: 'Owned by another extension' });
   const h = await setup([blocked, basicTool('mcp__t__claimed'), claimed]);
   try {
@@ -270,7 +270,7 @@ test('model-only, disabled, sequential and excluded file tools remain outside wr
 test('session switch suppresses callbacks and isolates task lookup', async () => {
   const work = deferred<Result>(); const h = await setup([basicTool('mcp__t__slow', () => work.promise)]);
   try {
-    const out = await h.pi.call('mcp__t__slow_mt', { __meantime__: 'yes' }); const id = snapshot(out).id;
+    const out = await h.pi.call('mcp__t__slow_mt', { __background__: 'yes' }); const id = snapshot(out).id;
     await h.pi.emit('session_shutdown', { type: 'session_shutdown', reason: 'switch' });
     h.pi.ctx = new FakePi('B').ctx; await h.pi.emit('session_start', { type: 'session_start' });
     work.resolve(ok().result); await until(() => TaskRuntime.liveProducerCount() === 0);
@@ -282,7 +282,7 @@ test('real shell fixture runs, can detach without a second spawn, and result is 
   const h = await setup();
   try {
     const command = `node -e 'setTimeout(()=>console.log("SHELL_DONE"),80)'\n# ${'long comment '.repeat(20)}`;
-    const out = await h.pi.call('bash', { command, __meantime__: 'yes' });
+    const out = await h.pi.call('bash', { command, __background__: 'yes' });
     const task = snapshot(out); assert.equal(task.state, 'running');
     assert.equal(task.command, command);
     const list = await h.pi.call('meantime', { action: 'list' });
@@ -299,7 +299,7 @@ test('real shell fixture runs, can detach without a second spawn, and result is 
 test('print mode auto waits and explicit background returns a truthful error', async () => {
   const h = await setup([basicTool('mcp__t__one')], {}, 'print');
   try {
-    assert.equal((await h.pi.call('mcp__t__one_mt', { __meantime__: 'yes' })).isError, true);
+    assert.equal((await h.pi.call('mcp__t__one_mt', { __background__: 'yes' })).isError, true);
     assert.equal((await h.pi.call('mcp__t__one_mt', {})).isError, false);
   } finally { await h.close(); }
 });
@@ -344,9 +344,9 @@ test('global nested sequential queue is respected; a queued request cannot claim
   const h = await setup([basicTool('mcp__t__a', () => a.promise), basicTool('mcp__t__b', () => b.promise)]);
   h.pi.sequentialNested = true;
   try {
-    const first = await h.pi.call('mcp__t__a_mt', { __meantime__: 'yes' }); assert.equal(snapshot(first).state, 'running');
+    const first = await h.pi.call('mcp__t__a_mt', { __background__: 'yes' }); assert.equal(snapshot(first).state, 'running');
     let returned = false;
-    const second = h.pi.call('mcp__t__b_mt', { __meantime__: 'yes' }).then(result => { returned = true; return result; });
+    const second = h.pi.call('mcp__t__b_mt', { __background__: 'yes' }).then(result => { returned = true; return result; });
     await sleep(15); assert.equal(returned, false);
     a.resolve(ok().result); const next = await second; assert.equal(snapshot(next).state, 'running');
   } finally { a.resolve(ok().result); b.resolve(ok().result); await h.close(); }
@@ -356,7 +356,7 @@ test('short management receipts retain structured data and cancellation semantic
   const h = await setup([basicTool('mcp__t__receipt', () => pending.promise)]);
   const text = (result: Result) => result.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
   try {
-    const handle = await h.pi.call('mcp__t__receipt_mt', { __meantime__: 'yes' });
+    const handle = await h.pi.call('mcp__t__receipt_mt', { __background__: 'yes' });
     const task = snapshot(handle);
     assert.match(text(handle.result), new RegExp(`^Meantime ${task.id} running in background`));
     assert.match(text(handle.result), /In the TUI use \/meantime or/);
@@ -428,7 +428,7 @@ test('management results are paginated rather than dumping the full registry int
   const h = await setup([basicTool('mcp__t__one', async () => { await sleep(10); return ok().result; })]);
   try {
     for (let i = 0; i < 12; i++) {
-      await h.pi.call('mcp__t__one_mt', { __meantime__: 'yes' });
+      await h.pi.call('mcp__t__one_mt', { __background__: 'yes' });
       await until(() => TaskRuntime.liveProducerCount() === 0);
     }
     const page = await h.pi.call('meantime', { action: 'list', limit: 5 });
@@ -446,7 +446,7 @@ test('wait is the single result path, with immediate reads and fractional second
     assert.deepEqual(schema.properties.timeout, { type: 'number', minimum: 0 });
     assert.equal('timeout_ms' in schema.properties, false);
     assert.equal(schema.additionalProperties, false);
-    const { id } = snapshot(await h.pi.call('mcp__t__slow_mt', { __meantime__: 'yes' }));
+    const { id } = snapshot(await h.pi.call('mcp__t__slow_mt', { __background__: 'yes' }));
     for (const action of ['status', 'result', 'unknown']) {
       assert.equal((await h.pi.call('meantime', { action, id })).isError, true);
     }
@@ -471,8 +471,8 @@ test('multi-task wait exposes settled and pending tasks, validates ids, and shar
   const a = deferred<Result>(), b = deferred<Result>();
   const h = await setup([basicTool('mcp__t__a', () => a.promise), basicTool('mcp__t__b', () => b.promise)]);
   try {
-    const first = snapshot(await h.pi.call('mcp__t__a_mt', { __meantime__: 'yes' }));
-    const second = snapshot(await h.pi.call('mcp__t__b_mt', { __meantime__: 'yes' }));
+    const first = snapshot(await h.pi.call('mcp__t__a_mt', { __background__: 'yes' }));
+    const second = snapshot(await h.pi.call('mcp__t__b_mt', { __background__: 'yes' }));
     const immediate = await Promise.race([
       h.pi.call('meantime', { action: 'wait', ids: [first.id, second.id], timeout: 0 }),
       sleep(0).then(() => { throw new Error('immediate multi-task read blocked'); }),
@@ -519,7 +519,7 @@ test('multi-task wait shares its text budget for Bash and MCP, reports omission,
         const args = tool === 'bash'
           ? { command: `sleep 0.1; node -e 'process.stdout.write("${letter}".repeat(24000))'` }
           : {};
-        handles.push(snapshot(await h.pi.call(tool, { ...args, __meantime__: 'yes' })));
+        handles.push(snapshot(await h.pi.call(tool, { ...args, __background__: 'yes' })));
       }
       work.resolve(ok('M'.repeat(24000)).result);
       const all = await h.pi.call('meantime', { action: 'wait', ids: handles.map(t => t.id), mode: 'all' });

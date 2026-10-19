@@ -11,7 +11,7 @@ for case in cases:
  ck('exact frozen production bytes',all(hashlib.sha256((ROOT/f).read_bytes()).hexdigest()==h for f,h in json.loads((d/'source-hashes-at-launch.json').read_text()).items()))
  ck('local mock only',all(x['authorizationIsLocalStub'] for x in http if x['event']=='request'))
  calls=[x for x in wire if x['event']=='request' and x['message']['method']=='tools/call'];cancels=[x for x in wire if x['event']=='cancel_received'];results=[x for x in ev if x['event']['type']=='tool_result'];ends=[x for x in ev if x['event']['type']=='tool_execution_end'];notes=[x for x in ev if x['event']['type']=='message_end' and x['event'].get('message',{}).get('customType')=='meantime-completion']
- ck('no business control leakage',all('__meantime__' not in x['message']['params']['arguments'] for x in calls))
+ ck('no business control leakage',all('__background__' not in x['message']['params']['arguments'] for x in calls))
  ck('only expected business calls',len(calls)==(2 if case=='manual_foreign' else 1))
  ck('no duplicate completion notices',len([i for x in notes for i in x['event']['message']['details']['taskIds']])==len(set(i for x in notes for i in x['event']['message']['details']['taskIds'])))
  for t in meta:

@@ -15,7 +15,7 @@ for(const c of ['bash_yes_repeat','bash_auto','mcp_yes','mcp_auto','codemode_mcp
  if(c==='search_deferred')assert(req[1].body.tools.some(t=>t.function?.name==='mcp__deferred__slow_mt'));
  const maps=e.find(x=>x.event.type==='loadout_evidence').event.tools;for(const n of ['fixture_codemode','fixture_deferred','mcp__indirect__slow','mcp__deferred__slow'])assert.equal(maps.find(t=>t.name===n)?.exposure,maps.find(t=>t.name===n+'_mt')?.exposure);
  if(c.includes('mcp')||c==='search_deferred'){
-  const server=c==='codemode_mcp'?'indirect':c==='deferred_mcp'||c==='search_deferred'?'deferred':'meantime_fixture';const wire=lines(c,'mcp-'+server+'.jsonl');const calls=wire.flatMap(x=>x.data.trim().split('\n').map(l=>({direction:x.direction,msg:JSON.parse(l)}))).filter(x=>x.msg.method==='tools/call');assert.equal(calls.length,1);assert(!('__meantime__' in calls[0].msg.params.arguments));
+  const server=c==='codemode_mcp'?'indirect':c==='deferred_mcp'||c==='search_deferred'?'deferred':'meantime_fixture';const wire=lines(c,'mcp-'+server+'.jsonl');const calls=wire.flatMap(x=>x.data.trim().split('\n').map(l=>({direction:x.direction,msg:JSON.parse(l)}))).filter(x=>x.msg.method==='tools/call');assert.equal(calls.length,1);assert(!('__background__' in calls[0].msg.params.arguments));
   const original=ends.find(x=>x.event.toolName===task(first.event.result).tool);assert(original.at>first.at);assert(original.event.parentToolCallId);assert(original.at<=note.at);
  }
  const reason=task(first.event.result).detachReason;if(c.includes('auto'))assert.equal(reason,'timeout');if(c==='bash_steer')assert.equal(reason,'steer');if(c==='bash_shortcut')assert.equal(reason,'shortcut');

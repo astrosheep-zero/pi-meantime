@@ -78,8 +78,8 @@ async function commandHarness() {
 test('/bg cancel requires one explicit id and never guesses among current session tasks', async () => {
   const h = await commandHarness();
   try {
-    const a = await h.pi.call('mcp__test__one_mt', { __meantime__: 'yes' });
-    const b = await h.pi.call('mcp__test__one_mt', { __meantime__: 'yes' });
+    const a = await h.pi.call('mcp__test__one_mt', { __background__: 'yes' });
+    const b = await h.pi.call('mcp__test__one_mt', { __background__: 'yes' });
     const idA = (a.result.details as Snapshot).id, idB = (b.result.details as Snapshot).id;
     const handleText = a.result.content[0]; assert.ok(handleText?.type === 'text');
     assert.match(handleText.text, /In the TUI use \/meantime or \/meantime cancel/);
@@ -103,13 +103,13 @@ test('/bg cancel requires one explicit id and never guesses among current sessio
 test('/bg cancel rejects an old session id and does not cancel a different task', async () => {
   const h = await commandHarness();
   try {
-    const a = await h.pi.call('mcp__test__one_mt', { __meantime__: 'yes' }); const id = (a.result.details as Snapshot).id;
+    const a = await h.pi.call('mcp__test__one_mt', { __background__: 'yes' }); const id = (a.result.details as Snapshot).id;
     await h.command(''); assert.equal(h.pi.uiWidgets.size, 1);
     await h.pi.emit('session_shutdown', { type: 'session_shutdown' });
     assert.equal(h.pi.uiWidgets.size, 0);
     h.pi.ctx = { ...h.pi.ctx, sessionManager: { getSessionId: () => 'B', getSessionFile: () => '/sessions/B.jsonl', getEntries: () => [] } };
     await h.pi.emit('session_start', { type: 'session_start' });
-    const b = await h.pi.call('mcp__test__one_mt', { __meantime__: 'yes' }); const idB = (b.result.details as Snapshot).id; const before = h.aborts();
+    const b = await h.pi.call('mcp__test__one_mt', { __background__: 'yes' }); const idB = (b.result.details as Snapshot).id; const before = h.aborts();
     await h.command(`cancel ${id}`); assert.equal(h.aborts(), before);
     const statusB = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: idB });
     assert.equal((statusB.result.details as Snapshot).state, 'running');
@@ -158,7 +158,7 @@ test('recovery retains the authoritative outcome flag with text-only results', a
 test('/bg cancel of an already completed task is visibly idempotent', async () => {
   const h = await commandHarness();
   try {
-    const outcome = await h.pi.call('mcp__test__one_mt', { __meantime__: 'yes' }); const id = (outcome.result.details as Snapshot).id;
+    const outcome = await h.pi.call('mcp__test__one_mt', { __background__: 'yes' }); const id = (outcome.result.details as Snapshot).id;
     h.work.resolve(ok()); await until(() => TaskRuntime.liveProducerCount() === 0);
     await h.command(`cancel ${id}`); await h.command(`cancel ${id}`);
     assert.equal(h.aborts(), 0); assert.match(h.pi.uiMessages.at(-1)!, /completed.*No running local call was cancelled/);

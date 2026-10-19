@@ -19,12 +19,12 @@ try {
   await pi.emit('session_start', { type: 'session_start' });
   console.log('HOST: deterministic Pi contract double; TRANSPORT: real MCP JSON-RPC over stdio');
   console.log('MODEL TOOLS:', pi.modelTools().join(', '));
-  console.log('\nMODEL CALL: mcp__fixture__slow_mt({ms:180,text:"MCP completed",__meantime__:"yes"})');
-  const out = await pi.call('mcp__fixture__slow_mt', { ms: 180, text: 'MCP completed', __meantime__: 'yes' });
+  console.log('\nMODEL CALL: mcp__fixture__slow_mt({ms:180,text:"MCP completed",__background__:"yes"})');
+  const out = await pi.call('mcp__fixture__slow_mt', { ms: 180, text: 'MCP completed', __background__: 'yes' });
   const task = (out.result.structuredContent as { task: unknown }).task as Snapshot;
   console.log('TOOL RESULT:', JSON.stringify(out.result.structuredContent));
-  console.log('\nMODEL CALL WHILE MCP RUNS: bash({command:"printf PARALLEL",__meantime__:"no"})');
-  const parallel = await pi.call('bash', { command: 'printf PARALLEL', __meantime__: 'no' });
+  console.log('\nMODEL CALL WHILE MCP RUNS: bash({command:"printf PARALLEL",__background__:"no"})');
+  const parallel = await pi.call('bash', { command: 'printf PARALLEL', __background__: 'no' });
   console.log('BASH:', parallel.result.content);
   await until(() => pi.notifications.length > 0);
   console.log('\nNOTIFICATION:', pi.notifications[0]!.content);

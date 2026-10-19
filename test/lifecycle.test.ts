@@ -120,7 +120,7 @@ test('Pi session index survives tree navigation and resume, but a fork cannot ad
   const instance = install(pi, { config: h.config, makeBash: fixtureBash });
   try {
     await pi.emit('session_start', { type: 'session_start' });
-    const handle = await pi.call('mcp__test__late_mt', { __meantime__: 'yes' });
+    const handle = await pi.call('mcp__test__late_mt', { __background__: 'yes' });
     const id = (handle.result.details as Snapshot).id, originalCtx = pi.ctx;
     assert.equal(pi.entries.length, 1);
     await pi.emit('session_tree', { type: 'session_tree' });

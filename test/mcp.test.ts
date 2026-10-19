@@ -22,7 +22,7 @@ async function harness() {
 test('real JSON-RPC stdio MCP call is dispatched once, detached, and collected with clean business args', async () => {
   const h = await harness();
   try {
-    const outcome = await h.pi.call('mcp__fixture__slow_mt', { ms: 70, text: 'WIRE_DONE', __meantime__: 'yes' });
+    const outcome = await h.pi.call('mcp__fixture__slow_mt', { ms: 70, text: 'WIRE_DONE', __background__: 'yes' });
     assert.equal(outcome.isError, false);
     const task = (outcome.result.structuredContent as { task: unknown }).task as Snapshot;
     assert.equal(task.state, 'running');
@@ -30,13 +30,13 @@ test('real JSON-RPC stdio MCP call is dispatched once, detached, and collected w
     const result = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: task.id });
     assert.match(JSON.stringify(result.result), /WIRE_DONE/);
     const requests = h.client.sent.filter(m => m.method === 'tools/call'); assert.equal(requests.length, 1);
-    assert.ok(!JSON.stringify(requests[0]).includes('__meantime__'));
+    assert.ok(!JSON.stringify(requests[0]).includes('__background__'));
   } finally { await h.close(); }
 });
 test('cancelled MCP request keeps its native error without classifying remote execution', async () => {
   const h = await harness(); const marker = join(h.root, 'side-effect.txt');
   try {
-    const outcome = await h.pi.call('mcp__fixture__stubborn_mt', { ms: 150, marker, __meantime__: 'yes' });
+    const outcome = await h.pi.call('mcp__fixture__stubborn_mt', { ms: 150, marker, __background__: 'yes' });
     const task = (outcome.result.structuredContent as { task: unknown }).task as Snapshot;
     const cancelled = await h.pi.call('meantime', { action: 'cancel', id: task.id }); assert.equal(cancelled.isError, false);
     await sleep(20);

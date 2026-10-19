@@ -39,9 +39,9 @@ const server = http.createServer(async (req, res) => {
     if (n > 12) throw new Error('Request safety limit exceeded');
     let tool, text;
     if (phase === 'before') {
-      if (n === 1) tool = ['fixture_restart_mt', { kind: 'completed', __meantime__: 'yes' }];
+      if (n === 1) tool = ['fixture_restart_mt', { kind: 'completed', __background__: 'yes' }];
       else if (n === 2) tool = ['meantime', { action: 'result', id: (await completedTask()).id }];
-      else if (n === 3) tool = ['fixture_restart_mt', { kind: 'unfinished', __meantime__: 'yes' }];
+      else if (n === 3) tool = ['fixture_restart_mt', { kind: 'unfinished', __background__: 'yes' }];
       else text = 'READY_FOR_PLANNED_PROCESS_CRASH';
     } else {
       const all = tasks(), incomplete = all.find(t => !t.endedAt), complete = all.find(t => t.state === 'completed');

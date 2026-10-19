@@ -9,9 +9,9 @@
 实现采用两类 adapter 和一个 runtime：
 
 ```text
-model -> bash + __meantime__ -> Pi 原生 Bash factory ------+
+model -> bash + __background__ -> Pi 原生 Bash factory ------+
                                                            |
-model -> original_mt + __meantime__ -> ctx.executeTool ---+--> TaskRuntime
+model -> original_mt + __background__ -> ctx.executeTool ---+--> TaskRuntime
                                          |                 |      |
                                 原工具校验/权限/钩子         |      +--> TaskStore
                                          |                 |      +--> completion outbox
@@ -70,7 +70,7 @@ delivery: foreground -> background
 
 ## 5. Schema 装饰与结果契约
 
-`__meantime__` 是顶层保留属性。包装前检测声明和 required 列表中的冲突。双下划线降低碰撞概率，没有协议级保留名保证。
+`__background__` 是顶层保留属性。包装前检测声明和 required 列表中的冲突。双下划线降低碰撞概率，没有协议级保留名保证。
 
 支持显式 object-root 输入 Schema，复制后直接添加控制属性。保留 required、additionalProperties 和所有嵌套 Schema。**不用 Type.Intersect/allOf 拼接**，因为原对象关闭额外属性时，交叉类型会拒绝新控制参数。
 

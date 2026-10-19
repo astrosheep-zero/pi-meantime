@@ -5,7 +5,7 @@ const rows=p=>{try{return fs.readFileSync(p,'utf8').trim().split('\n').filter(Bo
 function task(s){try{return fs.readdirSync(path.join(root,s,'tasks')).flatMap(owner=>fs.readdirSync(path.join(root,s,'tasks',owner)).filter(f=>f.endsWith('.meta.json')).map(f=>JSON.parse(fs.readFileSync(path.join(root,s,'tasks',owner,f)))))[0];}catch(e){if(e.code==='ENOENT')return;throw e;}}
 function log(s,event){fs.appendFileSync(path.join(root,s,'mock-http.jsonl'),JSON.stringify({at:Date.now(),...event})+'\n');}
 const server=http.createServer(async(req,res)=>{let raw='';for await(const x of req)raw+=x;const s=req.url.split('/')[1];try{const body=JSON.parse(raw),n=(counts.get(s)||0)+1;counts.set(s,n);log(s,{event:'request',n,body,authorizationIsLocalStub:req.headers.authorization==='Bearer localstubkey'});if(n>12)throw new Error('request safety limit');const bg=s.startsWith('bg_'),no=s.startsWith('no_'),toolName=s.replace(/^(native|bg|no)_/,'');let tool,text;
-if(n===1)tool=['mcp__parity__'+toolName+(bg||no?'_mt':''),{ms:1200,...(bg||no?{__meantime__:no?'no':'yes'}:{})}];
+if(n===1)tool=['mcp__parity__'+toolName+(bg||no?'_mt':''),{ms:1200,...(bg||no?{__background__:no?'no':'yes'}:{})}];
 else if(bg&&n===2){const started=rows(path.join(root,s,'mcp-server-events.jsonl')).find(x=>x.event==='work_started');if(!started)throw new Error('No native MCP start');await sleep(Math.max(0,started.at+200-Date.now()));tool=['meantime',{action:'cancel',id:task(s)?.id}];}
 else if((bg||no)&&n===3){const deadline=Date.now()+3000;while(!task(s)?.endedAt){if(Date.now()>deadline)throw new Error('No native cancellation settlement');await sleep(10);}tool=['meantime',{action:'result',id:task(s)?.id}];}
 else text='PARITY_FOLLOWUP_OK';

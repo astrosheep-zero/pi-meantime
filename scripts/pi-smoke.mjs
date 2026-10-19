@@ -54,7 +54,7 @@ if (sdk) {
           parameters: { type: 'object', properties: {} },
           async execute(_id, _args, _signal, _update, ctx) {
             assert.ok(ctx.tools.some(t => t.name === 'meantime'), 'meantime must be callable by codemode');
-            const started = await ctx.executeTool('bash', { command: 'sleep 0.1; printf REAL_BACKGROUND_OK', __meantime__: 'yes' });
+            const started = await ctx.executeTool('bash', { command: 'sleep 0.1; printf REAL_BACKGROUND_OK', __background__: 'yes' });
             assert.equal(started.result.structuredContent.result_available, false);
             const id = started.result.structuredContent.task.id;
             await new Promise(resolve => setTimeout(resolve, 300));
@@ -67,7 +67,7 @@ if (sdk) {
               ['bash', { command: `sleep 0.1; node -e 'process.stdout.write("B".repeat(60000))'` }],
               ['large_text_probe_mt', {}],
             ]) {
-              const handle = await ctx.executeTool(tool, { ...args, __meantime__: 'yes' });
+              const handle = await ctx.executeTool(tool, { ...args, __background__: 'yes' });
               const id = handle.result.structuredContent.task.id;
               const result = await ctx.executeTool('meantime', { action: 'wait', id });
               assert.equal(result.isError, false);
@@ -102,7 +102,7 @@ if (sdk) {
     });
     assert.equal(prompt.systemPromptOptions.sections.existing, 'Keep other prompt sections.');
     assert.match(prompt.systemPromptOptions.sections.meantime, /_mt/);
-    assert.match(prompt.systemPromptOptions.sections.meantime, /__meantime__/);
+    assert.match(prompt.systemPromptOptions.sections.meantime, /__background__/);
     const nextPrompt = await session.extensionRunner.emitBeforeAgentStart({ messageType: 'user', prompt: 'again' }, prompt.systemPromptOptions);
     assert.equal(nextPrompt.systemPromptOptions.sections.meantime, prompt.systemPromptOptions.sections.meantime);
     const deadline = Date.now() + 8000;
@@ -116,11 +116,11 @@ if (sdk) {
     session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), target, 'mcp__meantime_fixture__slow', 'meantime', 'bash', 'background_probe', 'large_text_probe', 'large_text_probe_mt'])]);
     const wrapped = session.agent.state.tools.find(t => t.name === target);
     assert.ok(wrapped, 'proxy must be activated in the test session');
-    const result = await wrapped.execute('smoke', { ms: 1, text: 'REAL_PI_MCP_OK', __meantime__: 'no' }, new AbortController().signal);
+    const result = await wrapped.execute('smoke', { ms: 1, text: 'REAL_PI_MCP_OK', __background__: 'no' }, new AbortController().signal);
     assert.ok(result.content.some(b => b.type === 'text' && b.text.includes('REAL_PI_MCP_OK')));
     assert.equal(result.structuredContent?.task, undefined);
     const bash = session.agent.state.tools.find(t => t.name === 'bash');
-    const shell = await bash.execute('smoke-bash', { command: 'printf REAL_PI_BASH_OK', __meantime__: 'no' }, new AbortController().signal);
+    const shell = await bash.execute('smoke-bash', { command: 'printf REAL_PI_BASH_OK', __background__: 'no' }, new AbortController().signal);
     assert.deepEqual(shell.content, [{ type: 'text', text: 'REAL_PI_BASH_OK' }]);
     assert.equal(shell.structuredContent.exit_code, 0);
     assert.equal(shell.structuredContent.task, undefined);
@@ -375,7 +375,7 @@ async function earlySteerRace(sdk, root, scenario) {
           if (n === 2) assert.ok(JSON.stringify(context.messages).includes('early-redirect-marker'), 'Pi must preserve steer input');
           const call = n === 1 ? { id: 'outer', name: nested ? 'codemode' : 'fixture_mt',
             arguments: nested ? { code: "return await tools.fixture_mt({tag: 'first'});" }
-              : { tag: 'first', ...(scenario === 'outer-approval' ? { __meantime__: 'no' } : {}) } }
+              : { tag: 'first', ...(scenario === 'outer-approval' ? { __background__: 'no' } : {}) } }
             : n === 2 ? { id: 'unrelated', name: 'fixture_mt', arguments: { tag: 'next' } }
             : n === 4 ? { id: 'outer', name: 'fixture_mt', arguments: { tag: 'fresh' } } : undefined;
           const message = { role: 'assistant', api: model.api, provider: model.provider, model: model.id,

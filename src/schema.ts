@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Mode, Schema } from './protocol.ts';
 
-export const CONTROL = '__meantime__';
+export const CONTROL = '__background__';
 export const MARKER = '[pi-meantime proxy]';
 const UNSUPPORTED = ['$ref', '$dynamicRef', '$recursiveRef', 'allOf', 'anyOf', 'oneOf',
   'not', 'if', 'then', 'else', 'patternProperties', 'propertyNames',

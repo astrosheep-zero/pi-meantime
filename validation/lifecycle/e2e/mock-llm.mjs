@@ -11,20 +11,20 @@ const server=http.createServer(async(req,res)=>{let raw='';for await(const x of 
  const user=userText(body),id=taskInfo(s)?.id;let tool,text,delay=0;
  const race=s.startsWith('cancel_'),isBash=s.startsWith('cancel_bash');
  if(race){
-  if(n===1)tool=isBash?['bash',{command:'sleep 1; printf BASH_RACE_FINISHED',__meantime__:'yes'}]:['fixture_direct_mt',{ms:1000,...(['cancel_custom_early','cancel_custom_late','cancel_custom_error'].includes(s)?{gate:'job'}:{}),...(s==='cancel_custom_error'?{failAfterGate:true}:{}),__meantime__:'yes'}];
+  if(n===1)tool=isBash?['bash',{command:'sleep 1; printf BASH_RACE_FINISHED',__background__:'yes'}]:['fixture_direct_mt',{ms:1000,...(['cancel_custom_early','cancel_custom_late','cancel_custom_error'].includes(s)?{gate:'job'}:{}),...(s==='cancel_custom_error'?{failAfterGate:true}:{}),__background__:'yes'}];
   else if(n===2){if(s==='cancel_custom_late'){const end=Date.now()+10000;while(!taskInfo(s)?.endedAt){if(Date.now()>end)throw new Error('Waiting for gated completion timed out');await new Promise(r=>setTimeout(r,10));}}const offset=s.endsWith('early')?-100:s.endsWith('late')?100:0;const start=isBash?taskInfo(s)?.createdAt:starts(s)?.at;if(!start||!id)throw new Error('Missing actual task start');delay=['cancel_custom_early','cancel_custom_late','cancel_custom_error'].includes(s)?0:Math.max(0,start+1000+offset-Date.now());tool=['meantime',{action:'cancel',id}];}
   else if(n===3)tool=['meantime',{action:'cancel',id}];
   else if(!state.read&&taskInfo(s)?.endedAt){tool=['meantime',{action:'result',id}];state.read=true;}
   else text=state.read?'RACE_RESULT_READ':'WAIT_FOR_COMPLETION';
  }else if(s.startsWith('steer_')){
-  if(n===1)tool=['fixture_direct_mt',{ms:1800,__meantime__:s==='steer_no_repeat'?'no':'auto'}];
+  if(n===1)tool=['fixture_direct_mt',{ms:1800,__background__:s==='steer_no_repeat'?'no':'auto'}];
   else if(n===2){delay=700;text='STEERING_ACCEPTED';}
   else if(!state.read&&s!=='steer_no_repeat'&&taskInfo(s)?.endedAt){tool=['meantime',{action:'result',id}];state.read=true;}
   else text='STEERING_CONTINUES';
  }else if(user.includes('Background task completion')){const noteId=[...user.matchAll(/bg_[a-f0-9-]{36}/g)].map(x=>x[0]).at(-1);if(noteId&&!state.resultIds.has(noteId)){state.resultIds.add(noteId);tool=['meantime',{action:'result',id:noteId}];}else text='COMPLETION_OBSERVED';}
  else if(user.includes('SEED_'))text='SEED_SAVED';
- else if(user.includes('START_LONG_TASK')&&!state.issued.has(user)){state.issued.add(user);tool=['fixture_direct_mt',{ms:5000,gate:'job',__meantime__:'yes'}];}
- else if(user.includes('B_OWN_JOB')&&!state.issued.has(user)){state.issued.add(user);tool=['fixture_direct_mt',{ms:200,__meantime__:'yes'}];}
+ else if(user.includes('START_LONG_TASK')&&!state.issued.has(user)){state.issued.add(user);tool=['fixture_direct_mt',{ms:5000,gate:'job',__background__:'yes'}];}
+ else if(user.includes('B_OWN_JOB')&&!state.issued.has(user)){state.issued.add(user);tool=['fixture_direct_mt',{ms:200,__background__:'yes'}];}
  else if(user.includes('CHECK_FOREIGN_LIST')&&!state.issued.has(user)){state.issued.add(user);tool=['meantime',{action:'list'}];}
  else if(user.includes('CANCEL_RECOVERED')&&!state.issued.has(user)){state.issued.add(user);tool=['meantime',{action:'cancel',id}];}
  else if((user.includes('CHECK_FOREIGN')||user.includes('READ_ORIGINAL')||user.includes('READ_EARLY'))&&!state.issued.has(user)){state.issued.add(user);tool=['meantime',{action:'result',id}];}

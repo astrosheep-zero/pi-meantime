@@ -3,7 +3,7 @@
 让长时间工具调用转到后台，Pi 继续处理其他工作；完成后通知模型，不必反复查询。
 纯 Pi 扩展，不修改核心，也不启动第二个 Agent。当前版本 **0.3.0**，面向 **Pi 1.3.0**，需要 **Node.js 22.19+**。
 
-`bash` 原名可用；符合条件的 MCP / 扩展工具通过 `_mt` 代理调用，业务参数不变，只增加可选的 `__meantime__` 控制字段。未转后台时保持原生结果。
+`bash` 原名可用；符合条件的 MCP / 扩展工具通过 `_mt` 代理调用，业务参数不变，只增加可选的 `__background__` 控制字段。未转后台时保持原生结果。
 
 ## 安装
 
@@ -48,7 +48,7 @@ pi -e ./index.mjs
 以下是工具调用示例，不是终端命令。拿到任务 ID 就代表工作已启动，**不要重复执行原操作，也不要循环轮询**。
 
 ```js
-bash({ command: "npm test", __meantime__: "yes" })
+bash({ command: "npm test", __background__: "yes" })
 
 meantime({ action: "list" })
 meantime({ action: "wait", id: "mt_1234abcd", timeout: 30 })
@@ -59,7 +59,7 @@ meantime({ action: "cancel", id: "mt_1234abcd" })
 
 ID 用实际返回值替换；支持唯一前缀，可省略 `mt_`，有歧义时报错。
 
-| `__meantime__` | 行为 |
+| `__background__` | 行为 |
 |---|---|
 | `"auto"`（默认） | 从前台开始，允许计时、快捷键、steer 或 detach 命令转后台 |
 | `"yes"` | 请求立即后台执行；等待原调用进入，当前 UI 审批期间延后 |

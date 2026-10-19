@@ -16,7 +16,7 @@ const server = http.createServer(async (req, res) => {
     const n = ++state.n; log(scenario, { event: 'request', n, body, authorizationIsLocalStub: req.headers.authorization === 'Bearer localstubkey' });
     if (n > 10) throw new Error('Too many fixture provider calls');
     let tool; let text;
-    if (n === 1) tool = ['mcp__parity__cooperative_mt', { ms: 600, __meantime__: scenario.includes('_auto_') ? 'auto' : 'yes' }];
+    if (n === 1) tool = ['mcp__parity__cooperative_mt', { ms: 600, __background__: scenario.includes('_auto_') ? 'auto' : 'yes' }];
     else if (scenario.endsWith('_deny')) text = 'PERMISSION_DENIED_DONE';
     else if (tasks(scenario).some(task => task.endedAt) && !state.read) {
       state.read = true; tool = ['meantime', { action: 'result', id: tasks(scenario)[0].id }];

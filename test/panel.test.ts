@@ -38,10 +38,10 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
   try {
     await pi.emit('session_start', { type: 'session_start' });
     // Start times differ so newest-first ordering is deterministic.
-    const a = await pi.call('bash', { command: 'first command', __meantime__: 'yes' });
+    const a = await pi.call('bash', { command: 'first command', __background__: 'yes' });
     await sleep(2);
     const longCommand = 'npm run integration-tests -- --verbose --timeout=120000';
-    const b = await pi.call('bash', { command: longCommand, __meantime__: 'yes' });
+    const b = await pi.call('bash', { command: longCommand, __background__: 'yes' });
     const idA = (a.result.details as Snapshot).id, idB = (b.result.details as Snapshot).id;
     const opening = command();
     assert.match(text(), /Current session tasks/);
@@ -61,7 +61,7 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
     assertElapsedVisible();
     const changedBefore = renders, updateSecond = update!;
     await sleep(2);
-    await pi.call('bash', { command: 'third command', __meantime__: 'yes' });
+    await pi.call('bash', { command: 'third command', __background__: 'yes' });
     assert.ok(renders > changedBefore, 'runtime changed sink refreshes without a timer tick');
     assert.match(text(), /third command/);
     updateSecond('live progress');
@@ -121,7 +121,7 @@ for (const mode of ['print', 'json'] as const) test(`${mode} bare command lists 
     pi.ctx = { ...pi.ctx, mode: 'rpc' };
     const ids: string[] = [];
     for (let i = 0; i < 4; i++) {
-      const result = await pi.call('bash', { command: `printf task-${i}`, __meantime__: 'yes' });
+      const result = await pi.call('bash', { command: `printf task-${i}`, __background__: 'yes' });
       ids.push((result.result.details as Snapshot).id);
     }
     pi.ctx = { ...pi.ctx, mode };
