@@ -64,10 +64,9 @@ mcp__meantime_fixture__slow_mt({
 })
 
 meantime({ action: "list" })
-meantime({ action: "status", id: "mt_1234abcd" })
-meantime({ action: "result", id: "1234" }) // 唯一前缀，可省 mt_
-meantime({ action: "wait", id: "1234", timeout_ms: 30000 })
-meantime({ action: "wait", ids: ["1234", "mt_5678abcd"], mode: "any", timeout_ms: 30000 })
+meantime({ action: "wait", id: "1234", timeout: 0 }) // 立即读取；唯一前缀，可省 mt_
+meantime({ action: "wait", id: "1234", timeout: 30 })
+meantime({ action: "wait", ids: ["1234", "mt_5678abcd"], mode: "any", timeout: 30 })
 meantime({ action: "cancel", id: "mt_1234abcd" })
 ```
 
@@ -94,12 +93,12 @@ Ctrl+B 保留 Pi 编辑器原有用途。本扩展 使用 **Ctrl+Shift+B**，终
 ```text
 bash(command, timeout?, __meantime__?)
 mcp__server__operation_mt(原业务参数..., __meantime__?)
-meantime(action, id?, ids?, mode?, timeout_ms?, offset?, limit?)
+meantime(action, id?, ids?, mode?, timeout?, offset?, limit?)
 ```
 
 对于 `codemode`/`deferred`，原工具和 `_mt` 代理可能都列在 Codemode 的候选工具中；默认 `blockOriginalCalls` 阻止通过原名绕过，但不会从 Codemode 列表物理移除原工具。
 
-`list` / `status` / `cancel` 向模型返回简短任务行（含耗时），分页时附 `More: offset=N`；结构化数据仍保留在 `structuredContent` 和 `details` 中。TUI 中任务默认显示 ID、工具、状态和耗时，展开后显示已有的完整命令、进度、错误标志及输出路径。托管调用只有返回后台句柄时使用此视图，前台结果仍保留原生行为。
+`list` / `cancel` 向模型返回简短任务行（含耗时），分页时附 `More: offset=N`；结构化数据仍保留在 `structuredContent` 和 `details` 中。TUI 中任务默认显示 ID、工具、状态和耗时，展开后显示已有的完整命令、进度、错误标志及输出路径。托管调用只有返回后台句柄时使用此视图，前台结果仍保留原生行为。
 
 System prompt 的 `meantime` 章节简要说明：`_mt` 工具与原工具执行相同操作、接受相同业务参数，只多一个可选的 `__meantime__` 参数（`auto` / `yes` / `no`）。
 
@@ -113,13 +112,13 @@ System prompt 的 `meantime` 章节简要说明：`_mt` 工具与原工具执行
 {"task":{"id":"mt_1234abcd","state":"running","delivery":"background"},"result_available":false}
 ```
 
-完成通知包含 `Meantime mt_xxx <state>`、可选退出码、仅在存在完整输出文件时显示的 `Output: <path>` 和约 1KB 文本尾巴（不可信 fence 内）。`meantime(action="result")` 读取保留结果；`wait` 等到完成或超时后按相同格式返回（默认 30 秒，无上限；中止等待不取消任务）。成功读取会确认已读，无需额外 ack：
+完成通知包含 `Meantime mt_xxx <state>`、可选退出码、仅在存在完整输出文件时显示的 `Output: <path>` 和约 1KB 文本尾巴（不可信 fence 内）。`meantime(action="wait", id=..., timeout=0)` 立即读取当前状态或保留结果；`wait` 默认等到完成或超时后返回（`timeout` 单位为秒，默认 30，支持小数，无上限；中止等待不取消任务）。仅支持 `list`、`wait`、`cancel`，不接受旧动作或 `timeout_ms`。成功读取会确认已读，无需额外 ack：
 
 ```json
 {"task":{"id":"mt_1234abcd","state":"completed"},"result_available":true,"result":{"original":"structured result"}}
 ```
 
-`wait` 也接受 `ids`（1–32 个任务 ID 或唯一前缀），与 `id` 必须二选一。`mode: "all"`（默认）等待所有任务，`mode: "any"` 等待任意一个任务结束；两者均受 `timeout_ms` 限制，中止只停止等待、不取消任务。已结束的结果按传入 ID 顺序拼接，共享单次结果的 32KB 正文预算，末尾 `Pending: ...` 列出尚未结束的任务。结构化输出为 `{ tasks: [...任务元数据及 result_available], pending: [...任务元数据] }`；成功读取确认已读，任何 ID 未知或前缀不唯一时在等待和确认前报错。
+`wait` 也接受 `ids`（1–32 个任务 ID 或唯一前缀），与 `id` 必须二选一。`mode: "all"`（默认）等待所有任务，`mode: "any"` 等待任意一个任务结束；两者均受 `timeout`（秒）限制，中止只停止等待、不取消任务。已结束的结果按传入 ID 顺序拼接，共享单次结果的 32KB 正文预算，末尾 `Pending: ...` 列出尚未结束的任务。结构化输出为 `{ tasks: [...任务元数据及 result_available], pending: [...任务元数据] }`；成功读取确认已读，任何 ID 未知或前缀不唯一时在等待和确认前报错。
 
 Bash 输出声明为原生输出与句柄的 union；通用代理暂声明 unknown，因为发现接口不提供原输出 Schema。`meantime` 仍使用任务 envelope。
 

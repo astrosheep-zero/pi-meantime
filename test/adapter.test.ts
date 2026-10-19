@@ -145,9 +145,9 @@ test('model explicit background continues in parallel with another tool and fini
     work.resolve(ok('slow result').result); await until(() => h.pi.notifications.length === 1);
     assert.match(h.pi.notifications[0]!.content, /<untrusted-output-tail>\nslow result\n<\/untrusted-output-tail>/);
     assert.match(task.id, /^mt_[a-f0-9]{8}$/);
-    const byPrefix = await h.pi.call('meantime', { action: 'status', id: task.id.slice(3, 9) });
+    const byPrefix = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: task.id.slice(3, 9) });
     assert.equal(byPrefix.isError, false); assert.match(JSON.stringify(byPrefix.result), new RegExp(task.id));
-    const result = await h.pi.call('meantime', { action: 'result', id: task.id });
+    const result = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: task.id });
     assert.match(JSON.stringify(result.result), /slow result/); assert.equal(result.isError, false);
     assert.equal(h.pi.trace.filter(e => e.type === 'execute' && e.name === 'mcp__t__slow').length, 1);
   } finally { work.resolve(ok().result); await h.close(); }
@@ -232,7 +232,7 @@ test('session switch suppresses callbacks and isolates task lookup', async () =>
     h.pi.ctx = new FakePi('B').ctx; await h.pi.emit('session_start', { type: 'session_start' });
     work.resolve(ok().result); await until(() => TaskRuntime.liveProducerCount() === 0);
     assert.equal(h.pi.notifications.length, 0);
-    assert.equal((await h.pi.call('meantime', { action: 'status', id })).isError, true);
+    assert.equal((await h.pi.call('meantime', { action: 'wait', timeout: 0, id })).isError, true);
   } finally { work.resolve(ok().result); await h.close(); }
 });
 test('real shell fixture runs, can detach without a second spawn, and result is retained', async () => {
@@ -248,9 +248,8 @@ test('real shell fixture runs, can detach without a second spawn, and result is 
     await until(() => h.pi.notifications.length === 1);
     assert.match(h.pi.notifications[0]!.content, new RegExp(`Meantime ${task.id} completed`));
     assert.match(h.pi.notifications[0]!.content, /<untrusted-output-tail>\nSHELL_DONE/);
-    const status = await h.pi.call('meantime', { action: 'status', id: task.id });
-    assert.equal((status.result.details as Snapshot).command, command);
-    const result = await h.pi.call('meantime', { action: 'result', id: task.id });
+    const result = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: task.id });
+    assert.equal((result.result.details as { task: Snapshot }).task.command, command);
     assert.match(JSON.stringify(result.result), /SHELL_DONE/);
   } finally { await h.close(); }
 });
@@ -317,18 +316,21 @@ test('short management receipts retain structured data and cancellation semantic
     const handle = await h.pi.call('mcp__t__receipt_mt', { __meantime__: 'yes' });
     const task = snapshot(handle);
     assert.match(text(handle.result), new RegExp(`^Meantime ${task.id} running in background`));
+    assert.match(text(handle.result), /In the TUI use \/meantime status/);
+    assert.ok(text(handle.result).includes(`meantime(action="wait", id="${task.id}", timeout=0)`));
+    assert.ok(!text(handle.result).includes('status/result/cancel'));
     const page = await h.pi.call('meantime', { action: 'list', limit: 1 });
     const data = page.result.structuredContent as unknown as { tasks: Snapshot[]; next_offset: null; total: number };
     assert.equal(data.tasks[0]!.id, task.id);
     assert.deepEqual(data, JSON.parse(JSON.stringify(page.result.details)));
     assert.match(text(page.result), new RegExp(`^${task.id} \\| mcp__t__receipt \\| running \\| \\d+s$`));
-    const status = await h.pi.call('meantime', { action: 'status', id: task.id });
-    assert.deepEqual(status.result.structuredContent, { task: JSON.parse(JSON.stringify(status.result.details)) });
+    const status = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: task.id });
+    assert.deepEqual(status.result.structuredContent, { task: JSON.parse(JSON.stringify(status.result.details)), result_available: false });
     assert.ok(!text(status.result).includes('{'));
     const cancelled = await h.pi.call('meantime', { action: 'cancel', id: task.id });
     assert.match(text(cancelled.result), /cancellation requested; native outcome may not be settled/);
     assert.deepEqual(cancelled.result.structuredContent, { task: JSON.parse(JSON.stringify(cancelled.result.details)) });
-    const missing = await h.pi.call('meantime', { action: 'status', id: 'missing' });
+    const missing = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: 'missing' });
     assert.equal(missing.isError, true);
     assert.match(text(missing.result), /No task with that id in this session/);
   } finally { pending.resolve(ok().result); await h.close(); }
@@ -392,12 +394,47 @@ test('management results are paginated rather than dumping the full registry int
     assert.match(page.result.content.filter(b => b.type === 'text').map(b => b.text).join('\n'), /\nMore: offset=5$/);
   } finally { await h.close(); }
 });
+test('wait is the single result path, with immediate reads and fractional seconds', async () => {
+  const work = deferred<Result>();
+  const h = await setup([basicTool('mcp__t__slow', () => work.promise)]);
+  try {
+    const schema = h.pi.definitions.get('meantime')!.parameters as { properties: Record<string, unknown>; additionalProperties: boolean };
+    assert.deepEqual(schema.properties.action, { type: 'string', enum: ['list', 'wait', 'cancel'] });
+    assert.deepEqual(schema.properties.timeout, { type: 'number', minimum: 0 });
+    assert.equal('timeout_ms' in schema.properties, false);
+    assert.equal(schema.additionalProperties, false);
+    const { id } = snapshot(await h.pi.call('mcp__t__slow_mt', { __meantime__: 'yes' }));
+    for (const action of ['status', 'result', 'unknown']) {
+      assert.equal((await h.pi.call('meantime', { action, id })).isError, true);
+    }
+    assert.equal((await h.pi.call('meantime', { action: 'wait', id, timeout_ms: 0 })).isError, true);
+    const immediate = h.pi.call('meantime', { action: 'wait', id, timeout: 0 });
+    // An immediate read must finish before the next timer turn, not start a wait timer.
+    const read = await Promise.race([immediate, sleep(0).then(() => { throw new Error('immediate read blocked'); })]);
+    assert.equal(snapshot(read).state, 'running');
+    assert.equal((read.result.structuredContent as { result_available: boolean }).result_available, false);
+    const started = performance.now();
+    const timedOut = await h.pi.call('meantime', { action: 'wait', id, timeout: 0.05 });
+    assert.ok(performance.now() - started >= 35 && performance.now() - started < 1000, 'single-task timeout is in seconds');
+    assert.equal((timedOut.result.structuredContent as { result_available: boolean }).result_available, false);
+    work.resolve(ok('SETTLED').result); await until(() => TaskRuntime.liveProducerCount() === 0);
+    const settled = await h.pi.call('meantime', { action: 'wait', id, timeout: 0 });
+    assert.equal((settled.result.structuredContent as { result_available: boolean }).result_available, true);
+    assert.match(JSON.stringify(settled.result.content), /SETTLED/);
+  } finally { work.resolve(ok().result); await h.close(); }
+});
+
 test('multi-task wait exposes settled and pending tasks, validates ids, and shares one inline text budget', async () => {
   const a = deferred<Result>(), b = deferred<Result>();
   const h = await setup([basicTool('mcp__t__a', () => a.promise), basicTool('mcp__t__b', () => b.promise)]);
   try {
     const first = snapshot(await h.pi.call('mcp__t__a_mt', { __meantime__: 'yes' }));
     const second = snapshot(await h.pi.call('mcp__t__b_mt', { __meantime__: 'yes' }));
+    const immediate = await Promise.race([
+      h.pi.call('meantime', { action: 'wait', ids: [first.id, second.id], timeout: 0 }),
+      sleep(0).then(() => { throw new Error('immediate multi-task read blocked'); }),
+    ]);
+    assert.deepEqual((immediate.result.structuredContent as unknown as { pending: Snapshot[] }).pending.map(t => t.id), [first.id, second.id]);
     const waiting = h.pi.call('meantime', { action: 'wait', ids: [first.id.slice(3), second.id], mode: 'any' });
     a.resolve(ok('A'.repeat(20 * 1024)).result);
     const any = await waiting;
@@ -410,7 +447,9 @@ test('multi-task wait exposes settled and pending tasks, validates ids, and shar
       const invalid = await h.pi.call('meantime', { action: 'wait', ...args });
       assert.equal(invalid.isError, true);
     }
-    const timedOut = await h.pi.call('meantime', { action: 'wait', ids: [first.id, second.id], timeout_ms: 5 });
+    const started = performance.now();
+    const timedOut = await h.pi.call('meantime', { action: 'wait', ids: [first.id, second.id], timeout: 0.05 });
+    assert.ok(performance.now() - started >= 35 && performance.now() - started < 1000, 'multi-task timeout is in seconds');
     assert.equal((timedOut.result.structuredContent as typeof value).pending[0]!.id, second.id);
     b.resolve(ok('B'.repeat(20 * 1024)).result);
     const all = await h.pi.call('meantime', { action: 'wait', ids: [second.id, first.id] });
@@ -446,10 +485,10 @@ test('multi-task wait shares its text budget for Bash and MCP, reports omission,
       assert.equal(blocks.filter(text => /^(A+|B+|M+)$/.test(text)).reduce((n, text) => n + Buffer.byteLength(text), 0), 32768);
       const notices = blocks.filter(text => text.startsWith('Inline text omitted'));
       assert.equal(notices.length, 1); assert.ok(notices[0]!.includes(handles[1]!.id));
-      assert.match(notices[0]!, /Retrieve this task singly.*action="result"/);
+      assert.match(notices[0]!, /Retrieve this task singly.*action="wait".*timeout=0/);
       assert.doesNotMatch(blocks.join('\n'), /Output:|retention limit/);
       for (const handle of handles) {
-        const single = await h.pi.call('meantime', { action: 'result', id: handle.id });
+        const single = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: handle.id });
         const singleWait = await h.pi.call('meantime', { action: 'wait', id: handle.id });
         for (const view of [single, singleWait]) {
           const text = view.result.content.filter(b => b.type === 'text').map(b => b.text);

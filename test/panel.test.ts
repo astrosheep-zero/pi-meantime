@@ -111,6 +111,6 @@ for (const mode of ['print', 'json'] as const) test(`${mode} status keeps the te
   try {
     await pi.emit('session_start', { type: 'session_start' });
     await pi.commands.get('meantime')!('status', pi.ctx);
-    assert.equal(pi.uiMessages.at(-1), 'Latest background control:\nCurrent session tasks (none):\n\nCancel: /meantime cancel <id>; output: ask meantime(action="result", id=...).\nActive proxies: 0; warnings: 0.');
+    assert.equal(pi.uiMessages.at(-1), 'Latest background control:\nCurrent session tasks (none):\n\nCancel: /meantime cancel <id>; output: ask meantime(action="wait", id=..., timeout=0).\nActive proxies: 0; warnings: 0.');
   } finally { await instance.dispose(); rmSync(root, { recursive: true, force: true }); }
 });

@@ -49,7 +49,7 @@ if (sdk) {
             assert.equal(started.result.structuredContent.result_available, false);
             const id = started.result.structuredContent.task.id;
             await new Promise(resolve => setTimeout(resolve, 300));
-            const collected = await ctx.executeTool('meantime', { action: 'result', id });
+            const collected = await ctx.executeTool('meantime', { action: 'wait', timeout: 0, id });
             assert.equal(collected.isError, false);
             assert.equal(collected.result.structuredContent.result_available, true);
             assert.equal(collected.result.structuredContent.result.output, 'REAL_BACKGROUND_OK');
@@ -131,13 +131,13 @@ if (sdk) {
     await session.bindExtensions({ mode: 'rpc' });
     session.setActiveToolsByName(['meantime']);
     const restored = await session.agent.state.tools.find(t => t.name === 'meantime')
-      .execute('restored-result', { action: 'result', id }, new AbortController().signal);
+      .execute('restored-result', { action: 'wait', timeout: 0, id }, new AbortController().signal);
     assert.equal(restored.structuredContent.task.recovered, true);
     assert.equal(restored.structuredContent.result, 'REAL_BACKGROUND_OK');
     assert.match(restored.content.map(b => b.text).join('\n'), /contains text only/);
     for (const { id, path } of outputs) {
       const result = await session.agent.state.tools.find(t => t.name === 'meantime')
-        .execute('restored-output', { action: 'result', id }, new AbortController().signal);
+        .execute('restored-output', { action: 'wait', timeout: 0, id }, new AbortController().signal);
       assert.equal(result.structuredContent.task.outputPath, path);
       assert.match(result.content[0].text, /\nOutput: /);
       assert.equal(result.structuredContent.task.resultTruncated, false);

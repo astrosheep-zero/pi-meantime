@@ -123,20 +123,20 @@ test('Pi session index survives tree navigation and resume, but a fork cannot ad
     const id = (handle.result.details as Snapshot).id, originalCtx = pi.ctx;
     assert.equal(pi.entries.length, 1);
     await pi.emit('session_tree', { type: 'session_tree' });
-    const active = await pi.call('meantime', { action: 'status', id });
+    const active = await pi.call('meantime', { action: 'wait', timeout: 0, id });
     assert.equal((active.result.details as Snapshot).state, 'running');
     await pi.emit('session_shutdown', { type: 'session_shutdown' });
     // A fork copies entries but uses another owner. Late completion must not
     // append entries or notifications to the new session.
     pi.ctx = { ...pi.ctx, sessionManager: { getSessionId: () => 'B', getSessionFile: () => '/sessions/B.jsonl', getEntries: () => [...pi.entries] } };
     await pi.emit('session_start', { type: 'session_start' });
-    assert.equal((await pi.call('meantime', { action: 'status', id })).isError, true);
+    assert.equal((await pi.call('meantime', { action: 'wait', timeout: 0, id })).isError, true);
     const entriesBefore = pi.entries.length;
     work.resolve(ok('LATE_OWNER_A')); await until(() => TaskRuntime.liveProducerCount() === 0);
     assert.equal(pi.entries.length, entriesBefore); assert.equal(pi.notifications.length, 0);
     await pi.emit('session_shutdown', { type: 'session_shutdown' }); pi.ctx = originalCtx;
     await pi.emit('session_start', { type: 'session_start' });
-    const result = await pi.call('meantime', { action: 'result', id: id.slice(3) });
+    const result = await pi.call('meantime', { action: 'wait', timeout: 0, id: id.slice(3) });
     assert.equal(result.isError, false); assert.match(JSON.stringify(result.result.content), /outcome_unknown/);
     assert.doesNotMatch(JSON.stringify(result.result.content), /LATE_OWNER_A/);
     assert.equal(executions, 1); assert.equal(pi.notifications.length, 0);

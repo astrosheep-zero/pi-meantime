@@ -97,7 +97,7 @@ test('/bg cancel requires one explicit id and never guesses among current sessio
     await h.command('cancel mt_00000000');
     assert.match(h.pi.uiMessages.at(-1)!, /No task with that id in this session/); assert.equal(h.aborts(), 0);
     await h.command(`cancel ${idA}`); await h.command(`cancel ${idA}`); assert.equal(h.aborts(), 1);
-    const listed = await h.pi.call('meantime', { action: 'status', id: idB });
+    const listed = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: idB });
     assert.equal((listed.result.details as Snapshot).state, 'running');
   } finally { await h.close(); }
 });
@@ -113,7 +113,7 @@ test('/bg cancel rejects an old session id and does not cancel a different task'
     await h.pi.emit('session_start', { type: 'session_start' });
     const b = await h.pi.call('mcp__test__one_mt', { __meantime__: 'yes' }); const idB = (b.result.details as Snapshot).id; const before = h.aborts();
     await h.command(`cancel ${id}`); assert.equal(h.aborts(), before);
-    const statusB = await h.pi.call('meantime', { action: 'status', id: idB });
+    const statusB = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: idB });
     assert.equal((statusB.result.details as Snapshot).state, 'running');
     assert.match(h.pi.uiMessages.at(-1)!, /No task with that id in this session/);
     await h.command('cancel'); assert.ok(h.pi.uiMessages.at(-1)!.includes(idB)); assert.ok(!h.pi.uiMessages.at(-1)!.includes(id));

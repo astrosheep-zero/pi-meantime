@@ -74,7 +74,7 @@ delivery: foreground -> background
 
 未 detach 的调用返回原生结果，不附加 task、不二次截断、不移除图片；结束后从 runtime 删除，由 Pi 原生会话历史保存结果，不创建自家存储目录或文件。Bash 原样重抛执行异常。代理保留嵌套调用 hook 后的结果及最终 Outcome.isError，但不重复上报 Pi 已自动聚合的 usage。
 
-只有真正 detach 才返回 `task + result_available:false`；`meantime result` 继续返回有预算的任务 envelope。Bash outputSchema 是原生输出与后台句柄的 union，并继承 constrainedSampling。通用代理通过 getAllTools 发现的元数据不含 outputSchema，暂用 `{}`（unknown）描述原生输出或句柄，不再虚报统一 envelope 类型。
+只有真正 detach 才返回 `task + result_available:false`；`meantime(action="wait", id=..., timeout=0)` 继续返回有预算的任务 envelope。Bash outputSchema 是原生输出与后台句柄的 union，并继承 constrainedSampling。通用代理通过 getAllTools 发现的元数据不含 outputSchema，暂用 `{}`（unknown）描述原生输出或句柄，不再虚报统一 envelope 类型。
 
 同名 bash 的 tool_result 在前台结果或 detach 句柄返回时触发一次；detach 后晚结果不再触发该 bash hook。其他工具代理通过 ctx.executeTool 调原名，内层真实完成仍经过原工具 hook。meantime 读取结果另经过 meantime 自己的 hook。
 
@@ -98,9 +98,9 @@ delivery: foreground -> background
 
 最终确认同时验证 tool-call ID 和 task UUID，防止旧会话迟到事件遇到重复 call ID。快完成的前台任务不发第二次通知。
 
-Bash 任务保存完整命令供 status/result 详情读取；任务列表和完成通知把命令合为单行、截取最多 120 UTF-8 字节的预览，截断时加省略号。不新增 name/description 入参。
+Bash 任务保存完整命令供 wait 详情读取；任务列表和完成通知把命令合为单行、截取最多 120 UTF-8 字节的预览，截断时加省略号。不新增 name/description 入参。
 
-通知包含 task ID、工具名、状态、Bash 命令预览，以及约 1KB 的文本输出尾巴；尾巴用 `<untrusted-output-tail>` 包裹并声明为不可信数据，不是指令。通知明确声明是自动完成消息，不是用户输入或批准；没有新信息时静默处理。尾巴只含文本，不含图片和结构化数据；尾巴或落盘结果截断都会标注 truncated。省去常见场景下多一轮 `meantime result`；完整保留结果仍通过 `meantime result` 读取。
+通知包含 task ID、工具名、状态、Bash 命令预览，以及约 1KB 的文本输出尾巴；尾巴用 `<untrusted-output-tail>` 包裹并声明为不可信数据，不是指令。通知明确声明是自动完成消息，不是用户输入或批准；没有新信息时静默处理。尾巴只含文本，不含图片和结构化数据；尾巴或落盘结果截断都会标注 truncated。省去常见场景下多一轮 `meantime(action="wait", id=..., timeout=0)`；完整保留结果仍通过 `meantime(action="wait", id=..., timeout=0)` 读取。
 
 采用 `followUp + triggerTurn:true`；多项完成合成一条消息。同步入队失败最多重试三次。`queued`只表示 sendMessage 调用已成功返回，不等于模型必然收到。宿主接口没有投递确认，进程崩溃时不宣称 exactly-once。重启后不自动投递历史通知，避免旧任务打断新工作。
 
@@ -114,7 +114,7 @@ Bash 使用 Pi 原生进程清理；MCP/一般扩展工具仍经原名 ctx.execu
 
 进程全局配额只保留存活 producer 的租约，不保留旧宿主上下文。非协作任务在实际 Promise 结束前不释放配额，防止反复 reload 绕过并发上限。Pi 进程退出后，这种保护自然结束；这不等于能追踪失联的远端作业。
 
-恢复通过 Pi getEntries() 读取全部分支中的 meantime-index，按 owner 过滤并应用 task、completion 和 removed 记录。缺少 completion 的任务投影为 outcome_unknown；不恢复 Promise、不盲目 kill PID、更不重放原请求。晚到的超大工具文本文件可由 status/list/result 暴露路径，但不证明执行结果。
+恢复通过 Pi getEntries() 读取全部分支中的 meantime-index，按 owner 过滤并应用 task、completion 和 removed 记录。缺少 completion 的任务投影为 outcome_unknown；不恢复 Promise、不盲目 kill PID、更不重放原请求。晚到的超大工具文本文件可由 list/wait 暴露路径，但不证明执行结果。
 
 旧 producer 只能写原 owner 目录的超大工具文本，不能向新会话追加索引或通知。通知、已读确认和重试都只在内存；恢复后不发历史通知。不支持两个 Pi 进程同时操作同一 owner 的存储。
 
@@ -153,4 +153,4 @@ Pi 的 ui_prompt_end 可能早于权限钩子的 Promise 结算。prompt 结束�
 
 ## meantime wait
 
-`meantime(action:"wait", id, timeout_ms?)` 阻塞到任务结束、超时或调用被中止，然后按 `result` 返回；超时只返回状态，`result_available:false`。默认 30 秒，按用户要求不设上限（内部仅受 setTimeout 上限约束）。wait 不取消任务。
+工具仅暴露 `list | wait | cancel`，不兼容旧动作或 `timeout_ms`。`meantime(action:"wait", id, timeout?)` 阻塞到任务结束、超时或调用被中止，然后返回保留结果；运行中无结果时返回状态与 `result_available:false`。`timeout` 单位为秒，支持小数，默认 30，不设上限；`timeout: 0` 立即返回当前状态或结果。也可用 `ids` 配合 `mode: "any" | "all"`（默认 all）等待多个任务，使用相同的秒制超时。工具边界只转换一次为毫秒，runtime 内部仍用毫秒并分段处理 setTimeout 上限。wait 不取消任务。

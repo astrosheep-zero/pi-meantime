@@ -27,7 +27,7 @@ test('real JSON-RPC stdio MCP call is dispatched once, detached, and collected w
     const task = (outcome.result.structuredContent as { task: unknown }).task as Snapshot;
     assert.equal(task.state, 'running');
     await until(() => h.pi.notifications.length === 1);
-    const result = await h.pi.call('meantime', { action: 'result', id: task.id });
+    const result = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: task.id });
     assert.match(JSON.stringify(result.result), /WIRE_DONE/);
     const requests = h.client.sent.filter(m => m.method === 'tools/call'); assert.equal(requests.length, 1);
     assert.ok(!JSON.stringify(requests[0]).includes('__meantime__'));
@@ -40,7 +40,7 @@ test('cancelled MCP request keeps its native error without classifying remote ex
     const task = (outcome.result.structuredContent as { task: unknown }).task as Snapshot;
     const cancelled = await h.pi.call('meantime', { action: 'cancel', id: task.id }); assert.equal(cancelled.isError, false);
     await sleep(20);
-    const status = await h.pi.call('meantime', { action: 'status', id: task.id });
+    const status = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: task.id });
     assert.equal(((status.result.structuredContent as { task: unknown }).task as Snapshot).state, 'failed');
     await until(() => existsSync(marker)); assert.equal(readFileSync(marker, 'utf8'), 'REMOTE_SIDE_EFFECT_COMPLETED');
     assert.equal(h.client.sent.filter(m => m.method === 'tools/call').length, 1);

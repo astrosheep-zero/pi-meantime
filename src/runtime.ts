@@ -262,7 +262,7 @@ export class TaskRuntime {
     return { tasks: settled, pending };
   }
   private async waitUntil(done: Promise<unknown> | undefined, timeoutMs: number, signal?: AbortSignal): Promise<void> {
-    if (done) {
+    if (done && timeoutMs > 0) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       let onAbort: (() => void) | undefined;
       try {
