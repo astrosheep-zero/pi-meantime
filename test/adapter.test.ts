@@ -316,7 +316,7 @@ test('short management receipts retain structured data and cancellation semantic
     const handle = await h.pi.call('mcp__t__receipt_mt', { __meantime__: 'yes' });
     const task = snapshot(handle);
     assert.match(text(handle.result), new RegExp(`^Meantime ${task.id} running in background`));
-    assert.match(text(handle.result), /In the TUI use \/meantime status/);
+    assert.match(text(handle.result), /In the TUI use \/meantime or/);
     assert.ok(text(handle.result).includes(`meantime(action="wait", id="${task.id}", timeout=0)`));
     assert.ok(!text(handle.result).includes('status/result/cancel'));
     const page = await h.pi.call('meantime', { action: 'list', limit: 1 });

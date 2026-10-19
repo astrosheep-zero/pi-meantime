@@ -82,14 +82,12 @@ test('/bg cancel requires one explicit id and never guesses among current sessio
     const b = await h.pi.call('mcp__test__one_mt', { __meantime__: 'yes' });
     const idA = (a.result.details as Snapshot).id, idB = (b.result.details as Snapshot).id;
     const handleText = a.result.content[0]; assert.ok(handleText?.type === 'text');
-    assert.match(handleText.text, /In the TUI use \/meantime status or \/meantime cancel/);
-    await h.command('status'); assert.match(h.pi.uiMessages.at(-1)!, /Current session tasks 1-2 of 2/);
+    assert.match(handleText.text, /In the TUI use \/meantime or \/meantime cancel/);
+    await h.command(''); assert.match(h.pi.uiMessages.at(-1)!, /Current session tasks 2:/);
     assert.ok(h.pi.uiMessages.at(-1)!.includes(idA)); assert.ok(!h.pi.uiMessages.at(-1)!.includes('producerId'));
     assert.equal(h.pi.uiWidgets.size, 1); assert.equal(h.pi.notifications.length, 0);
     await h.command('detach'); assert.match(h.pi.uiMessages.at(-1)!, /Detached 0 managed call/);
-    await h.command('status 1'); assert.match(h.pi.uiMessages.at(-1)!, /Current session tasks 2-2 of 2/);
-    await h.command('status 9'); assert.match(h.pi.uiMessages.at(-1)!, /Offset outside/);
-    await h.command('status -1'); assert.match(h.pi.uiMessages.at(-1)!, /nonnegative integer/);
+    await h.command('status'); assert.match(h.pi.uiMessages.at(-1)!, /Use \/meantime \[detach\|rescan\|cancel <id>\]/);
     await h.command('cancel');
     assert.match(h.pi.uiMessages.at(-1)!, /Usage: \/meantime cancel <id>.*No task was cancelled/s);
     assert.ok(h.pi.uiMessages.at(-1)!.includes(idA)); assert.ok(h.pi.uiMessages.at(-1)!.includes(idB)); assert.equal(h.aborts(), 0);
@@ -106,7 +104,7 @@ test('/bg cancel rejects an old session id and does not cancel a different task'
   const h = await commandHarness();
   try {
     const a = await h.pi.call('mcp__test__one_mt', { __meantime__: 'yes' }); const id = (a.result.details as Snapshot).id;
-    await h.command('status'); assert.equal(h.pi.uiWidgets.size, 1);
+    await h.command(''); assert.equal(h.pi.uiWidgets.size, 1);
     await h.pi.emit('session_shutdown', { type: 'session_shutdown' });
     assert.equal(h.pi.uiWidgets.size, 0);
     h.pi.ctx = { ...h.pi.ctx, sessionManager: { getSessionId: () => 'B', getSessionFile: () => '/sessions/B.jsonl', getEntries: () => [] } };

@@ -26,7 +26,7 @@ function owner(ctx: Context): string {
 function json(value: unknown): Json { return JSON.parse(JSON.stringify(value)) as Json; }
 function foregroundOrHandle(view: View, nested: boolean): Result {
   if (view.kind === 'handle') return {
-    content: [{ type: 'text', text: `Meantime ${view.task.id} running in background; execution continues independently of this wait. Do not restart or poll in a loop. Completion will be announced. In the TUI use /meantime status or /meantime cancel ${view.task.id}; the model can use meantime list, meantime(action="wait", id="${view.task.id}", timeout=0) for current state/result, or meantime cancel.` }],
+    content: [{ type: 'text', text: `Meantime ${view.task.id} running in background; execution continues independently of this wait. Do not restart or poll in a loop. Completion will be announced. In the TUI use /meantime or /meantime cancel ${view.task.id}; the model can use meantime list, meantime(action="wait", id="${view.task.id}", timeout=0) for current state/result, or meantime cancel.` }],
     details: view.task,
     structuredContent: { task: json(view.task), result_available: false },
   };
@@ -187,10 +187,9 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     // or model messages, and does not take keyboard focus.
     ctx.ui.setWidget('bg-control', ['Latest background control:', ...message.split('\n')]);
   }
-  function taskPage(tasks: Snapshot[], offset = 0): string {
+  function taskList(tasks: Snapshot[]): string {
     const sorted = [...tasks].sort((a, b) => Number(b.localRunning) - Number(a.localRunning) || b.createdAt - a.createdAt);
-    const page = sorted.slice(offset, offset + 3);
-    return `Current session tasks ${tasks.length ? `${offset + 1}-${offset + page.length} of ${tasks.length}` : '(none)'}:\n${page.map(t => `${taskLabel(t)}${t.cancelRequestedAt ? ' | cancel requested' : ''}${t.recovered ? ' | recovered' : ''}`).join('\n')}${offset + 3 < tasks.length ? `\nMore: /meantime status ${offset + 3}` : ''}`;
+    return `Current session tasks ${tasks.length || '(none)'}:\n${sorted.map(t => `${taskLabel(t)}${t.cancelRequestedAt ? ' | cancel requested' : ''}${t.recovered ? ' | recovered' : ''}`).join('\n')}`;
   }
   function updateStatus(): void {
     if (!live || !runtime || !currentCtx) return;
@@ -551,13 +550,13 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     description: 'Detach managed auto-mode foreground calls without cancellation',
     handler(ctx) { const count = assertRuntime(ctx).detachAll('shortcut'); controlFeedback(ctx, `Detached ${count} managed call(s).\nno-mode, pending approvals and unwrapped calls stay in the foreground.`); },
   });
-  const meantimeCommand = { description: 'Background runtime: /meantime [status [offset]|detach|rescan|cancel <id>] (alias: /bg)', async handler(args: string, ctx: Context): Promise<void> {
-    const [command = 'status', ...rest] = args.trim() ? args.trim().split(/\s+/) : [];
+  const meantimeCommand = { description: 'Background runtime: /meantime [detach|rescan|cancel <id>] (alias: /bg)', async handler(args: string, ctx: Context): Promise<void> {
+    const [command, ...rest] = args.trim() ? args.trim().split(/\s+/) : [];
     if (command === 'cancel') {
       const r = assertRuntime(ctx);
       if (rest.length !== 1) {
         const tasks = r.list();
-        controlFeedback(ctx, `Usage: /meantime cancel <id>. No task was cancelled.\n${taskPage(tasks)}`);
+        controlFeedback(ctx, `Usage: /meantime cancel <id>. No task was cancelled.\n${taskList(tasks)}`);
         return;
       }
       try {
@@ -570,23 +569,16 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
         // A session-scoped lookup/retired controller failure is visible, never a guessed target.
         ctx.ui.notify(`Cannot cancel ${rest[0]}: ${error instanceof Error ? error.message : String(error)}`, 'error');
       }
-    } else if (command === 'status') {
-      if (rest.length > 1 || (rest[0] !== undefined && !/^(0|[1-9]\d*)$/.test(rest[0]))) {
-        controlFeedback(ctx, 'Usage: /meantime status [offset]. Offset must be a nonnegative integer.'); return;
-      }
-      if (ctx.mode === 'tui' && rest.length === 0) { await taskPanel(ctx); return; }
-      const offset = Number(rest[0] ?? 0), tasks = assertRuntime(ctx).list();
-      if (!Number.isSafeInteger(offset) || (offset >= tasks.length && offset !== 0)) {
-        controlFeedback(ctx, `Offset outside ${tasks.length} current session tasks. Use /meantime status.`); return;
-      }
-      controlFeedback(ctx, `${taskPage(tasks, offset)}\nCancel: /meantime cancel <id>; output: ask meantime(action="wait", id=..., timeout=0).\nActive proxies: ${[...pairs.values()].filter(p => p.enabled).length}; warnings: ${diagnostics.size}.`);
-    } else if (rest.length) controlFeedback(ctx, 'Use /meantime [status [offset]|detach|rescan|cancel <id>]');
+    } else if (!command) {
+      if (ctx.mode === 'tui') { await taskPanel(ctx); return; }
+      controlFeedback(ctx, `${taskList(assertRuntime(ctx).list())}\nCancel: /meantime cancel <id>; output: ask meantime(action="wait", id=..., timeout=0).\nActive proxies: ${[...pairs.values()].filter(p => p.enabled).length}; warnings: ${diagnostics.size}.`);
+    } else if (rest.length) controlFeedback(ctx, 'Use /meantime [detach|rescan|cancel <id>]');
     else if (command === 'detach') {
       const count = assertRuntime(ctx).detachAll('shortcut');
       controlFeedback(ctx, `Detached ${count} managed call(s).\nno-mode, pending approvals and unwrapped calls stay in the foreground.`);
     }
-    else if (command === 'rescan') { reconcile(); controlFeedback(ctx, 'Background proxy registry rescanned. Use /meantime status.'); }
-    else controlFeedback(ctx, 'Use /meantime [status [offset]|detach|rescan|cancel <id>]');
+    else if (command === 'rescan') { reconcile(); controlFeedback(ctx, 'Background proxy registry rescanned. Use /meantime.'); }
+    else controlFeedback(ctx, 'Use /meantime [detach|rescan|cancel <id>]');
   } };
   pi.registerCommand('meantime', meantimeCommand);
   pi.registerCommand('bg', { ...meantimeCommand, description: 'Alias for /meantime' });

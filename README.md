@@ -48,7 +48,7 @@ PI_MEANTIME_CONFIG="$PWD/examples/meantime.json" \
   pi -e ./index.mjs -e ./examples/register-fixture.mjs
 ```
 
-这个测试配置把自动 detach 阈值降为 1 秒。默认配置为 120 秒。TUI 中 `/meantime`、`/bg` 或 `/meantime status` 打开实时任务面板：运行中优先，其余按创建时间从新到旧排列，显示状态与耗时；↑/↓ 选择，Enter 展开/收起完整命令、已有进度、最近输出尾部和结果文件路径，`c` 请求取消选中任务，Esc/`q` 关闭。面板由任务状态变化与每秒刷新驱动，关闭或切换会话即停止刷新。非 TUI 保留原文字列表；`/meantime status 3` 仍可查看下一页（三项一页）。`/meantime cancel <完整任务ID>` 请求取消指定任务；不填 ID 会显示用法和任务列表，不猜目标。`/meantime rescan` 主动重扫代理。测试服务器由 `pi.registerMcpServer()` 注册，由 Pi 自己建立 MCP 连接。
+这个测试配置把自动 detach 阈值降为 1 秒。默认配置为 120 秒。TUI 中 `/meantime` 或 `/bg` 打开实时任务面板：运行中优先，其余按创建时间从新到旧排列，显示状态与耗时；↑/↓ 选择，Enter 展开/收起完整命令、已有进度、最近输出尾部和结果文件路径，`c` 请求取消选中任务，Esc/`q` 关闭。面板由任务状态变化与每秒刷新驱动，关闭或切换会话即停止刷新。非 TUI 的 `/meantime` 显示当前会话的完整文字列表。`/meantime cancel <完整任务ID>` 请求取消指定任务；不填 ID 会显示用法和任务列表，不猜目标。`/meantime rescan` 主动重扫代理。测试服务器由 `pi.registerMcpServer()` 注册，由 Pi 自己建立 MCP 连接。
 
 模型工具调用示例，不是终端命令：
 
@@ -84,7 +84,7 @@ meantime({ action: "cancel", id: "mt_1234abcd" })
 
 `autoDetachMs` 是“等多久后放到后台”；Bash 原有 `timeout` 仍是“命令最多活多久”。二者分离。
 
-其他手动子命令的反馈显示在编辑器附近的 Latest background control 面板，下一次操作替换，不作为永久历史或实时任务状态；切会话清理。TUI 用 `/meantime` 打开上面的实时任务面板；非 TUI 的 `/meantime status` 仍返回文字快照。
+其他手动子命令的反馈显示在编辑器附近的 Latest background control 面板，下一次操作替换，不作为永久历史或实时任务状态；切会话清理。TUI 用 `/meantime` 打开上面的实时任务面板；非 TUI 的 `/meantime` 仍返回文字快照。
 
 Ctrl+B 保留 Pi 编辑器原有用途。本扩展 使用 **Ctrl+Shift+B**，终端不能传递该组合键时使用 `/meantime detach`。
 
@@ -184,4 +184,4 @@ MIT License。尚未发布 npm。GitHub 仓库：https://github.com/astrosheep-z
 
 TUI 的最近操作面板位于输入编辑器上方；RPC 模式没有内置可视面板。客户端需消费 `extension_ui_request` 的 `setWidget`（键 `bg-control`）、`setStatus`（键 `meantime`）及 `notify`。本版未指定 widgetPlacement；客户端负责选择显示位置，字段省略的清除事件也需处理。若客户端忽略这些事件，手动命令反馈可能不可见；当前没有能力协商或降级显示。
 
-通过 RPC `prompt` 发送 `/meantime status` 或 `/meantime cancel <id>`。返回 `success:true, disposition:handled` 仅表示命令已处理，不能据此认定取消成功；错误 ID 的说明另走 `notify(error)`。完成提醒是 `message_end` 的 `customType: meantime-completion` 消息并触发 follow-up。原生 RPC `abort` 停止前台回复，不取消已经 detach 的后台任务。`hasUI=true` 表示协议桥接存在，不代表客户端已经渲染。
+通过 RPC `prompt` 发送 `/meantime` 或 `/meantime cancel <id>`。返回 `success:true, disposition:handled` 仅表示命令已处理，不能据此认定取消成功；错误 ID 的说明另走 `notify(error)`。完成提醒是 `message_end` 的 `customType: meantime-completion` 消息并触发 follow-up。原生 RPC `abort` 停止前台回复，不取消已经 detach 的后台任务。`hasUI=true` 表示协议桥接存在，不代表客户端已经渲染。

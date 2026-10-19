@@ -147,9 +147,9 @@ Bash 使用 Pi 原生进程清理；MCP/一般扩展工具仍经原名 ctx.execu
 
 Pi 的 ui_prompt_end 可能早于权限钩子的 Promise 结算。prompt 结束后保留一轮 setImmediate 屏障，期间所有 detach、通知排队/flush 继续暂停，让原生拒绝先成为错误结果；不能用“菜单已关闭”推断“审批通过”。这覆盖本次验证的同步 select 结果后直接返回裁决，不为任意插件另加的长期异步裁决作保证。
 
-任务 ID 为 `mt_` + 8 位 hex（生成时查重），不兼容旧版 `bg_<uuid>` 记录。/meantime cancel 与 meantime 工具接受完整 ID 或唯一前缀（可省略 `mt_`），前缀有歧义时报错并列出候选；缺失/多参数只显示当前会话列表与用法。查找仅限会话 owner，完成后的重复取消不再发 AbortSignal。/meantime status 展示 ID、工具、状态、取消请求/recovered 标志，不展示内部运行时大 JSON。后台回执保留结构化元数据，同时告诉人可输入的命令。
+任务 ID 为 `mt_` + 8 位 hex（生成时查重），不兼容旧版 `bg_<uuid>` 记录。/meantime cancel 与 meantime 工具接受完整 ID 或唯一前缀（可省略 `mt_`），前缀有歧义时报错并列出候选；缺失/多参数只显示当前会话列表与用法。查找仅限会话 owner，完成后的重复取消不再发 AbortSignal。/meantime 展示 ID、工具、状态、取消请求/recovered 标志，不展示内部运行时大 JSON。后台回执保留结构化元数据，同时告诉人可输入的命令。
 
-操作反馈使用公开 ui.setWidget 的同 key 字符串数组，标记 Latest background control，仅显示最近一次操作，不污染模型上下文、不抢焦点。原因是 Pi 1.3.0 info notify 的旧状态行会在重绘时引用最新共享文本；本扩展不修改该上游实现。状态列表运行中优先、每页三项，/meantime status <offset> 可访问后续项；会话停止和开始均清面板。它不是永久操作历史。
+操作反馈使用公开 ui.setWidget 的同 key 字符串数组，标记 Latest background control，仅显示最近一次操作，不污染模型上下文、不抢焦点。原因是 Pi 1.3.0 info notify 的旧状态行会在重绘时引用最新共享文本；本扩展不修改该上游实现。状态列表运行中优先，TUI 的 /meantime 打开实时任务面板，非 TUI 显示当前会话全部任务，不分页；会话停止和开始均清面板。它不是永久操作历史。
 
 ## meantime wait
 

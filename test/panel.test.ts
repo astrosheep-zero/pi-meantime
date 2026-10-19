@@ -88,7 +88,10 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
     await until(() => (instance.inspect() as { tasks: Snapshot[] }).tasks.every(task => !task.localRunning));
     assert.equal(renders, before, 'closed panel has no changed sink listener');
 
-    const reopened = command('status');
+    await command('status');
+    assert.equal(closed, 1);
+    assert.match(pi.uiMessages.at(-1)!, /Use \/meantime \[detach\|rescan\|cancel <id>\]/);
+    const reopened = command();
     panel!.handleInput!('\r');
     assert.match(text(), /recent output/); assert.doesNotMatch(text(), /Output:/);
     panel!.handleInput!('\u001b'); await reopened;
@@ -104,13 +107,27 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
   }
 });
 
-for (const mode of ['print', 'json'] as const) test(`${mode} status keeps the text snapshot, never opens custom UI`, async () => {
+for (const mode of ['print', 'json'] as const) test(`${mode} bare command lists every task, never opens custom UI`, async () => {
   const root = mkdtempSync(join(tmpdir(), 'meantime-text-'));
   const pi = new FakePi('A', mode);
-  const instance = install(pi, { config: validateConfig({ storageRoot: root }), makeBash: fixtureBash });
+  const work = deferred<Outcome>();
+  const instance = install(pi, { config: validateConfig({ storageRoot: root }),
+    makeBash: () => ({ ...fixtureBash(root), async execute() { return (await work.promise).result; } }),
+  });
   try {
     await pi.emit('session_start', { type: 'session_start' });
-    await pi.commands.get('meantime')!('status', pi.ctx);
+    await pi.commands.get('meantime')!('', pi.ctx);
     assert.equal(pi.uiMessages.at(-1), 'Latest background control:\nCurrent session tasks (none):\n\nCancel: /meantime cancel <id>; output: ask meantime(action="wait", id=..., timeout=0).\nActive proxies: 0; warnings: 0.');
-  } finally { await instance.dispose(); rmSync(root, { recursive: true, force: true }); }
+    pi.ctx = { ...pi.ctx, mode: 'rpc' };
+    const ids: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const result = await pi.call('bash', { command: `printf task-${i}`, __meantime__: 'yes' });
+      ids.push((result.result.details as Snapshot).id);
+    }
+    pi.ctx = { ...pi.ctx, mode };
+    await pi.commands.get('meantime')!('', pi.ctx);
+    assert.match(pi.uiMessages.at(-1)!, /Current session tasks 4:/);
+    for (const id of ids) assert.ok(pi.uiMessages.at(-1)!.includes(id));
+    assert.doesNotMatch(pi.uiMessages.at(-1)!, /More:/);
+  } finally { work.resolve(ok()); await instance.dispose(); rmSync(root, { recursive: true, force: true }); }
 });
