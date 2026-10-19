@@ -147,7 +147,10 @@ export function manageTools(session: HostSession, config: Config, run: (call: Ma
   }
   function reconcile(): boolean {
     if (!active()) return false;
-    const definitions = new Set(session.getAllTools().map(t => session.getToolDefinition(t.name)).filter((d): d is Tool => !!d));
+    // Built-in MCP is a provider of external tools, not a native tool itself.
+    const definitions = new Set(session.getAllTools().filter(t => t.name === 'bash'
+      || !t.sourceInfo?.path?.startsWith('builtin:') || t.sourceInfo.path === 'builtin:mcp')
+      .map(t => session.getToolDefinition(t.name)).filter((d): d is Tool => !!d));
     let changed = false;
     for (const [definition, patch] of patches) {
       if (definitions.has(definition) && [...patch].every(([key, { value }]) => definition[key] === value)

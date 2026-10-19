@@ -75,7 +75,7 @@ ID 用实际返回值替换；支持唯一前缀，可省略 `mt_`，有歧义�
 
 `wait` 必须在 `id` 与 `ids` 中二选一。`ids` 接受 1–32 项，`mode: "all"`（默认）等全部结束，`"any"` 等任意一项结束；超时也会返回。批量回执含已结束结果及 `pending`，正文共享 32KiB 预算，被省略的结果可单独读取。
 
-除默认管理的 Bash 外，默认匹配 `mcp__*`，排除 IDE MCP；自定义工具可通过 include/exclude 配置选择。原生名称、description、来源与 `direct` / `codemode` / `deferred` 可见性不变；从 Codemode 或 tool_search 发现后仍调用原名，不增加第二个候选。顺序工具、hidden / model-only 工具、不兼容的根 Schema 及保留字段冲突保持原样；宿主全局顺序执行时不转后台。
+原生工具只管理 Bash；非原生工具默认全部管理，包括 Square、普通扩展和 MCP（含 IDE MCP）。依据当前工具来源区分原生与扩展，同名扩展覆盖也属于非原生工具；include/exclude 可进一步筛选。原生名称、description、来源与 `direct` / `codemode` / `deferred` 可见性不变；从 Codemode 或 tool_search 发现后仍调用原名，不增加第二个候选。顺序工具、hidden / model-only 工具、不兼容的根 Schema 及保留字段冲突保持原样；宿主全局顺序执行时不转后台。
 
 ## 完成通知、保存与边界
 
@@ -97,7 +97,7 @@ ID 用实际返回值替换；支持唯一前缀，可省略 `mt_`，有歧义�
 {
   "autoDetachMs": 120000,
   "detachOnSteer": true,
-  "include": ["mcp__*", "my_slow_tool"],
+  "include": ["*"],
   "maxRunning": 4
 }
 ```

@@ -14,8 +14,8 @@ export interface Config {
   detachOnSteer: boolean;
 }
 export const DEFAULT_CONFIG: Config = {
-  include: ['mcp__*'],
-  exclude: ['mcp__ide__*', 'read', 'write', 'edit', 'codemode', 'tool_search'],
+  include: ['*'],
+  exclude: [],
   autoDetachMs: 120_000,
   maxRunning: 4,
   maxRetained: 128,

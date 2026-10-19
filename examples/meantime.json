@@ -1,6 +1,6 @@
 {
-  "include": ["mcp__*"],
-  "exclude": ["mcp__ide__*", "read", "write", "edit", "codemode", "tool_search"],
+  "include": ["*"],
+  "exclude": [],
   "autoDetachMs": 1000,
   "maxRunning": 4,
   "maxRetained": 128,

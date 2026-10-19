@@ -24,7 +24,7 @@ Pi 的普通 ExtensionAPI 没有 current-session 或 around-producer 中间件�
 
 ## 参数与完成边界
 
-支持的 object-root Schema 通过 `decorateSchema` 增加可选 `__background__: "auto" | "yes" | "no"`，不放松业务约束。根级复杂组合、条件、pattern/property 限制和保留字段冲突仍拒绝接管。默认管理 Bash，以及 include 匹配且未被 exclude 排除的工具；hidden、model-only、sequential 工具保持原样。宿主全局顺序执行时不 detach。
+支持的 object-root Schema 通过 `decorateSchema` 增加可选 `__background__: "auto" | "yes" | "no"`，不放松业务约束。根级复杂组合、条件、pattern/property 限制和保留字段冲突仍拒绝接管。原生工具仅管理 Bash；非原生工具（包括 Square 与内置 MCP 提供的外部工具）默认全部管理，再按 include/exclude 筛选；hidden、model-only、sequential 工具保持原样。宿主全局顺序执行时不 detach。
 
 控制字段在原 `prepareArguments` **之前**剥离，mode 只保存在内部调用数据中；原准备、校验和全部权限处理各一次。TaskRuntime admission 在原名 execute 内、权限处理全部结束后发生。拒绝、无效调用及容量不足不能启动原生副作用；权限钩子修改后的业务参数不再次校验。没有自派发递归或 readiness ticket。
 

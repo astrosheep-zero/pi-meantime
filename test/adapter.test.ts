@@ -98,9 +98,30 @@ test('model-only, hidden, sequential, excluded and conflicting tools stay native
     basicTool('mcp__ask', undefined, { exposure: 'model-only' }), basicTool('mcp__hidden', undefined, { exposure: 'hidden' }),
     basicTool('write'), basicTool('mcp__collision', undefined, { parameters: { type: 'object', properties: { __background__: { type: 'number' } } } })];
   const executes = tools.map(t => t.execute), schemas = tools.map(t => t.parameters);
-  const h = await setup(tools, { include: ['*'] });
+  const h = await setup(tools, { exclude: ['write'] });
   try { tools.forEach((tool, i) => { assert.equal(tool.execute, executes[i]); assert.equal(tool.parameters, schemas[i]); }); }
   finally { await h.close(); }
+});
+
+test('defaults manage external tools by source, including Square, MCP and native-name overrides', async () => {
+  const native = ['read', 'edit', 'write', 'grep', 'find', 'ls', 'powershell', 'codemode', 'tool_search']
+    .map(name => basicTool(name, undefined, { sourceInfo: { path: `builtin:${name}` } }));
+  const external = [basicTool('square_catch', async () => { await sleep(20); return ok('square').result; }, { sourceInfo: { path: '/square/index.ts' } }),
+    basicTool('mcp__ide__query', undefined, { sourceInfo: { path: 'builtin:mcp' } }), basicTool('custom_tool')];
+  const h = await setup([...native, ...external]);
+  try {
+    const managed = (tool: Tool) => Object.hasOwn(tool.parameters.properties ?? {}, '__background__');
+    for (const tool of native) assert.equal(managed(tool), false, tool.name);
+    for (const tool of external) assert.ok(managed(tool), tool.name);
+    assert.ok(managed(h.pi.getToolDefinition('bash')!));
+    const handle = await h.pi.call('square_catch', { __background__: 'yes' });
+    assert.equal(snapshot(handle).tool, 'square_catch');
+    const replacement = basicTool('read', undefined, { sourceInfo: { path: '/custom/read.ts' } });
+    h.pi.registerTool(replacement);
+    assert.ok(managed(replacement), 'external read override is managed');
+    h.pi.registerTool(native[0]!);
+    assert.equal(managed(native[0]!), false, 'restored native read stays native');
+  } finally { await h.close(); }
 });
 
 test('all permissions finish before admission; denied and invalid calls start no producer', async () => {
