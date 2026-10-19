@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CONTROL, decorateSchema, splitControl, matches } from '../src/schema.ts';
-import { validateConfig } from '../src/config.ts';
+import { validateConfig, loadConfig } from '../src/config.ts';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 test('closed object schema remains closed and business properties are unchanged', () => {
   const original = { type: 'object', properties: { query: { type: 'string' }, nested: { type: 'object', additionalProperties: false } }, required: ['query'], additionalProperties: false };
@@ -36,6 +39,28 @@ test('patterns are globs, never arbitrary regex', () => {
   assert.equal(matches('mcpXX', ['mcp.*']), false);
   assert.equal(matches('mcp.*', ['mcp.*']), true);
 });
+test('global settings meantime section controls config without consuming unrelated settings', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'meantime-settings-'));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  try {
+    assert.deepEqual(loadConfig(), validateConfig({}));
+    const save = (value: unknown) => writeFileSync(join(dir, 'settings.json'), JSON.stringify(value));
+    save({ defaultModel: 'irrelevant', meantime: { include: ['square_*'], exclude: ['square_history'], autoDetachMs: 25 } });
+    assert.deepEqual(loadConfig(), validateConfig({ include: ['square_*'], exclude: ['square_history'], autoDetachMs: 25 }));
+    save({ defaultModel: 'irrelevant' });
+    assert.deepEqual(loadConfig(), validateConfig({}));
+    save({ meantime: { include: [3] } });
+    assert.throws(() => loadConfig(), /include/);
+    save({ meantime: null });
+    assert.throws(() => loadConfig(), /object/);
+  } finally {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('configuration rejects unsafe or unknown options', () => {
   for (const value of [{ maxRunning: 0 }, { maxRunning: NaN }, { autoDetachMs: -1 }, { typo: true }, { include: [3] }]) assert.throws(() => validateConfig(value));
 });

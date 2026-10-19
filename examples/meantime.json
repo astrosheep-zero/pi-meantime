@@ -1,9 +1,11 @@
 {
-  "include": ["*"],
-  "exclude": [],
-  "autoDetachMs": 1000,
-  "maxRunning": 4,
-  "maxRetained": 128,
-  "shutdownGraceMs": 1000,
-  "notifyDebounceMs": 50
+  "meantime": {
+    "include": ["*"],
+    "exclude": [],
+    "autoDetachMs": 120000,
+    "maxRunning": 4,
+    "maxRetained": 128,
+    "shutdownGraceMs": 1000,
+    "notifyDebounceMs": 50
+  }
 }

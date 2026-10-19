@@ -91,14 +91,17 @@ ID 用实际返回值替换；支持唯一前缀，可省略 `mt_`，有歧义�
 
 ## 配置
 
-读取全局 `~/.pi/agent/meantime.json`（尊重 `PI_CODING_AGENT_DIR`），或用 `PI_MEANTIME_CONFIG` 指定绝对路径；不自动读取项目配置。
+读取全局 `~/.pi/agent/settings.json` 中的 `meantime` 字段（尊重 `PI_CODING_AGENT_DIR`）；不自动读取项目配置。修改后 `/reload` 生效。
 
 ```json
 {
-  "autoDetachMs": 120000,
-  "detachOnSteer": true,
-  "include": ["*"],
-  "maxRunning": 4
+  "meantime": {
+    "include": ["*"],
+    "exclude": [],
+    "autoDetachMs": 120000,
+    "detachOnSteer": true,
+    "maxRunning": 4
+  }
 }
 ```
 

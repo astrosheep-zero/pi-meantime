@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { isRecord } from './schema.ts';
 
 export interface Config {
@@ -41,14 +41,15 @@ export function validateConfig(raw: unknown): Config {
   if (typeof config.detachOnSteer !== 'boolean') throw new Error('detachOnSteer must be boolean');
   return config;
 }
-/** Only explicit/global configuration, never automatically consume untrusted project config. */
+/** Global Pi settings only; never automatically consume untrusted project config. */
 export function loadConfig(): Config {
-  const file = process.env.PI_MEANTIME_CONFIG;
-  if (file && !isAbsolute(file)) throw new Error('PI_MEANTIME_CONFIG must be an absolute path');
-  const path = file ?? join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), '.pi', 'agent'), 'meantime.json');
-  try { return validateConfig(JSON.parse(readFileSync(resolve(path), 'utf8'))); }
+  const path = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), '.pi', 'agent'), 'settings.json');
+  let settings: unknown;
+  try { settings = JSON.parse(readFileSync(path, 'utf8')); }
   catch (error) {
-    if (!file && (error as NodeJS.ErrnoException).code === 'ENOENT') return validateConfig({});
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return validateConfig({});
     throw error;
   }
+  if (!isRecord(settings)) throw new Error('Pi settings must be an object');
+  return validateConfig(settings.meantime === undefined ? {} : settings.meantime);
 }
