@@ -166,6 +166,16 @@ export function recognizeToolCall(item: ToolCallItemLike): Omit<MeantimeCardData
   return undefined;
 }
 
+/**
+ * Timeline transformer gate. Tool invocations keep their native rows; only the
+ * extension's completion notification becomes a card. Board folding still uses
+ * recognizeToolCall so handles/list/wait snapshots retain task context.
+ */
+export function recognizeTimelineToolCall(item: ToolCallItemLike): Omit<MeantimeCardData, "phase"> | undefined {
+  const data = recognizeToolCall(item);
+  return data?.source === "completion" ? data : undefined;
+}
+
 const ACTIVE_STATES = new Set(["running", "cancel_requested", "started"]);
 
 export function isActiveTask(task: TaskSummary): boolean {

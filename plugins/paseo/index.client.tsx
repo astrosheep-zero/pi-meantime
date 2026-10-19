@@ -1,14 +1,14 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { MeantimeBoard } from "./client/board.js";
 import { MeantimeTaskCard } from "./client/task-card.js";
-import { cardDataSchema, recognizeToolCall } from "./shared/tasks.js";
+import { cardDataSchema, recognizeTimelineToolCall } from "./shared/tasks.js";
 
 export default function contribute(client: PluginClientContext) {
   client.addTimelineTransformer({
     id: "meantime-task",
     query: { itemType: "tool_call" },
     transform({ item, phase }) {
-      const data = recognizeToolCall(item);
+      const data = recognizeTimelineToolCall(item);
       if (!data) return undefined;
       return {
         items: [{

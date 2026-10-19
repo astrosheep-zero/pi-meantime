@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ToolCallItemLike } from "../shared/tasks.ts";
-import { elapsedSeconds, foldTimeline, recognizeToolCall, sortTasks } from "../shared/tasks.ts";
+import { elapsedSeconds, foldTimeline, recognizeTimelineToolCall, recognizeToolCall, sortTasks } from "../shared/tasks.ts";
 
 const SNAPSHOT = {
   id: "mt_a1b2c3d4",
@@ -128,6 +128,25 @@ describe("recognizeToolCall: completion messages", () => {
       type: "tool_call", name: "meantime-completion", status: "completed",
       detail: { type: "plain_text", text: "nothing here" },
     }), undefined);
+  });
+});
+
+describe("timeline transformer gate", () => {
+  it("keeps tool invocations native and only transforms completion notifications", () => {
+    const handle = unknownItem("web_fetch_mt", {}, { details: SNAPSHOT });
+    const list = unknownItem("meantime", { action: "list" }, { details: { tasks: [SNAPSHOT] } });
+    const bash = {
+      type: "tool_call" as const, name: "bash", status: "completed" as const,
+      detail: { type: "shell", command: "sleep 60", output: `Meantime ${SNAPSHOT.id} running in background; execution continues independently.` },
+    };
+    const completion = {
+      type: "tool_call" as const, name: "meantime-completion", status: "completed" as const,
+      detail: { type: "plain_text", text: `Meantime ${SNAPSHOT.id} completed (exit 0)` },
+    };
+    assert.equal(recognizeTimelineToolCall(handle), undefined);
+    assert.equal(recognizeTimelineToolCall(list), undefined);
+    assert.equal(recognizeTimelineToolCall(bash), undefined);
+    assert.equal(recognizeTimelineToolCall(completion)?.source, "completion");
   });
 });
 
