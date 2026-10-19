@@ -1,0 +1,6 @@
+{
+  "id": "pi-meantime",
+  "name": "pi-meantime tasks",
+  "description": "Timeline cards and a read-only task board for pi-meantime background tasks",
+  "requirements": { "paseo": ">=0.11.0" }
+}

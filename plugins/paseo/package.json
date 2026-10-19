@@ -1,0 +1,23 @@
+{
+  "name": "@astrosheep/pi-meantime-paseo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Paseo timeline cards and task board for pi-meantime background tasks",
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "^0.11.2",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "react": "^19.0.0",
+    "react-native": "^0.81.0",
+    "typescript": "^6.0.3",
+    "zod": "^4.4.3"
+  }
+}
