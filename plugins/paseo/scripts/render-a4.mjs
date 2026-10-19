@@ -34,6 +34,7 @@ const theme={colors};
 document.body.style.cssText='margin:0;background:'+colors.surface0+';color:'+colors.foreground+';font:10px monospace';
 const card=(source,ts)=><MeantimeTaskCard item={{data:{source,tasks:ts,phase:'complete'}}} theme={theme} layout={layout}/>;
 createRoot(document.getElementById('root')).render(<div style={{width:390,boxSizing:'border-box',padding:'24px'}}>
+ <p>A4 · explicit meantime query</p>{card('meantime',tasks)}
  <p>B5 · completion cards</p>{card('completion',tasks.slice(1,3))}
  <p>B5 · actual sparse receipts</p>{card('completion',[{id:'mt_a1b2c3d4',state:'completed',exitCode:0},{id:'mt_deadbeef',state:'failed'},{id:'mt_1234abcd',state:'cancelled'}])}
  <p>Board · actual component / stub timeline transport</p><MeantimeBoard agentId="preview" theme={theme} layout={layout}/>

@@ -4,7 +4,7 @@ Paseo client plugin for [pi-meantime](../../README.md) background tasks. Pure cl
 
 ## What it does
 
-- **Timeline completion cards** — only `meantime-completion` notification rows become compact result cards. Tool invocations (`bash`, `<tool>_mt`, and explicit `meantime list/wait/cancel`) keep Paseo's native tool rows; the plugin does not replace a running tool call with a task card.
+- **Timeline task cards** — explicit `meantime list/wait/cancel` results and `meantime-completion` notifications become compact task cards. Original tool invocations (`bash` and `<tool>_mt`) keep Paseo's native tool rows; the plugin does not replace a running tool call with a task card.
 - **Background tasks board** — an agent-context workspace panel (Command Center: "Open background tasks") folding the agent's timeline (tail page, 500 entries) into the latest snapshot per task id, live-updated via `timeline.subscribe`. Read-only; cancel by asking the agent (`meantime cancel <id>`). The board still reads handles, list/wait snapshots, and completion receipts.
 
 Non-goals (v1): no cancel/control channel, no `setStatus`/`setWidget`/`custom()` equivalents — those Pi TUI surfaces are invisible over RPC by design; the timeline is the only source of truth.

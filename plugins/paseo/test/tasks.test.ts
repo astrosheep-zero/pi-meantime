@@ -132,7 +132,7 @@ describe("recognizeToolCall: completion messages", () => {
 });
 
 describe("timeline transformer gate", () => {
-  it("keeps tool invocations native and only transforms completion notifications", () => {
+  it("keeps original tool invocations native but renders meantime queries and completion notifications", () => {
     const handle = unknownItem("web_fetch_mt", {}, { details: SNAPSHOT });
     const list = unknownItem("meantime", { action: "list" }, { details: { tasks: [SNAPSHOT] } });
     const bash = {
@@ -144,7 +144,7 @@ describe("timeline transformer gate", () => {
       detail: { type: "plain_text", text: `Meantime ${SNAPSHOT.id} completed (exit 0)` },
     };
     assert.equal(recognizeTimelineToolCall(handle), undefined);
-    assert.equal(recognizeTimelineToolCall(list), undefined);
+    assert.equal(recognizeTimelineToolCall(list)?.source, "meantime");
     assert.equal(recognizeTimelineToolCall(bash), undefined);
     assert.equal(recognizeTimelineToolCall(completion)?.source, "completion");
   });
