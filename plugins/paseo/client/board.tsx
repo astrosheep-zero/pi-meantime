@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import type { TaskSummary } from "../shared/tasks.js";
 import { foldItem, isActiveTask, sortTasks } from "../shared/tasks.js";
-import { monoFont } from "./rows.js";
+import { monoFont, secondaryColor, stateColor } from "./rows.js";
 import { TaskTable } from "./task-view.js";
 
 const PAGE_LIMIT = 500;
@@ -69,9 +69,9 @@ export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps)
       alignSelf: "center" as const,
     },
     title: { color: colors.foreground, fontSize: 10, lineHeight: 16, fontFamily: monoFont(layout.platform) },
-    summary: { color: colors.foregroundMuted, fontSize: 10, lineHeight: 16, fontFamily: monoFont(layout.platform) },
-    muted: { color: colors.foregroundMuted, fontSize: 10, lineHeight: 16, fontFamily: monoFont(layout.platform) },
-    error: { color: colors.statusDanger, fontSize: 10, fontFamily: monoFont(layout.platform) },
+    summary: { color: secondaryColor(colors), fontSize: 10, lineHeight: 16, fontFamily: monoFont(layout.platform) },
+    muted: { color: secondaryColor(colors), fontSize: 10, lineHeight: 16, fontFamily: monoFont(layout.platform) },
+    error: { color: stateColor("failed", colors), fontSize: 10, fontFamily: monoFont(layout.platform) },
   }), [colors, layout.compact, layout.platform]);
 
   return (
