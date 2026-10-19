@@ -1,7 +1,7 @@
 import type { PluginTimelineItemProps } from "@getpaseo/plugin/client";
 import { Text, View } from "react-native";
 import type { MeantimeCardData } from "../shared/tasks.js";
-import { completionResult, formatElapsed, monoFont, stateColor } from "./rows.js";
+import { completionResult, formatElapsed, monoFont, secondaryColor, stateColor } from "./rows.js";
 import { TaskCommand, TaskNotes, TaskPanel, TaskTable } from "./task-view.js";
 
 export function MeantimeTaskCard({ item, theme, layout }: PluginTimelineItemProps<MeantimeCardData>) {
@@ -20,13 +20,13 @@ export function MeantimeTaskCard({ item, theme, layout }: PluginTimelineItemProp
         </>}>
           {task.command || task.tool ? <TaskCommand task={task} colors={colors} layout={layout} /> : null}
           <TaskNotes task={task} colors={colors} layout={layout} />
-          {formatElapsed(task) ? <Text style={{ textAlign: "right", color: colors.foregroundMuted,
-            fontFamily: monoFont(layout.platform), fontSize: 10, lineHeight: 16, opacity: 0.65 }}>
+          {formatElapsed(task) ? <Text style={{ textAlign: "right", color: secondaryColor(colors),
+            fontFamily: monoFont(layout.platform), fontSize: 10, lineHeight: 16 }}>
             {formatElapsed(task)}
           </Text> : null}
         </TaskPanel>
       )) : <TaskTable tasks={tasks} colors={colors} layout={layout} />}
-      {data.moreOffset !== undefined ? <Text style={{ color: colors.foregroundMuted, fontSize: 10,
+      {data.moreOffset !== undefined ? <Text style={{ color: secondaryColor(colors), fontSize: 10,
         fontFamily: monoFont(layout.platform) }}>More tasks not shown (offset {data.moreOffset})</Text> : null}
     </View>
   );

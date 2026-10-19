@@ -28,7 +28,8 @@ const tasks=[
 globalThis.previewTasks=tasks.filter(task=>task.state!=='queued');
 const dark=new URLSearchParams(location.search).get('theme')==='dark';
 const colors=dark?{surface0:'#0f1114',foreground:'#e4e7ec',foregroundMuted:'#899097',border:'#3a3c40',statusWarning:'#e9b45a',statusDanger:'#ef7d6b'}:
- {surface0:'#ffffff',foreground:'#16181c',foregroundMuted:'#737579',border:'#d0d1d2',statusWarning:'#b7791f',statusDanger:'#c2412d'};
+// Approximate washed-out host tokens, not measured screenshot samples.
+ {surface0:'#ffffff',foreground:'#202124',foregroundMuted:'#b6b9be',border:'#f1f2f3',statusWarning:'#f1d9a4',statusDanger:'#eeb4ad'};
 const theme={colors};
 document.body.style.cssText='margin:0;background:'+colors.surface0+';color:'+colors.foreground+';font:10px monospace';
 const card=(source,ts)=><MeantimeTaskCard item={{data:{source,tasks:ts,phase:'complete'}}} theme={theme} layout={layout}/>;

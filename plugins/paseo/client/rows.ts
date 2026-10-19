@@ -2,17 +2,64 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import type { TaskSummary } from "../shared/tasks.js";
 import { elapsedSeconds } from "../shared/tasks.js";
 
+type RGB = [number, number, number];
+function rgb(color: string): RGB | undefined {
+  const hex = /^#([\da-f]{3}|[\da-f]{6})$/i.exec(color)?.[1];
+  if (hex) {
+    const full = hex.length === 3 ? [...hex].map(c => c + c).join("") : hex;
+    return [0, 2, 4].map(i => parseInt(full.slice(i, i + 2), 16)) as RGB;
+  }
+  const match = /^rgba?\(\s*([\d.]+)[, ]+([\d.]+)[, ]+([\d.]+)/.exec(color);
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : undefined;
+}
+
+/** Precompute opaque colors: never fade the whole panel (including its text). */
+export function mixColor(color: string, toward: string, amount: number): string {
+  const a = rgb(color), b = rgb(toward);
+  if (!a || !b) return color;
+  return `#${a.map((value, i) => Math.round(value + (b[i]! - value) * amount).toString(16).padStart(2, "0")).join("")}`;
+}
+
+function luminance(color: RGB): number {
+  const linear = color.map(value => {
+    const s = value / 255;
+    return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  });
+  return linear[0]! * 0.2126 + linear[1]! * 0.7152 + linear[2]! * 0.0722;
+}
+
+/** Preserve the theme hue, darkening/lightening only when host tokens are too pale. */
+export function readableColor(color: string, colors: PluginTheme["colors"], target = 4.5): string {
+  const surface = rgb(colors.surface0);
+  if (!surface || !rgb(color)) return color;
+  const background = luminance(surface);
+  for (let step = 0; step <= 20; step++) {
+    const candidate = mixColor(color, colors.foreground, step / 20);
+    const value = luminance(rgb(candidate)!);
+    if ((Math.max(value, background) + 0.05) / (Math.min(value, background) + 0.05) >= target) return candidate;
+  }
+  return colors.foreground;
+}
+
+export function secondaryColor(colors: PluginTheme["colors"]): string {
+  return readableColor(mixColor(colors.foregroundMuted, colors.foreground, 0.15), colors);
+}
+
+export function frameColor(colors: PluginTheme["colors"]): string {
+  return mixColor(secondaryColor(colors), colors.surface0, 0.4);
+}
+
 export function stateColor(state: string, colors: PluginTheme["colors"]): string {
   switch (state) {
     case "running":
     case "started":
     case "queued":
     case "cancel_requested":
-      return colors.statusWarning;
+      return readableColor(colors.statusWarning, colors);
     case "failed":
-      return colors.statusDanger;
+      return readableColor(colors.statusDanger, colors);
     default:
-      return colors.foregroundMuted;
+      return secondaryColor(colors);
   }
 }
 
