@@ -1,6 +1,6 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { TaskSummary } from "../shared/tasks.js";
-import { elapsedSeconds, isActiveTask } from "../shared/tasks.js";
+import { elapsedSeconds } from "../shared/tasks.js";
 
 export function stateColor(state: string, colors: PluginTheme["colors"]): string {
   switch (state) {
@@ -18,46 +18,33 @@ export function stateColor(state: string, colors: PluginTheme["colors"]): string
   }
 }
 
+/** Badge text for a raw pi-meantime state. */
+export function stateLabel(state: string): string {
+  switch (state) {
+    case "cancel_requested":
+      return "CANCELING";
+    case "outcome_unknown":
+      return "UNKNOWN";
+    default:
+      return state.toUpperCase();
+  }
+}
+
+/** Cross-platform monospace: iOS has no generic "monospace" alias. */
+export function monoFont(platform: "ios" | "android" | "web"): string {
+  return platform === "ios" ? "Menlo" : "monospace";
+}
+
 export function formatElapsed(task: TaskSummary, now?: number): string | undefined {
   const seconds = elapsedSeconds(task, now);
   if (seconds === undefined) return undefined;
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m${seconds % 60}s`;
-  return `${Math.floor(minutes / 60)}h${minutes % 60}m`;
+  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
 }
 
-export function taskTitle(task: TaskSummary): string {
-  return `${task.id} · ${task.tool}`;
-}
-
-export interface TaskRowSpec {
-  heading: string;
-  color: string;
-  state: string;
-  elapsed?: string;
-  command?: string;
-  progress?: string;
-  outputPath?: string;
-  note?: string;
-  active: boolean;
-}
-
-/** Shared row projection used by both the timeline card and the board. */
-export function taskRowSpec(task: TaskSummary, colors: PluginTheme["colors"], now?: number): TaskRowSpec {
-  const notes: string[] = [];
-  if (task.cancelRequested) notes.push("cancel requested");
-  if (task.recovered) notes.push("recovered");
-  if (task.isError && task.state !== "failed") notes.push("error");
-  return {
-    heading: taskTitle(task),
-    color: stateColor(task.state, colors),
-    state: task.state,
-    ...(formatElapsed(task, now) !== undefined ? { elapsed: formatElapsed(task, now) } : {}),
-    ...(task.command ? { command: task.command } : {}),
-    ...(task.progress && isActiveTask(task) ? { progress: task.progress } : {}),
-    ...(task.outputPath && !isActiveTask(task) ? { outputPath: task.outputPath } : {}),
-    ...(notes.length ? { note: notes.join(" · ") } : {}),
-    active: isActiveTask(task),
-  };
+/** Hex-alpha tint of a theme color for pill/badge backgrounds. */
+export function tint(color: string, alpha: string): string {
+  return /^#[0-9a-fA-F]{6}$/.test(color) ? `${color}${alpha}` : color;
 }

@@ -6,18 +6,22 @@
   "description": "Paseo timeline cards and task board for pi-meantime background tasks",
   "scripts": {
     "test": "node --test test/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify": "node scripts/verify-e2e.ts"
   },
   "engines": {
     "node": ">=22.18"
   },
   "devDependencies": {
+    "@getpaseo/client": "^0.11.4",
     "@getpaseo/plugin": "^0.11.2",
+    "@getpaseo/protocol": "^0.11.4",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "react": "^19.0.0",
     "react-native": "^0.81.0",
     "typescript": "^6.0.3",
+    "ws": "^8.22.0",
     "zod": "^4.4.3"
   }
 }

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import type { TaskSummary } from "../shared/tasks.js";
 import { foldItem, isActiveTask, sortTasks } from "../shared/tasks.js";
-import { taskRowSpec } from "./rows.js";
+import { SectionLabel, TaskLine } from "./task-view.js";
 
 const PAGE_LIMIT = 500;
 
@@ -22,12 +22,14 @@ export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps)
   const [hasOlder, setHasOlder] = useState(false);
   const [now, setNow] = useState(() => Date.now());
 
-  const anyActive = tasks.some(isActiveTask);
+  const active = useMemo(() => tasks.filter(isActiveTask), [tasks]);
+  const finished = useMemo(() => tasks.filter(task => !isActiveTask(task)), [tasks]);
+
   useEffect(() => {
-    if (!anyActive) return;
+    if (active.length === 0) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [anyActive]);
+  }, [active.length]);
 
   useEffect(() => {
     const handle = paseo.agents.ref(agentId);
@@ -64,50 +66,58 @@ export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps)
 
   const styles = useMemo(() => ({
     screen: {
-      flex: 1,
-      padding: layout.compact ? 12 : 20,
-      gap: 10,
+      flexGrow: 1,
+      padding: layout.compact ? 14 : 24,
+      gap: 12,
       backgroundColor: colors.surface0,
+      maxWidth: 720,
+      width: "100%" as const,
+      alignSelf: "center" as const,
     },
-    title: { color: colors.foreground, fontSize: layout.compact ? 18 : 22 },
-    muted: { color: colors.foregroundMuted, fontSize: 12 },
+    title: { color: colors.foreground, fontSize: layout.compact ? 20 : 24, fontWeight: "600" as const },
+    summary: { color: colors.foregroundMuted, fontSize: 12 },
+    muted: { color: colors.foregroundMuted, fontSize: 11.5 },
     error: { color: colors.statusDanger, fontSize: 13 },
     card: {
       backgroundColor: colors.surface1,
       borderColor: colors.border,
       borderWidth: 1,
-      borderRadius: 8,
-      padding: layout.compact ? 8 : 10,
-      gap: 4,
+      borderRadius: 10,
+      paddingVertical: layout.compact ? 9 : 11,
+      paddingHorizontal: layout.compact ? 10 : 12,
     },
-    rowHeading: { color: colors.foreground, fontSize: 13, flexShrink: 1 },
-    rowMeta: { color: colors.foregroundMuted, fontSize: 12 },
   }), [colors, layout.compact]);
 
   return (
     <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.screen}>
-      <Text style={styles.title}>Background tasks{tasks.length ? ` (${tasks.length})` : ""}</Text>
+      <View style={{ gap: 2 }}>
+        <Text style={styles.title}>Background tasks</Text>
+        <Text style={styles.summary}>
+          {tasks.length === 0 ? "Nothing on this agent's timeline"
+            : `${active.length} active · ${finished.length} finished`}
+        </Text>
+      </View>
       {error ? <Text style={styles.error}>{error}</Text> : null}
-      {tasks.length === 0 && !error
-        ? <Text style={styles.muted}>No pi-meantime tasks found on this agent's timeline.</Text>
-        : null}
-      {tasks.map(task => {
-        const row = taskRowSpec(task, colors, now);
-        return (
-          <View key={task.id} style={styles.card}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <Text style={{ color: row.color, fontSize: 12 }}>●</Text>
-              <Text style={styles.rowHeading} numberOfLines={1}>{row.heading}</Text>
-              {row.elapsed ? <Text style={styles.rowMeta}>{row.elapsed}</Text> : null}
-              <Text style={[styles.rowMeta, { color: row.color }]}>{row.state}</Text>
+      {active.length > 0 ? (
+        <View style={{ gap: 8 }}>
+          <SectionLabel text="Active" colors={colors} trailing={String(active.length)} />
+          {active.map(task => (
+            <View key={task.id} style={styles.card}>
+              <TaskLine task={task} colors={colors} layout={layout} now={now} />
             </View>
-            {row.command ? <Text style={styles.rowMeta} numberOfLines={2}>{row.command}</Text> : null}
-            {row.progress ? <Text style={styles.rowMeta} numberOfLines={1}>{row.progress}</Text> : null}
-            {row.outputPath ? <Text style={styles.rowMeta} numberOfLines={1}>{row.outputPath}</Text> : null}
-            {row.note ? <Text style={styles.rowMeta}>{row.note}</Text> : null}
-          </View>
-        );
-      })}
+          ))}
+        </View>
+      ) : null}
+      {finished.length > 0 ? (
+        <View style={{ gap: 8 }}>
+          <SectionLabel text="Finished" colors={colors} trailing={String(finished.length)} />
+          {finished.map(task => (
+            <View key={task.id} style={styles.card}>
+              <TaskLine task={task} colors={colors} layout={layout} now={now} />
+            </View>
+          ))}
+        </View>
+      ) : null}
       {hasOlder
         ? <Text style={styles.muted}>Only the latest {PAGE_LIMIT} timeline entries were scanned; older tasks may be missing.</Text>
         : null}
