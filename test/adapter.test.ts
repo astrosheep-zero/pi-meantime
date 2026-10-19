@@ -26,6 +26,23 @@ function snapshot(outcome: Outcome): Snapshot {
   const value = outcome.result.structuredContent as { task: unknown }; return value.task as Snapshot;
 }
 
+test('model-facing execution control reflects the configured auto-detach timer', async () => {
+  for (const autoDetachMs of [120_000, 1750, 0]) {
+    const h = await setup([basicTool('mcp__model_text')], { autoDetachMs });
+    try {
+      const event = { type: 'before_agent_start' as const, systemPromptOptions: { sections: {} as Record<string, string> } };
+      await h.pi.emit('before_agent_start', event);
+      const texts = [event.systemPromptOptions.sections.meantime!,
+        h.pi.definitions.get('bash')!.description, h.pi.definitions.get('mcp__model_text_mt')!.description];
+      for (const text of texts) {
+        if (autoDetachMs) assert.ok(text.includes(`detaches after ${autoDetachMs / 1000}s if still running`));
+        else { assert.match(text, /never detaches on a timer/); assert.doesNotMatch(text, /\b0s\b/); }
+        assert.match(text, /"no" stays in the foreground/);
+      }
+    } finally { await h.close(); }
+  }
+});
+
 test('model sees schema-preserving proxies; originals stay internally callable and disappear from direct declarations', async () => {
   const original = basicTool('mcp__test__search', undefined, { parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false } });
   const h = await setup([original]);
@@ -143,6 +160,8 @@ test('model explicit background continues in parallel with another tool and fini
     assert.equal(task.delivery, 'background'); assert.equal(task.state, 'running');
     const fast = await h.pi.call('local_fast', {}); assert.equal(fast.isError, false);
     work.resolve(ok('slow result').result); await until(() => h.pi.notifications.length === 1);
+    assert.match(JSON.stringify(out.result), /execution continues independently\./);
+    assert.match(h.pi.notifications[0]!.content, /If the results are already known or unneeded, take no further action\./);
     assert.match(h.pi.notifications[0]!.content, /<untrusted-output-tail>\nslow result\n<\/untrusted-output-tail>/);
     assert.match(task.id, /^mt_[a-f0-9]{8}$/);
     const byPrefix = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: task.id.slice(3, 9) });
