@@ -90,7 +90,7 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
 
     const reopened = command('status');
     panel!.handleInput!('\r');
-    assert.match(text(), /recent output/); assert.match(text(), /Output: .*\.result\.json/);
+    assert.match(text(), /recent output/); assert.doesNotMatch(text(), /Output:/);
     panel!.handleInput!('\u001b'); await reopened;
     assert.equal(closed, 2);
 

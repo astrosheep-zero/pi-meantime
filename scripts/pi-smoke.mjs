@@ -4,7 +4,7 @@
  * MCP dispatch in a headless SDK session. Human TUI steering is a separate gate.
  */
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +19,7 @@ catch (error) {
 if (sdk) {
   const root = mkdtempSync(join(tmpdir(), 'pi-bg-real-sdk-'));
   let session; let extension;
+  const outputs = [];
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = join(root, 'agent');
   try {
@@ -30,6 +31,14 @@ if (sdk) {
           command: process.execPath,
           args: [fileURLToPath(new URL('../test/fixtures/mcp-server.mjs', import.meta.url))],
           exposure: 'direct', timeout: 10,
+        });
+        pi.registerTool({
+          name: 'large_text_probe', label: 'large text probe', description: 'Oversized tool text fixture',
+          parameters: { type: 'object', properties: {} },
+          async execute() {
+            await new Promise(resolve => setTimeout(resolve, 100));
+            return { content: [{ type: 'text', text: 'M'.repeat(60000) }] };
+          },
         });
         pi.registerTool({
           name: 'background_probe', label: 'background probe', description: 'Test nested background result retrieval',
@@ -44,11 +53,28 @@ if (sdk) {
             assert.equal(collected.isError, false);
             assert.equal(collected.result.structuredContent.result_available, true);
             assert.equal(collected.result.structuredContent.result.output, 'REAL_BACKGROUND_OK');
+            assert.doesNotMatch(collected.result.content.map(b => b.text).join('\n'), /Output:/);
+            for (const [tool, args] of [
+              ['bash', { command: `sleep 0.1; node -e 'process.stdout.write("B".repeat(60000))'` }],
+              ['large_text_probe_mt', {}],
+            ]) {
+              const handle = await ctx.executeTool(tool, { ...args, __meantime__: 'yes' });
+              const id = handle.result.structuredContent.task.id;
+              const result = await ctx.executeTool('meantime', { action: 'wait', id });
+              assert.equal(result.isError, false);
+              const task = result.result.structuredContent.task;
+              assert.ok(task.outputPath, JSON.stringify({ tool, task, result: result.result.structuredContent.result }).slice(0, 2000));
+              assert.match(result.result.content[0].text, /\nOutput: /);
+              assert.equal(readFileSync(task.outputPath, 'utf8').length, 60000);
+              outputs.push({ id, path: task.outputPath });
+            }
+            assert.equal(outputs[0].path.includes('pi-bash-'), true);
+            assert.equal(outputs[1].path.endsWith('.txt'), true);
             return collected.result;
           },
         });
         extension = install(pi, {
-          config: validateConfig({ storageRoot: join(root, 'tasks'), autoDetachMs: 0 }),
+          config: validateConfig({ storageRoot: join(root, 'tasks'), autoDetachMs: 0, include: ['mcp__*', 'large_text_probe'] }),
           makeBash: cwd => sdk.createBashToolDefinition(cwd),
         });
       }],
@@ -78,7 +104,7 @@ if (sdk) {
     }
     // SDK may keep added MCP tools outside its initial active set. Explicit activation
     // here is part of the test setup, not the extension's production policy.
-    session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), target, 'mcp__meantime_fixture__slow', 'meantime', 'bash', 'background_probe'])]);
+    session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), target, 'mcp__meantime_fixture__slow', 'meantime', 'bash', 'background_probe', 'large_text_probe', 'large_text_probe_mt'])]);
     const wrapped = session.agent.state.tools.find(t => t.name === target);
     assert.ok(wrapped, 'proxy must be activated in the test session');
     const result = await wrapped.execute('smoke', { ms: 1, text: 'REAL_PI_MCP_OK', __meantime__: 'no' }, new AbortController().signal);
@@ -100,14 +126,25 @@ if (sdk) {
     session.dispose();
     await loader.reload();
     const reopened = sdk.SessionManager.open(sessionFile);
-    assert.equal(reopened.getEntries().filter(e => e.customType === 'meantime-index').length, 1);
+    assert.equal(reopened.getEntries().filter(e => e.customType === 'meantime-index').length, 6);
     ({ session } = await sdk.createAgentSession({ cwd: root, resourceLoader: loader, settingsManager, sessionManager: reopened }));
     await session.bindExtensions({ mode: 'rpc' });
     session.setActiveToolsByName(['meantime']);
     const restored = await session.agent.state.tools.find(t => t.name === 'meantime')
       .execute('restored-result', { action: 'result', id }, new AbortController().signal);
     assert.equal(restored.structuredContent.task.recovered, true);
-    assert.equal(restored.structuredContent.result.output, 'REAL_BACKGROUND_OK');
+    assert.equal(restored.structuredContent.result, 'REAL_BACKGROUND_OK');
+    assert.match(restored.content.map(b => b.text).join('\n'), /contains text only/);
+    for (const { id, path } of outputs) {
+      const result = await session.agent.state.tools.find(t => t.name === 'meantime')
+        .execute('restored-output', { action: 'result', id }, new AbortController().signal);
+      assert.equal(result.structuredContent.task.outputPath, path);
+      assert.match(result.content[0].text, /\nOutput: /);
+      assert.equal(result.structuredContent.task.resultTruncated, false);
+    }
+    const ownerDir = readdirSync(join(root, 'tasks'));
+    assert.equal(ownerDir.length, 1);
+    assert.deepEqual(readdirSync(join(root, 'tasks', ownerDir[0])), [outputs[1].id + '.txt']);
   } finally {
     try {
       // AgentSession.dispose() invalidates context and listeners, but does not
@@ -120,6 +157,7 @@ if (sdk) {
       finally {
         session?.dispose();
         if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+        for (const output of outputs) if (output.path.includes('pi-bash-')) rmSync(output.path, { force: true });
         rmSync(root, { recursive: true, force: true });
       }
     }

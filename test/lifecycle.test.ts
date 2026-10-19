@@ -12,7 +12,7 @@ const run = (runtime: TaskRuntime, callId: string, work: Promise<Outcome>) => ru
   tool: 'noncooperative', kind: 'tool', callId, mode: 'yes', canDetach: true, execute: () => work,
 });
 
-test('recovery observes late completion without replay, stale notifications, or lifecycle writes', async () => {
+test('late oversized text is discoverable but cannot establish an outcome without a bound completion index', async () => {
   const h = runtimeHarness({ maxRunning: 1 }); const work = deferred<Outcome>();
   const view = await run(h.runtime, 'late', work.promise); h.runtime.published('late'); await h.runtime.close();
   const restored = new TaskRuntime(h.store, h.config, { ...h.sink, notify() { assert.fail('stale notification'); } }, [...h.records.values()]);
@@ -21,13 +21,15 @@ test('recovery observes late completion without replay, stale notifications, or 
     assert.equal(restored.result(view.task.id).result, undefined);
     assert.throws(() => restored.cancel(view.task.id), /no live local controller/);
     assert.throws(() => run(restored, 'other', Promise.resolve(ok())), /capacity/);
-    work.resolve(ok('LATE_RESULT')); await until(() => TaskRuntime.liveProducerCount() === 0);
+    work.resolve(ok('LATE_RESULT'.repeat(6000))); await until(() => TaskRuntime.liveProducerCount() === 0);
     const result = restored.result(view.task.id.slice(3));
-    assert.equal(result.task.state, 'completed'); assert.equal(result.task.recovered, true);
-    assert.deepEqual(result.result, JSON.parse(JSON.stringify(ok('LATE_RESULT').result)));
-    const before = readFileSync(result.task.resultPath!, 'utf8');
+    assert.equal(result.task.state, 'outcome_unknown'); assert.equal(result.task.recovered, true);
+    assert.equal(result.result, undefined);
+    const before = readFileSync(result.task.outputPath!, 'utf8');
+    assert.match(before, /LATE_RESULT/);
+    assert.equal(h.records.get(view.task.id)!.completion, undefined);
     restored.flushNotifications(); await restored.close();
-    assert.equal(readFileSync(result.task.resultPath!, 'utf8'), before);
+    assert.equal(readFileSync(result.task.outputPath!, 'utf8'), before);
     assert.equal(h.notifications.length, 0);
     assert.equal(readdirSync(h.store.directory).length, 1);
   } finally { work.resolve(ok()); await restored.close(); await h.close(); }
@@ -46,7 +48,7 @@ test('cancellation grace and shutdown both index an unfinished foreground handle
     assert.equal(shutdownHandle.kind, 'handle'); assert.equal(h.records.size, 2);
     assert.equal(existsSync(h.store.directory), false);
     cancelled.resolve(ok()); closing.resolve(ok()); await until(() => TaskRuntime.liveProducerCount() === 0);
-    assert.equal(readdirSync(h.store.directory).length, 2);
+    assert.equal(existsSync(h.store.directory), false);
     assert.equal(h.records.size, 2);
   } finally { cancelled.resolve(ok()); closing.resolve(ok()); await until(() => TaskRuntime.liveProducerCount() === 0); await h.close(); }
 });
@@ -70,7 +72,7 @@ test('retention protects pending notifications and removes both the result and i
     const handles: Awaited<ReturnType<typeof run>>[] = [];
     for (let i = 0; i < jobs.length; i++) { handles.push(await run(h.runtime, `c${i}`, jobs[i]!.promise)); h.runtime.published(`c${i}`); }
     h.runtime.prompt(true);
-    for (const work of jobs) { work.resolve(ok()); await sleep(2); }
+    for (const work of jobs) { work.resolve(ok('x'.repeat(60_000))); await sleep(2); }
     await until(() => TaskRuntime.liveProducerCount() === 0);
     assert.equal(h.runtime.list().length, 2); assert.equal(h.records.size, 2);
     h.runtime.prompt(false); await new Promise<void>(resolve => setImmediate(resolve)); h.runtime.flushNotifications();
@@ -96,7 +98,7 @@ test('retention deletion failure remains discoverable after restore and can be r
       const work = deferred<Outcome>();
       const handle = await run(h.runtime, `delete${i}`, work.promise);
       h.runtime.published(`delete${i}`);
-      work.resolve(ok()); await until(() => TaskRuntime.liveProducerCount() === 0);
+      work.resolve(ok('x'.repeat(60_000))); await until(() => TaskRuntime.liveProducerCount() === 0);
       h.runtime.result(handle.task.id);
     }
     assert.equal(h.records.size, 2);
@@ -135,7 +137,8 @@ test('Pi session index survives tree navigation and resume, but a fork cannot ad
     await pi.emit('session_shutdown', { type: 'session_shutdown' }); pi.ctx = originalCtx;
     await pi.emit('session_start', { type: 'session_start' });
     const result = await pi.call('meantime', { action: 'result', id: id.slice(3) });
-    assert.equal(result.isError, false); assert.match(JSON.stringify(result.result.content), /LATE_OWNER_A/);
+    assert.equal(result.isError, false); assert.match(JSON.stringify(result.result.content), /outcome_unknown/);
+    assert.doesNotMatch(JSON.stringify(result.result.content), /LATE_OWNER_A/);
     assert.equal(executions, 1); assert.equal(pi.notifications.length, 0);
   } finally { work.resolve(ok()); await instance.dispose(); await h.close(); }
 });

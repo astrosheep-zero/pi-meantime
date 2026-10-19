@@ -246,7 +246,8 @@ test('real shell fixture runs, can detach without a second spawn, and result is 
     const preview = (list.result.details as { tasks: Snapshot[] }).tasks[0]!.command!;
     assert.ok(preview.endsWith('…')); assert.ok(!preview.includes('\n'));
     await until(() => h.pi.notifications.length === 1);
-    assert.ok(h.pi.notifications[0]!.content.includes(preview));
+    assert.match(h.pi.notifications[0]!.content, new RegExp(`Meantime ${task.id} completed`));
+    assert.match(h.pi.notifications[0]!.content, /<untrusted-output-tail>\nSHELL_DONE/);
     const status = await h.pi.call('meantime', { action: 'status', id: task.id });
     assert.equal((status.result.details as Snapshot).command, command);
     const result = await h.pi.call('meantime', { action: 'result', id: task.id });
@@ -341,7 +342,7 @@ test('public renderer expands task details and delegates native foreground resul
   const task: Snapshot = { id: 'mt_sample', tool: 'bash', kind: 'bash', state: 'failed',
     command: 'printf first\\nprintf second', createdAt: 1000, endedAt: 6000,
     mode: 'yes', delivery: 'background', localRunning: false, notification: 'observed',
-    progress: 'last update', isError: true, resultPath: '/tmp/sample.result.json' };
+    progress: 'last update', isError: true, outputPath: '/tmp/sample.txt' };
   try {
     const resolve = h.pi.renderers[0]!;
     const renderer = resolve('meantime', () => undefined)!;
@@ -349,7 +350,7 @@ test('public renderer expands task details and delegates native foreground resul
     const render = (expanded: boolean) => renderer.renderResult!(result, { expanded, isPartial: false }, theme, context).render(200).join('\n');
     assert.equal(render(false).trimEnd(), 'mt_sample | bash | failed | 5s');
     const expanded = render(true);
-    for (const expected of ['Command: printf first', 'printf second', 'Progress: last update', 'Exit: 7', 'isError: true', 'Output: /tmp/sample.result.json']) assert.ok(expanded.includes(expected), expected);
+    for (const expected of ['Command: printf first', 'printf second', 'Progress: last update', 'Exit: 7', 'isError: true', 'Output: /tmp/sample.txt']) assert.ok(expanded.includes(expected), expected);
     for (const name of ['bash', 'mcp__t__one_mt']) {
       const native = new Text('NATIVE', 0, 0);
       const managed = resolve(name, () => ({ renderResult: () => native }))!;
@@ -418,9 +419,45 @@ test('multi-task wait exposes settled and pending tasks, validates ids, and shar
     const blocks = all.result.content.filter(block => block.type === 'text').map(block => block.text);
     assert.equal(blocks.filter(text => /^(A+|B+)$/.test(text)).reduce((bytes, text) => bytes + Buffer.byteLength(text), 0), 32 * 1024);
     const text = blocks.join('\n');
-    assert.ok(text.indexOf(`Task ${second.id}`) < text.indexOf(`Task ${first.id}`));
+    assert.ok(text.indexOf(`Meantime ${second.id}`) < text.indexOf(`Meantime ${first.id}`));
     const single = await h.pi.call('meantime', { action: 'wait', id: first.id });
     assert.equal(snapshot(single).id, first.id);
     assert.equal((single.result.structuredContent as { result_available: boolean }).result_available, true);
   } finally { a.resolve(ok().result); b.resolve(ok().result); await h.close(); }
+});
+
+
+test('multi-task wait shares its text budget for Bash and MCP, reports omission, and preserves single retrieval', async () => {
+  for (const tool of ['bash', 'mcp__t__text_mt']) {
+    const work = deferred<Result>();
+    const h = await setup([basicTool('mcp__t__text', () => work.promise)]);
+    try {
+      const handles = [];
+      for (const letter of ['A', 'B']) {
+        const args = tool === 'bash'
+          ? { command: `sleep 0.1; node -e 'process.stdout.write("${letter}".repeat(24000))'` }
+          : {};
+        handles.push(snapshot(await h.pi.call(tool, { ...args, __meantime__: 'yes' })));
+      }
+      work.resolve(ok('M'.repeat(24000)).result);
+      const all = await h.pi.call('meantime', { action: 'wait', ids: handles.map(t => t.id), mode: 'all' });
+      assert.equal(all.isError, false);
+      const blocks = all.result.content.filter(b => b.type === 'text').map(b => b.text);
+      assert.equal(blocks.filter(text => /^(A+|B+|M+)$/.test(text)).reduce((n, text) => n + Buffer.byteLength(text), 0), 32768);
+      const notices = blocks.filter(text => text.startsWith('Inline text omitted'));
+      assert.equal(notices.length, 1); assert.ok(notices[0]!.includes(handles[1]!.id));
+      assert.match(notices[0]!, /Retrieve this task singly.*action="result"/);
+      assert.doesNotMatch(blocks.join('\n'), /Output:|retention limit/);
+      for (const handle of handles) {
+        const single = await h.pi.call('meantime', { action: 'result', id: handle.id });
+        const singleWait = await h.pi.call('meantime', { action: 'wait', id: handle.id });
+        for (const view of [single, singleWait]) {
+          const text = view.result.content.filter(b => b.type === 'text').map(b => b.text);
+          assert.equal(text.filter(t => /^(A+|B+|M+)$/.test(t)).join('').length, 24000);
+          assert.doesNotMatch(text.join('\n'), /Inline text omitted/);
+          assert.equal(snapshot(view).resultTruncated, false);
+        }
+      }
+    } finally { work.resolve(ok().result); await h.close(); }
+  }
 });

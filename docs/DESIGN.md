@@ -108,15 +108,15 @@ Bash 任务保存完整命令供 status/result 详情读取；任务列表和完
 
 ## 8. 取消、关闭与恢复
 
-Bash 使用 Pi 原生进程清理；MCP/一般扩展工具仍经原名 ctx.executeTool 和 Pi 原生 AbortSignal 通路。最终 Outcome.isError（包括 afterToolCall 的最终裁决）决定 failed/completed，result payload 保留原样；完成文件单独记录 isError，避免把旧 payload.isError 冒充最终裁决。cancelRequestedAt 仅记请求事实；没有最终结果且失去本地控制时显示 outcome_unknown。
+Bash 使用 Pi 原生进程清理；MCP/一般扩展工具仍经原名 ctx.executeTool 和 Pi 原生 AbortSignal 通路。最终 Outcome.isError（包括 afterToolCall 的最终裁决）决定 failed/completed，result payload 保留原样；最终错误位与文本单独写入 completion 索引，避免把旧 payload.isError 冒充最终裁决。cancelRequestedAt 仅记请求事实；没有最终结果且失去本地控制时显示 outcome_unknown。
 
 `/reload`、会话切换和退出请求取消、等待有限 grace，并停止旧通知。尚未结束的前台调用也经过后台晋升路径，记录索引再释放句柄。普通 detach 若索引写入失败则保持前台；强制取消/关闭仍可释放句柄并显示 storageError。**不承诺 reload 保活。** 同一会话内树导航共享任务，不重启 runtime、不请求取消；fork/clone 使用新 owner，不接管复制历史中的旧任务。
 
 进程全局配额只保留存活 producer 的租约，不保留旧宿主上下文。非协作任务在实际 Promise 结束前不释放配额，防止反复 reload 绕过并发上限。Pi 进程退出后，这种保护自然结束；这不等于能追踪失联的远端作业。
 
-恢复通过 Pi getEntries() 读取全部分支中的 meantime-index，按 owner 过滤并应用删除记录。索引只有任务身份和调用描述，不保存运行中快照。缺少完成文件的任务投影为 outcome_unknown；status/list/result 会重读，允许旧 producer 的晚结果出现。不恢复 Promise、不盲目 kill PID、更不重放原请求。
+恢复通过 Pi getEntries() 读取全部分支中的 meantime-index，按 owner 过滤并应用 task、completion 和 removed 记录。缺少 completion 的任务投影为 outcome_unknown；不恢复 Promise、不盲目 kill PID、更不重放原请求。晚到的超大工具文本文件可由 status/list/result 暴露路径，但不证明执行结果。
 
-旧 producer 只向自己绑定的目录写一次完成文件，不向新会话追加索引或通知。通知、已读确认和重试都只在内存；恢复后不发历史通知。没有元数据 CAS、producerId 或双文件事务；不支持两个 Pi 进程同时操作同一 owner 的存储。
+旧 producer 只能写原 owner 目录的超大工具文本，不能向新会话追加索引或通知。通知、已读确认和重试都只在内存；恢复后不发历史通知。不支持两个 Pi 进程同时操作同一 owner 的存储。
 
 ## 9. 存储、大小与成本
 
@@ -124,15 +124,15 @@ Bash 使用 Pi 原生进程清理；MCP/一般扩展工具仍经原名 ctx.execu
 
 除用于辨识任务的 Bash 命令外，不保存业务入参和环境变量。结果可能含敏感数据，因此采用私有权限，但不做自动内容脱敏；保留原工具结果钩子的脱敏结果。
 
-仅转后台时用 Pi appendEntry 保存任务索引（id、tool、kind、command、mode、createdAt、detachReason）。后台完成时原子写入一个 `.result.json`，包含 completion（endedAt、isError、可选 cancelRequestedAt）、result、truncated 和 originalBytes；完成后从内存释放大结果。目录懒创建，前台调用不落盘。
+转后台时 Pi appendEntry 保存任务索引（id、tool、kind、command、mode、createdAt、detachReason）。绑定会话内完成时追加 completion（id、endedAt、isError、cancelRequestedAt?、exitCode?、text、truncated、outputPath?）。Bash 使用原生有界文本，路径优先 structuredContent.full_output_path，其次 details.fullOutputPath；不额外截断、不写扩展文件。其他工具 cleanText 后不超过 50KiB 的文本只进索引；更大时原子写入 `<sha256(owner)[0:32]>/mt_xxx.txt`，索引保留约 2000 字节预览和路径。图片和 structuredContent 只留当前进程内存，恢复只有文本，回执说明省略。
 
-默认保留最近完成的128个后台任务；等待通知、仍有全局存活租约以及没有 endedAt 的不确定任务暂不淘汰。活跃 runtime 在完成、通知、读取时执行清理；关闭后的晚结果延后至原会话恢复清理。显式读取时优先保留刚返回条目。清理先删除结果文件，再追加 removed 索引事件，防止恢复时复活为 unknown；删除失败保留索引与内存记录并暴露 storageError，后续可重试。文件和会话索引之间没有跨文件事务保证。
+默认保留最近完成的128个后台任务；等待通知、仍有全局存活租约以及没有 endedAt 的不确定任务暂不淘汰。活跃 runtime 在完成、通知、读取时执行清理；关闭后的晚结果延后至原会话恢复清理。显式读取时优先保留刚返回条目。清理先删除扩展自己的工具文本文件（绝不删除 Pi 的 Bash 文件），再追加 removed 索引事件，防止恢复时复活为 unknown；删除失败保留索引与内存记录并暴露 storageError，后续可重试。文件和会话索引之间没有跨文件事务保证。
 
-单结果默认4MiB，大小判断包含整个完成 envelope；超限存储显式截断清单。meantime 的模型正文/结构化 inline 视图均有预算，任务列表默认10条、最多32条并支持 offset。旧版 meta/result 格式不迁移、不读取，也不自动删除。
+超大工具文本文件默认最多4MiB；只有文件本身被截断才标记 truncated，索引预览不等于丢失完整文本。任务列表默认10条、最多32条并支持 offset。旧版完成文件格式不迁移、不读取，也不自动删除。
 
 入站工具已经构造出来的超大结果，在截断前仍可能占内存，扩展无法用结果截断阻止上游一次性分配。用户移除整个结果目录时会失去历史数据；扩展不自动跨会话清理其他目录。
 
-原始 `usage` 在任务结果中保留。前台嵌套 usage 由 Pi 自动归到父调用，包装器不重复加一次；后台晚到 usage 的 Pi 全局汇总可能不完整。扩展不修改 Pi 的历史费用记录。这是明确的已知宿主集成缺口，不是通过测试的指标。
+原始 `usage` 只在当前进程的任务结果中保留。前台嵌套 usage 由 Pi 自动归到父调用，包装器不重复加一次；后台晚到 usage 的 Pi 全局汇总可能不完整。扩展不修改 Pi 的历史费用记录。这是明确的已知宿主集成缺口，不是通过测试的指标。
 
 ## 10. 验收层级
 

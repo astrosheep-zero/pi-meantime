@@ -23,7 +23,7 @@ test('final native Outcome flag wins in both directions without rewriting its pa
       assert.equal(view.task.isError, finalError);
       assert.equal(view.task.state, finalError ? 'failed' : 'completed');
       assert.deepEqual(view.result, original);
-      assert.equal(view.task.resultPath, undefined);
+      assert.equal(view.task.outputPath, undefined);
     }
   } finally { await h.close(); }
 });
@@ -137,7 +137,7 @@ test('permission denial settles before pending detach resumes after ui_prompt_en
 });
 
 
-test('recovery retains authoritative outcome flags and raw payload independently', async () => {
+test('recovery retains the authoritative outcome flag with text-only results', async () => {
   const h = runtimeHarness();
   try {
     for (const isError of [false, true]) {
@@ -149,7 +149,8 @@ test('recovery retains authoritative outcome flags and raw payload independently
       const recovered = new TaskRuntime(h.store, h.config, { ...h.sink, notify() { throw new Error('must not notify'); } }, [...h.records.values()]);
       try {
         const restored = recovered.result(view.task.id);
-        assert.equal(restored.task.isError, isError); assert.deepEqual(restored.result, payload);
+        assert.equal(restored.task.isError, isError); assert.deepEqual(restored.result!.content, payload.content);
+        assert.equal(restored.result!.structuredContent, undefined);
         assert.equal(recovered.cancel(view.task.id).state, isError ? 'failed' : 'completed');
       } finally { await recovered.close(); }
     }

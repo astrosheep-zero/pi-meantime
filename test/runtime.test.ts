@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { TaskRuntime } from '../src/runtime.ts';
 import { deferred, ok, runtimeHarness, sleep, until } from './helpers.ts';
 import type { Outcome } from '../src/protocol.ts';
@@ -12,7 +12,7 @@ test('fast foreground result completes without a completion notification', async
     const view = await h.runtime.run({ tool: 'one', kind: 'tool', callId: 'c1', mode: 'auto', canDetach: true, execute: async () => ok() });
     assert.equal(view.kind, 'result'); assert.equal(view.task.state, 'completed');
     h.runtime.published('c1'); await sleep(15); assert.equal(h.notifications.length, 0);
-    assert.equal(view.task.resultPath, undefined); assert.equal(existsSync(h.store.directory), false);
+    assert.equal(view.task.outputPath, undefined); assert.equal(existsSync(h.store.directory), false);
     assert.equal(h.records.size, 0); assert.equal(h.runtime.list().length, 0);
   } finally { await h.close(); }
 });
@@ -167,18 +167,18 @@ test('quota is retained across runtime shutdown until non-cooperative producers 
     assert.equal((await next.run({ tool: 'next', kind: 'tool', callId: 'c3', mode: 'auto', canDetach: true, execute: async () => ok() })).kind, 'result');
   } finally { work.resolve(ok()); await next.close(); await h.close(); }
 });
-test('terminal retention is bounded and large results are not duplicated in the live heap cache', async () => {
+test('terminal retention is bounded and oversized text keeps only its preview in memory', async () => {
   const h = runtimeHarness({ maxRetained: 2 });
   try {
     for (let i = 0; i < 5; i++) {
       const work = deferred<Outcome>();
       const view = await h.runtime.run({ tool: 'one', kind: 'tool', callId: `c${i}`, mode: 'yes', canDetach: true, execute: () => work.promise });
-      h.runtime.published(`c${i}`); work.resolve(ok('x'.repeat(10_000)));
+      h.runtime.published(`c${i}`); work.resolve(ok('x'.repeat(100_000)));
       await until(() => !h.runtime.get(view.task.id).localRunning);
       h.runtime.result(view.task.id);
     }
     assert.equal(h.runtime.list().length, 2);
-    for (const task of h.runtime.tasks.values()) assert.equal(task.result, undefined);
+    for (const task of h.runtime.tasks.values()) assert.ok(task.result!.content[0]!.type === 'text' && task.result!.content[0]!.text.length <= 2000);
   } finally { await h.close(); }
 });
 
@@ -206,7 +206,7 @@ test('a long-running task finishing last keeps its result even when newer-create
     work.resolve(ok('late result'));
     h.runtime.published('long');
     await until(() => !h.runtime.get(view.task.id).localRunning);
-    assert.match(readFileSync(h.runtime.get(view.task.id).resultPath!, 'utf8'), /late result/);
+    assert.match(JSON.stringify(h.runtime.result(view.task.id).result), /late result/);
     assert.equal(h.runtime.list().length, 1); assert.equal(h.runtime.list()[0]!.tool, 'old-long');
   } finally { work.resolve(ok()); await h.close(); }
 });

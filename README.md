@@ -113,7 +113,7 @@ System prompt 的 `meantime` 章节简要说明：`_mt` 工具与原工具执行
 {"task":{"id":"mt_1234abcd","state":"running","delivery":"background"},"result_available":false}
 ```
 
-完成通知包含状态、Bash 命令预览和约 1KB 文本输出尾巴，并明确标注自动消息与截断。`meantime(action="result")` 读取保留结果；`wait` 等到完成或超时后按相同格式返回（默认 30 秒，无上限；中止等待不取消任务）。成功读取会确认已读，无需额外 ack：
+完成通知包含 `Meantime mt_xxx <state>`、可选退出码、仅在存在完整输出文件时显示的 `Output: <path>` 和约 1KB 文本尾巴（不可信 fence 内）。`meantime(action="result")` 读取保留结果；`wait` 等到完成或超时后按相同格式返回（默认 30 秒，无上限；中止等待不取消任务）。成功读取会确认已读，无需额外 ack：
 
 ```json
 {"task":{"id":"mt_1234abcd","state":"completed"},"result_available":true,"result":{"original":"structured result"}}
@@ -125,7 +125,7 @@ Bash 输出声明为原生输出与句柄的 union；通用代理暂声明 unkno
 
 同名 bash 的 hook 对前台结果或 detach 句柄触发一次，晚结果不再触发。其他工具代理的内层调用完成时仍经过原工具 hook；读取后台结果另走 `meantime` hook。
 
-后台结果读取时，图片不自动塞进模型上下文，保存在结果文件。超大结构化结果的 inline `result` 为 `null`，按 `task.resultPath` 读取保留结果。超过整个结果保留上限时明确标记 `resultTruncated`；不会宣称保留了完整原文。
+后台完成状态和文本保存在 Pi 会话索引。Bash 保留原生有界文本，`task.outputPath` 引用 Pi 的原生完整输出文件；扩展不创建或删除 Bash 文件。其他工具的 cleanText 文本不超过 50KiB 时只进索引；更大时写一个私有 `.txt`，索引保留约 2000 字节预览及路径。只有文件本身超过 `maxResultBytes` 才标记 `resultTruncated`。图片与 structuredContent 只在当前进程内存保留，重启后只有文本，回执会说明；图片不自动塞进模型上下文。
 
 ## 配置
 
@@ -139,7 +139,7 @@ Bash 输出声明为原生输出与句柄的 union；通用代理暂声明 unkno
 | `detachOnSteer` | `true`；设为 `false` 后 steer 不转后台 |
 | `maxRunning` | `4`，按真实本地 producer 计数 |
 | `maxRetained` | `128` 个已结束任务 |
-| `maxResultBytes` | `4194304`，单任务保留结果上限 |
+| `maxResultBytes` | `4194304`，超大工具文本文件保留上限 |
 | `reconcileMs` | `500`，注册表重扫间隔 |
 | `shutdownGraceMs` | `1000`，取消/关闭等候上限 |
 | `notifyDebounceMs` | `50`，完成通知合并窗口 |
@@ -154,8 +154,8 @@ Bash 输出声明为原生输出与句柄的 union；通用代理暂声明 unkno
 
 需要明确接受的边界：
 
-- **会话内后台，不提供跨进程继续执行。** `/reload`、会话切换、退出请求取消并停止旧通知；同一会话的树导航共享任务，fork/clone 不接管旧任务。转后台时用 Pi 会话自定义条目保存索引，完成时仅写一个含最终状态与结果的文件。恢复缺少结果的任务标记 `outcome_unknown`，绝不自动重放；旧 producer 的晚结果仍写入原目录，可由原会话在 status/list/result 时读回。通知与已读只留内存，重启不投递历史通知。
-- 取消和原生调用使用相同 AbortSignal/MCP 取消通路。`cancelRequestedAt` 只记录请求事实；原调用最终 `Outcome.isError=true` 映射为 failed，false 映射为 completed，原始结果另行原样保存（在配置的大小上限内）。不从请求取消推断远端结果；远端不合作是原生调用同样存在的边界。真正失去本地执行控制且尚无最终结果时仍显示 outcome_unknown。
+- **会话内后台，不提供跨进程继续执行。** `/reload`、会话切换、退出请求取消并停止旧通知；同一会话的树导航共享任务，fork/clone 不接管旧任务。转后台时用 Pi 会话自定义条目保存索引，绑定会话内完成时追加 completion 文本和状态。缺少 completion 的任务恢复为 `outcome_unknown`，绝不自动重放；旧 producer 的超大工具晚文本仍可写入原目录，恢复只暴露路径，不能据此认定执行结果。通知与已读只留内存，重启不投递历史通知。
+- 取消和原生调用使用相同 AbortSignal/MCP 取消通路。`cancelRequestedAt` 只记录请求事实；原调用最终 `Outcome.isError=true` 映射为 failed，false 映射为 completed，原始结果在当前进程内存保留，文本和最终错误位进入会话索引。不从请求取消推断远端结果；远端不合作是原生调用同样存在的边界。真正失去本地执行控制且尚无最终结果时仍显示 outcome_unknown。
 - `ctx.executeTool()` 仍用 Pi 原生嵌套调用队列。不会释放或绕过 Pi 的顺序锁。底层排队时，“yes”可能等待到原调用进入后才返回句柄。
 - 后台工具的晚到 usage 保存在任务结果里；**Pi 会话全局费用统计可能漏掉父工具返回后的 usage**。扩展不伪造修正值，不重复计费。
 - 复杂根 Schema 拒绝自动包装。动态工具列表也存在短暂同步窗口，无法凭公开 API 做原子工具注册装饰器。
@@ -171,7 +171,7 @@ index.mjs                  Pi 入口；宿主 Bash factory 和实时 settings
 src/extension.ts           注册、代理同步、hiddenDeclarations、输入/完成事件
 src/runtime.ts             producer/observer 分离的任务状态机
 src/schema.ts              保留参数、Schema 检查、稳定代理名
-src/store.ts               私有目录、原子快照、大小限制和恢复读取
+src/store.ts               私有超大文本文件、原子写入与大小限制
 src/config.ts              配置验证
 src/protocol.ts            由固定 SDK 类型约束的最小接口子集
 scripts/demo.ts            宿主替身 + 真实 MCP 通信的可执行模型视角演示

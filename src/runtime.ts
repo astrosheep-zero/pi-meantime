@@ -1,5 +1,6 @@
 import type { Config } from './config.ts';
 import type { Mode, Outcome, Result, Update } from './protocol.ts';
+import { isRecord } from './schema.ts';
 import { TASK_ID, TaskStore, cleanText, newTaskId, truncateUtf8 } from './store.ts';
 
 export type TaskState = 'running' | 'cancel_requested' | 'completed' | 'failed' | 'cancelled' | 'outcome_unknown';
@@ -8,14 +9,19 @@ export interface Snapshot {
   id: string; tool: string; kind: 'bash' | 'tool'; state: TaskState; command?: string;
   mode: Mode; delivery: 'foreground' | 'background'; createdAt: number;
   endedAt?: number; detachReason?: DetachReason; cancelRequestedAt?: number;
-  localRunning: boolean; progress?: string; resultPath?: string;
-  resultTruncated?: boolean; resultBytes?: number; storageError?: string;
+  localRunning: boolean; progress?: string; outputPath?: string; exitCode?: number;
+  resultTruncated?: boolean; storageError?: string;
   /** Final native Outcome error flag (or a local persistence error), independent of stale result.isError. */
   isError?: boolean;
   recovered?: boolean; notification: 'none' | 'pending' | 'queued' | 'observed' | 'failed' | 'suppressed';
 }
 export type TaskIndex = Pick<Snapshot, 'id' | 'tool' | 'kind' | 'command' | 'mode' | 'createdAt' | 'detachReason'>;
-export type IndexChange = { task: TaskIndex } | { removed: string[] };
+export interface Completion {
+  id: string; endedAt: number; isError: boolean; cancelRequestedAt?: number;
+  exitCode?: number; text: string; truncated: boolean; outputPath?: string;
+}
+export type TaskRecord = TaskIndex & { completion?: Completion };
+export type IndexChange = { task: TaskIndex } | { completion: Completion } | { removed: string[] };
 export type View = { kind: 'result'; task: Snapshot; result: Result; isError?: boolean; thrown?: { error: unknown } } | { kind: 'handle'; task: Snapshot };
 export interface RunRequest {
   tool: string; kind: 'bash' | 'tool'; callId: string; mode: Mode; command?: string;
@@ -25,7 +31,7 @@ export interface RunRequest {
 }
 interface Task {
   meta: Snapshot; callId: string; controller?: AbortController;
-  result?: Result; published: boolean; observed: boolean; viewSettled: boolean;
+  result?: Result; outputTail?: string; published: boolean; observed: boolean; viewSettled: boolean;
   requestedDetach?: DetachReason; canDetach: boolean; readyToDetach?: () => boolean;
   resolveView?: (view: View) => void;
   cleanupParent?: () => void; autoTimer?: ReturnType<typeof setTimeout>;
@@ -60,14 +66,18 @@ export class TaskRuntime {
   private notifyTimer?: ReturnType<typeof setTimeout>;
   private sink: RuntimeSink;
 
-  constructor(store: TaskStore, config: Config, sink: RuntimeSink, records: TaskIndex[] = []) {
+  constructor(store: TaskStore, config: Config, sink: RuntimeSink, records: TaskRecord[] = []) {
     this.store = store; this.config = config; this.sink = sink;
-    for (const record of records) {
+    for (const { completion, ...record } of records) {
       if (!TASK_ID.test(record.id)) continue;
       const meta: Snapshot = { ...record, delivery: 'background', state: 'outcome_unknown',
         recovered: true, localRunning: false, notification: 'suppressed' };
-      this.tasks.set(meta.id, { meta, callId: '', published: true, observed: false,
-        viewSettled: true, canDetach: false, notifyAttempts: 0 });
+      if (completion) Object.assign(meta, { endedAt: completion.endedAt, isError: completion.isError,
+        cancelRequestedAt: completion.cancelRequestedAt, exitCode: completion.exitCode,
+        outputPath: completion.outputPath, resultTruncated: completion.truncated,
+        state: completion.isError ? 'failed' : 'completed' });
+      this.tasks.set(meta.id, { meta, outputTail: completion?.text.slice(-1026), result: completion ? { content: [{ type: 'text', text: completion.text }], details: undefined } : undefined,
+        callId: '', published: true, observed: false, viewSettled: true, canDetach: false, notifyAttempts: 0 });
     }
   }
 
@@ -77,7 +87,7 @@ export class TaskRuntime {
     if (request.mode === 'yes' && !request.canDetach) throw new Error('Background execution is unavailable in print/json mode or for this tool');
     if (leases().size >= this.config.maxRunning) throw new Error(`Background capacity ${this.config.maxRunning} reached; inspect or cancel a task, do not retry in a loop`);
     let id = newTaskId();
-    while (this.tasks.has(id) || leases().has(id) || this.store.has(id)) id = newTaskId();
+    while (this.tasks.has(id) || leases().has(id) || this.store.find(id)) id = newTaskId();
     const meta: Snapshot = { id, tool: request.tool, kind: request.kind, mode: request.mode,
       ...(request.command !== undefined ? { command: request.command } : {}),
       state: 'running', delivery: 'foreground', createdAt: Date.now(), localRunning: true, notification: 'none' };
@@ -192,11 +202,20 @@ export class TaskRuntime {
       return;
     }
     try {
-      const saved = this.store.save(task.meta.id, {
-        endedAt: task.meta.endedAt, isError, cancelRequestedAt: task.meta.cancelRequestedAt,
-      }, result);
-      task.meta.resultPath = saved.path;
-      task.meta.resultTruncated = saved.truncated; task.meta.resultBytes = saved.originalBytes;
+      const text = result.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+      task.outputTail = text.slice(-1026); // Enough UTF-16 units for the notification's UTF-8 tail budget.
+      const data = isRecord(result.structuredContent) ? result.structuredContent : {};
+      const details = isRecord(result.details) ? result.details : {};
+      const saved = task.meta.kind === 'bash'
+        ? { text, truncated: false, outputPath: data.full_output_path ?? details.fullOutputPath }
+        : this.store.save(task.meta.id, text);
+      const outputPath = typeof saved.outputPath === 'string' ? saved.outputPath : undefined;
+      const exitCode = typeof data.exit_code === 'number' ? data.exit_code : undefined;
+      Object.assign(task.meta, { outputPath, exitCode, resultTruncated: saved.truncated });
+      task.result = { ...result, content: [{ type: 'text', text: saved.text }, ...result.content.filter(b => b.type === 'image')] };
+      if (this.open) this.sink.index({ completion: { id: task.meta.id, endedAt: task.meta.endedAt,
+        isError, cancelRequestedAt: task.meta.cancelRequestedAt, exitCode,
+        text: saved.text, truncated: saved.truncated, outputPath } });
     } catch (error) {
       task.result = failure(`Result could not be persisted: ${String(error)}. The operation may already have executed; inspect externally before retrying.`);
       task.meta.storageError = String(error); task.meta.state = 'outcome_unknown'; task.meta.isError = true;
@@ -270,16 +289,12 @@ export class TaskRuntime {
       }
     }
   }
-  // A late producer writes only its completion file, never another session's index.
+  // A late producer can leave text, but without a bound index its outcome is unknown.
   private refresh(task: Task): void {
-    if (!task.meta.recovered || task.meta.endedAt !== undefined) return;
-    try {
-      const stored = this.store.read(task.meta.id);
-      if (stored) Object.assign(task.meta, stored.completion, {
-        state: stored.completion.isError ? 'failed' : 'completed', resultPath: stored.path,
-        resultTruncated: stored.truncated, resultBytes: stored.originalBytes, storageError: undefined,
-      });
-    } catch (error) { task.meta.storageError = String(error); }
+    if (task.meta.recovered && task.meta.endedAt === undefined && task.meta.kind === 'tool') {
+      try { task.meta.outputPath = this.store.find(task.meta.id); }
+      catch (error) { task.meta.storageError = String(error); }
+    }
   }
   get(id: string): Snapshot { return snap(this.lookup(id)); }
   list(): Snapshot[] {
@@ -290,7 +305,7 @@ export class TaskRuntime {
   result(id: string): { task: Snapshot; result?: Result } {
     const task = this.lookup(id);
     if (task.meta.localRunning || !task.meta.endedAt) return { task: snap(task) };
-    const result = task.result ?? (task.meta.resultPath ? this.store.read(task.meta.id)?.result : undefined);
+    const result = task.result;
     if (result) { task.observed = true; task.meta.notification = 'observed'; }
     const view = { task: snap(task), result };
     this.prune(task.meta.id);
@@ -376,7 +391,7 @@ export class TaskRuntime {
     for (const task of ended.slice(this.config.maxRetained)) {
       if (!task.published || task.meta.notification === 'pending' || leases().has(task.meta.id)) continue;
       try {
-        this.store.remove(task.meta.id);
+        if (task.meta.kind === 'tool') this.store.remove(task.meta.id);
         this.sink.index({ removed: [task.meta.id] }); this.tasks.delete(task.meta.id);
       } catch (error) { task.meta.storageError = String(error); }
     }
