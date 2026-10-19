@@ -98,6 +98,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   const calls = new Map<string, { parent?: string; intent?: 'steer' | 'shortcut' }>();
   function userDetach(reason: 'steer' | 'shortcut'): number {
     for (const call of calls.values()) call.intent = reason;
+    runtime?.releaseWaiters();
     return runtime?.detachAll(reason) ?? 0;
   }
   function inheritedDetach(id: string): 'steer' | 'shortcut' | undefined {
@@ -415,7 +416,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   });
   pi.registerTool({
     name: 'meantime', label: 'Background tasks', exposure: 'direct',
-    description: 'Background tasks: list, wait, cancel. wait blocks until settled or timeout seconds (default 30, no upper limit); timeout: 0 returns current state/result immediately. For multiple tasks use ids and mode any|all (default all). Never poll in a loop. Unique ID prefixes accepted. Cancellation does not prove rollback.',
+    description: 'Background tasks: list, wait, cancel. wait blocks until settled, user detach or timeout seconds (default 30, no upper limit); timeout: 0 returns current state/result immediately. For multiple tasks use ids and mode any|all (default all). Never poll in a loop. Unique ID prefixes accepted. Cancellation does not prove rollback.',
     parameters: { type: 'object', properties: {
       action: { type: 'string', enum: ['list', 'wait', 'cancel'] },
       id: { type: 'string' },

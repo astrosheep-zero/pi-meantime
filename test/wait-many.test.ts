@@ -25,7 +25,7 @@ test('waitMany races any, times out all, and returns settled results in requeste
   } finally { a.resolve(ok()); b.resolve(ok()); await h.close(); }
 });
 
-for (const ending of ['completion', 'timeout', 'abort'] as const) test(`waitMany retains a concurrently cancelled result under retention pressure until ${ending}`, async () => {
+for (const ending of ['completion', 'timeout', 'abort', 'detach'] as const) test(`waitMany retains a concurrently cancelled result under retention pressure until ${ending}`, async () => {
   const h = runtimeHarness({ maxRetained: 1, shutdownGraceMs: 100, notifyDebounceMs: 0 });
   const a = deferred<Outcome>(), b = deferred<Outcome>(); const caller = new AbortController();
   try {
@@ -43,7 +43,8 @@ for (const ending of ['completion', 'timeout', 'abort'] as const) test(`waitMany
     if (ending === 'abort') {
       caller.abort(new Error('stop batch'));
       await assert.rejects(batch, /stop batch/);
-    } else if (ending === 'timeout') {
+    } else if (ending === 'timeout' || ending === 'detach') {
+      if (ending === 'detach') h.runtime.releaseWaiters();
       const partial = await batch;
       assert.deepEqual(partial.tasks.map(view => view.task.id), [first.task.id]);
       assert.deepEqual(partial.pending.map(task => task.id), [second.task.id]);

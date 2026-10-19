@@ -65,6 +65,7 @@ export class TaskRuntime {
   private promptResume?: ReturnType<typeof setImmediate>;
   private completionSequence = 0;
   private notifyTimer?: ReturnType<typeof setTimeout>;
+  private waitReleases = new Set<() => void>();
   private sink: RuntimeSink;
 
   constructor(config: Config, sink: RuntimeSink, records: TaskRecord[] = []) {
@@ -140,6 +141,9 @@ export class TaskRuntime {
     return view;
   }
 
+  releaseWaiters(): void {
+    for (const release of this.waitReleases) release();
+  }
   detachAll(reason: Exclude<DetachReason, 'explicit'>): number {
     let count = 0;
     for (const task of this.tasks.values()) if (this.detach(task, reason)) count++;
@@ -282,9 +286,11 @@ export class TaskRuntime {
     if (done && timeoutMs > 0) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       let onAbort: (() => void) | undefined;
+      let release: (() => void) | undefined;
       try {
         await Promise.race([
           done,
+          new Promise<void>(resolve => { release = resolve; this.waitReleases.add(resolve); }),
           new Promise<void>(resolve => {
             let remaining = timeoutMs;
             const schedule = () => {
@@ -303,6 +309,7 @@ export class TaskRuntime {
         ]);
       } finally {
         clearTimeout(timer); if (onAbort) signal?.removeEventListener('abort', onAbort);
+        if (release) this.waitReleases.delete(release);
       }
     }
   }

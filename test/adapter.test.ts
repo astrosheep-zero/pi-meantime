@@ -193,6 +193,91 @@ test('steer releases no-mode foreground without abort or consuming text/images',
     assert.deepEqual(event.images, images); assert.equal(h.pi.abortCalls, 0);
   } finally { work.resolve(ok().result); await h.close(); }
 });
+test('steer, shortcut and command promptly release pending waits without stopping producers', async () => {
+  for (const trigger of ['steer', 'shortcut', 'command'] as const) {
+    const work = deferred<Result>(); const caller = new AbortController(); let signal: AbortSignal | undefined;
+    const h = await setup([basicTool('mcp__t__slow', (_id, _args, s) => { signal = s; return work.promise; })]);
+    try {
+      const { id } = snapshot(await h.pi.call('mcp__t__slow_mt', { __background__: 'yes' }));
+      const baseline = await h.pi.call('meantime', { action: 'wait', id, timeout: 0 });
+      const waiting = h.pi.call('meantime', { action: 'wait', id, timeout: 600 }, caller.signal);
+      await until(() => h.pi.trace.filter(e => e.type === 'execute' && e.name === 'meantime').length === 2);
+      const started = performance.now();
+      if (trigger === 'steer') await h.pi.emit('input', { type: 'input', text: 'next', source: 'interactive', streamingBehavior: 'steer' });
+      else if (trigger === 'shortcut') await h.pi.shortcuts.get('ctrl+shift+b')!(h.pi.ctx);
+      else await h.pi.commands.get('meantime')!('detach', h.pi.ctx);
+      const released = await Promise.race([waiting, sleep(1000).then(() => { throw new Error('detach did not release wait'); })]);
+      assert.ok(performance.now() - started < 1000);
+      assert.deepEqual(released, { ...baseline, toolCall: released.toolCall });
+      assert.equal((released.result.structuredContent as { result_available: boolean }).result_available, false);
+      assert.match(JSON.stringify(released.result.content), /Result is not available. Do not relaunch the operation./);
+      assert.equal(signal!.aborted, false); assert.equal(snapshot(released).localRunning, true);
+      assert.equal(h.pi.notifications.length, 0);
+      work.resolve(ok('finished after detach').result);
+      await until(() => h.pi.notifications.length === 1);
+      await h.pi.emit('agent_settled', { type: 'agent_settled' });
+      assert.equal(h.pi.notifications.length, 1);
+      assert.match(h.pi.notifications[0]!.content, /finished after detach/);
+      assert.equal(h.pi.trace.filter(e => e.type === 'execute' && e.name === 'mcp__t__slow').length, 1);
+    } finally { caller.abort(); work.resolve(ok().result); await h.close(); }
+  }
+});
+test('one user detach releases simultaneous batch and cancel grace waits with timeout-shaped results', async () => {
+  const a = deferred<Result>(), b = deferred<Result>(), c = deferred<Result>();
+  const caller = new AbortController(); let cancelled: AbortSignal | undefined;
+  const h = await setup([
+    basicTool('mcp__t__a', () => a.promise), basicTool('mcp__t__b', () => b.promise),
+    basicTool('mcp__t__c', (_id, _args, signal) => { cancelled = signal; return c.promise; }),
+  ], { shutdownGraceMs: 10_000 });
+  h.pi.ctx.isIdle = () => false;
+  try {
+    const ids: string[] = [];
+    for (const name of ['a', 'b', 'c']) ids.push(snapshot(await h.pi.call(`mcp__t__${name}_mt`, { __background__: 'yes' })).id);
+    a.resolve(ok('A settled').result);
+    await until(() => (h.instance.inspect() as { tasks: Snapshot[] }).tasks.some(t => t.id === ids[0] && !t.localRunning));
+    const batch = h.pi.call('meantime', { action: 'wait', ids: ids.slice(0, 2), mode: 'all', timeout: 600 }, caller.signal);
+    const cancel = h.pi.call('meantime', { action: 'cancel', id: ids[2] }, caller.signal);
+    await until(() => cancelled!.aborted);
+    await h.pi.shortcuts.get('ctrl+shift+b')!(h.pi.ctx);
+    const [partial, pendingCancel] = await Promise.race([
+      Promise.all([batch, cancel]), sleep(1000).then(() => { throw new Error('detach did not release batch/cancel waits'); }),
+    ]);
+    const page = partial.result.structuredContent as unknown as { tasks: { id: string; result_available: boolean; result: unknown }[]; pending: Snapshot[] };
+    assert.deepEqual(page.tasks.map(t => [t.id, t.result_available, t.result]), [[ids[0], true, { value: 'A settled' }]]);
+    assert.deepEqual(page.pending.map(t => [t.id, t.state, t.localRunning]), [[ids[1], 'running', true]]);
+    assert.match(JSON.stringify(partial.result.content), /A settled/);
+    assert.equal(pendingCancel.isError, false);
+    assert.equal(snapshot(pendingCancel).state, 'cancel_requested');
+    assert.equal(snapshot(pendingCancel).localRunning, true);
+    assert.equal((pendingCancel.result.structuredContent as { result_available: boolean }).result_available, false);
+    assert.notEqual(snapshot(pendingCancel).notification, 'observed');
+    b.resolve(ok('B later').result); c.resolve(ok('C later').result);
+    h.pi.ctx.isIdle = () => true;
+    await until(() => h.pi.notifications.flatMap(n => (n.details as { taskIds: string[] }).taskIds).length === 2);
+    await h.pi.emit('agent_settled', { type: 'agent_settled' });
+    assert.deepEqual(h.pi.notifications.flatMap(n => (n.details as { taskIds: string[] }).taskIds).sort(), ids.slice(1).sort());
+  } finally { caller.abort(); a.resolve(ok().result); b.resolve(ok().result); c.resolve(ok().result); await h.close(); }
+});
+test('detach is not sticky for new waits and disabled steer leaves a pending wait intact', async () => {
+  const work = deferred<Result>(); const caller = new AbortController();
+  const h = await setup([basicTool('mcp__t__slow', () => work.promise)], { detachOnSteer: false });
+  try {
+    const { id } = snapshot(await h.pi.call('mcp__t__slow_mt', { __background__: 'yes' }));
+    await h.pi.commands.get('meantime')!('detach', h.pi.ctx);
+    let settled = false;
+    const waiting = h.pi.call('meantime', { action: 'wait', id, timeout: 600 }, caller.signal).then(out => { settled = true; return out; });
+    await until(() => h.pi.trace.some(e => e.type === 'execute' && e.name === 'meantime'));
+    await sleep(10); assert.equal(settled, false, 'earlier detach must not release a later wait');
+    await h.pi.emit('input', { type: 'input', text: 'next', source: 'interactive', streamingBehavior: 'steer' });
+    await sleep(10); assert.equal(settled, false, 'disabled steer must not release waits');
+    work.resolve(ok('normal completion').result);
+    const completed = await waiting;
+    assert.equal((completed.result.structuredContent as { result_available: boolean }).result_available, true);
+    assert.match(JSON.stringify(completed.result.content), /normal completion/);
+    await h.pi.emit('agent_settled', { type: 'agent_settled' });
+    assert.equal(h.pi.notifications.length, 0, 'normal wait still observes the result');
+  } finally { caller.abort(); work.resolve(ok().result); await h.close(); }
+});
 test('disabled steer detach keeps input intact; explicit detach still works', async () => {
   const work = deferred<Result>();
   const h = await setup([basicTool('mcp__t__slow', () => work.promise)], { detachOnSteer: false });
