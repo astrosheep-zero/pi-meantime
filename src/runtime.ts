@@ -39,7 +39,8 @@ interface Task {
   done?: Promise<void>; notifyAttempts: number; finishSequence?: number;
 }
 export interface RuntimeSink {
-  notify(tasks: Snapshot[]): void;
+  /** false defers handoff until the host's next idle flush. */
+  notify(tasks: Snapshot[]): void | false;
   changed?(): void;
   index(change: IndexChange): void;
 }
@@ -347,7 +348,7 @@ export class TaskRuntime {
     if (!this.open || this.promptDepth > 0 || this.promptResume) return;
     const batch = this.eligible().slice(0, 16); if (!batch.length) return;
     try {
-      this.sink.notify(batch.map(snap));
+      if (this.sink.notify(batch.map(snap)) === false) return;
       for (const task of batch) task.meta.notification = 'queued';
       this.scheduleNotifications();
     } catch {

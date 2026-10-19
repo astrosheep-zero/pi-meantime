@@ -1,5 +1,7 @@
-/** Optional REAL SDK smoke: no model request, credentials or user configuration.
+/** Optional REAL SDK smoke: no external model request, credentials or user configuration.
  * Uses the pinned development dependency @earendil-works/pi-coding-agent@1.3.0.
+ * Scripted provider exercises real model-request/tool/follow-up orchestration.
+ * No external provider calls.
  * This exercises official registration, schema processing, native Bash and nested
  * MCP dispatch in a headless SDK session. Human TUI steering is a separate gate.
  */
@@ -8,6 +10,7 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createAssistantMessageEventStream } from '@earendil-works/pi-ai/compat';
 import { install } from '../src/extension.ts';
 import { validateConfig } from '../src/config.ts';
 let sdk;
@@ -23,6 +26,9 @@ if (sdk) {
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = join(root, 'agent');
   try {
+    for (const scenario of ['in-flight', 'before-wait', 'unobserved', 'partial', 'timeout', 'compact', 'compact-cancel', 'tree', 'tree-cancel']) {
+      await completionRace(sdk, root, scenario);
+    }
     const settingsManager = sdk.SettingsManager.inMemory({ defaultTools: ['bash', 'meantime'] });
     const loader = new sdk.DefaultResourceLoader({
       cwd: root, agentDir: join(root, 'agent'), settingsManager,
@@ -162,5 +168,164 @@ if (sdk) {
       }
     }
   }
-  console.log('REAL_PI_SMOKE_PASS: official SDK registration, nested MCP and native Bash; shutdown cleanup completed. No model call. SDK RPC-mode detach and nested result retrieval passed; no actual TUI/CLI transport exercised.');
+  console.log('REAL_PI_SMOKE_PASS: official SDK registration, nested MCP and native Bash; shutdown cleanup completed. No external model call; scripted provider completion-ordering regression passed. SDK RPC-mode detach and nested result retrieval passed; no actual TUI/CLI transport exercised.');
+}
+
+/** Real AgentSession + scripted provider: no network/model credentials. The provider
+ * chooses tools; Pi owns dispatch, follow-up queue, context and continuation turns.
+ */
+async function completionRace(sdk, root, scenario) {
+  const trace = [], waitResults = [];
+  let extension, session, requests = 0;
+  const compact = scenario.startsWith('compact'), tree = scenario.startsWith('tree');
+  const unread = scenario === 'unobserved' || compact || tree;
+  const settingsManager = sdk.SettingsManager.inMemory({ defaultTools: ['bash', 'meantime'],
+    compaction: { enabled: false, keepRecentTokens: 1, reserveTokens: 1024 } });
+  const loader = new sdk.DefaultResourceLoader({
+    cwd: root, agentDir: join(root, 'race-' + scenario), settingsManager,
+    extensionFactories: [pi => {
+      pi.registerProvider('completion-fixture', {
+        api: 'openai-completions', baseUrl: 'https://fixture.invalid', apiKey: 'unused-fixture-key',
+        models: [{ id: 'fixture', name: 'fixture', reasoning: false, input: ['text'],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1024 }],
+        streamSimple(model, context) {
+          const stream = createAssistantMessageEventStream();
+          void (async () => {
+            const n = ++requests;
+            const completions = context.messages.filter(m => m.role === 'user' &&
+              JSON.stringify(m.content).includes('Automated background completion'));
+            trace.push(`request ${n}: completion visible=${completions.length}`);
+            let calls = [];
+            if (n === 1) {
+              calls = [{ id: 'start-a', name: 'bash', arguments: { command: 'sleep 0.12; printf RACE_A' } }];
+              if (scenario === 'partial') calls.push({ id: 'start-b', name: 'bash', arguments: { command: 'sleep 0.12; printf RACE_B' } });
+            } else if (n === 2 && !unread) {
+              // The second request is already streaming when the producer ends.
+              // Delay tool selection to put completion handoff before wait's ack.
+              if (scenario === 'before-wait' || scenario === 'partial') await new Promise(r => setTimeout(r, 350));
+              const task = extension.inspect().tasks.find(t => t.command?.includes('RACE_A'));
+              trace.push(`before wait: notification=${task.notification}, running=${task.localRunning}`);
+              assert.equal(task.localRunning, scenario === 'in-flight' || scenario === 'timeout');
+              calls = [{ id: 'collect', name: 'meantime', arguments: {
+                action: 'wait', id: task.id, timeout: scenario === 'timeout' ? 0 : 2,
+              } }];
+            }
+            const message = { role: 'assistant', api: model.api, provider: model.provider, model: model.id,
+              content: calls.length ? calls.map(call => ({ type: 'toolCall', ...call })) : [{ type: 'text', text: 'done' }],
+              usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+              stopReason: calls.length ? 'toolUse' : 'stop', timestamp: Date.now() };
+            stream.push({ type: 'start', partial: message });
+            for (let i = 0; i < message.content.length; i++) {
+              const block = message.content[i];
+              if (block.type === 'toolCall') {
+                stream.push({ type: 'toolcall_start', contentIndex: i, partial: message });
+                stream.push({ type: 'toolcall_end', contentIndex: i, toolCall: block, partial: message });
+              }
+            }
+            stream.push({ type: 'done', reason: message.stopReason, message });
+            stream.end();
+          })().catch(error => { stream.end(); console.error(error); process.exitCode = 1; });
+          return stream;
+        },
+      });
+      extension = install(pi, {
+        config: validateConfig({ storageRoot: join(root, 'race-tasks-' + scenario), autoDetachMs: 10, notifyDebounceMs: 5 }),
+        makeBash: cwd => sdk.createBashToolDefinition(cwd),
+      });
+      if (compact) pi.on('session_before_compact', async event => {
+        trace.push('manual compact start');
+        await new Promise(r => setTimeout(r, 350));
+        const task = extension.inspect().tasks[0];
+        assert.equal(task.localRunning, false);
+        assert.equal(task.notification, 'pending');
+        trace.push('task finished/pending during compact');
+        return scenario === 'compact-cancel' ? { cancel: true } : { compaction: {
+          summary: 'fixture summary', firstKeptEntryId: event.preparation.firstKeptEntryId,
+          tokensBefore: event.preparation.tokensBefore,
+        } };
+      });
+      if (tree) pi.on('session_before_tree', async () => {
+        trace.push('tree start');
+        await new Promise(r => setTimeout(r, 350));
+        const task = extension.inspect().tasks[0];
+        assert.equal(task.localRunning, false);
+        assert.equal(task.notification, 'pending');
+        trace.push('task finished/pending during tree');
+        return scenario === 'tree-cancel' ? { cancel: true } : undefined;
+      });
+      pi.on('tool_execution_end', event => {
+        if (event.toolName === 'bash') {
+          trace.push(`handle ${event.toolCallId}: ${event.result.structuredContent?.task?.detachReason}`);
+          assert.equal(event.result.structuredContent?.task?.detachReason, 'timeout');
+        }
+        if (event.toolName === 'meantime') {
+          waitResults.push(event.result);
+          trace.push(`wait returned: available=${event.result.structuredContent?.result_available}`);
+        }
+      });
+      pi.on('message_end', event => {
+        if (event.message.customType === 'meantime-completion') trace.push('completion delivered');
+      });
+    }],
+  });
+  try {
+    await loader.reload();
+    assert.deepEqual(loader.getExtensions().errors, []);
+    const modelRuntime = await sdk.ModelRuntime.create({ authPath: join(root, 'auth.json'), modelsPath: join(root, 'models.json') });
+    ({ session } = await sdk.createAgentSession({ cwd: root, resourceLoader: loader, settingsManager,
+      sessionManager: sdk.SessionManager.inMemory(root), modelRuntime }));
+    await session.bindExtensions({ mode: 'rpc' });
+    await session.setModel(modelRuntime.getModel('completion-fixture', 'fixture'));
+    session.subscribe(event => {
+      if (event.type === 'message_queued' || event.type === 'agent_settled') trace.push(event.type);
+    });
+    if (compact || tree) session.sessionManager.appendMessage({ role: 'user',
+      content: 'older turn '.repeat(100), timestamp: Date.now() });
+    const treeTarget = session.sessionManager.getLeafId();
+    await session.prompt('exercise completion ordering');
+    if (compact) {
+      if (scenario === 'compact-cancel') await assert.rejects(session.compact(), /cancelled/);
+      else await session.compact();
+      trace.push(`manual compact ended: idle=${session.isIdle}`);
+      // Failure flush is synchronous and may already have started the completion run.
+      if (scenario === 'compact') assert.equal(session.isIdle, true);
+    }
+    if (tree) {
+      const result = await session.navigateTree(treeTarget);
+      assert.equal(result.cancelled, scenario === 'tree-cancel');
+      trace.push(`tree ended: idle=${session.isIdle}`);
+      assert.equal(session.isIdle, true);
+      if (result.cancelled) {
+        // No tree-end event on cancellation: pending survives until another flush.
+        await new Promise(r => setTimeout(r, 30));
+        assert.equal(extension.inspect().tasks[0].notification, 'pending');
+        assert.equal(session.messages.filter(m => m.customType === 'meantime-completion').length, 0);
+        trace.push('tree cancelled: still pending, next prompt resumes');
+        await session.prompt('resume after cancelled tree');
+      }
+    }
+    // Idle producers still run after prompt resolves; give them time to notify.
+    await new Promise(r => setTimeout(r, 500));
+    await session.waitForIdle();
+    const messages = session.messages.filter(m => m.customType === 'meantime-completion');
+    const observed = !unread && scenario !== 'timeout';
+    console.log(`COMPLETION_RACE ${scenario}: ${JSON.stringify({ trace, requests,
+      notifications: messages.map(m => ({ taskIds: m.details.taskIds, content: m.content })) })}`);
+    if (observed) {
+      assert.equal(waitResults.length, 1);
+      assert.equal(waitResults[0].structuredContent.result_available, true);
+      assert.equal(waitResults[0].structuredContent.result.output, 'RACE_A');
+    }
+    assert.equal(messages.length, observed && scenario !== 'partial' ? 0 : 1);
+    assert.equal(requests, scenario === 'timeout' || scenario === 'partial' || scenario === 'tree-cancel' ? 4 : 3);
+    if (scenario === 'partial') {
+      assert.match(messages[0].content, /RACE_B/);
+      assert.doesNotMatch(messages[0].content, /RACE_A/);
+    }
+  } finally {
+    if (session) await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
+    await extension?.dispose();
+    session?.dispose();
+  }
 }

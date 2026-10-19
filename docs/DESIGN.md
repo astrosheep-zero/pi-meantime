@@ -102,7 +102,16 @@ Bash 任务保存完整命令供 wait 详情读取；任务列表和完成通知
 
 通知包含 task ID、工具名、状态、Bash 命令预览，以及约 1KB 的文本输出尾巴；尾巴用 `<untrusted-output-tail>` 包裹并声明为不可信数据，不是指令。通知明确声明是自动完成消息，不是用户输入或批准；没有新信息时静默处理。尾巴只含文本，不含图片和结构化数据；尾巴或落盘结果截断都会标注 truncated。省去常见场景下多一轮 `meantime(action="wait", id=..., timeout=0)`；完整保留结果仍通过 `meantime(action="wait", id=..., timeout=0)` 读取。
 
-采用 `followUp + triggerTurn:true`；多项完成合成一条消息。同步入队失败最多重试三次。`queued`只表示 sendMessage 调用已成功返回，不等于模型必然收到。宿主接口没有投递确认，进程崩溃时不宣称 exactly-once。重启后不自动投递历史通知，避免旧任务打断新工作。
+采用 `followUp + triggerTurn:true`；多项完成合成一条消息。只有公开 `ctx.isIdle()` 为真才交给 Pi；忙时保留 pending，后续 flush 重新筛选，排除期间被 wait 读取的任务，不消耗失败重试次数。部分已读批次只通知仍未读的任务。同步入队失败最多重试三次。`queued`只表示 sendMessage 调用已成功返回，不等于模型必然收到。宿主接口没有投递确认，进程崩溃时不宣称 exactly-once。重启后不自动投递历史通知，避免旧任务打断新工作。
+
+Pi 1.3.0 的公开扩展事件恢复路径（核对 SDK `dist/core/extensions/types.d.ts` 的 `AgentSettledEvent`、`SessionCompactEvent`、`SessionCompactFailedEvent`、`SessionTreeEvent`）：
+- `agent_settled`、`session_compact_failed`：直接 flush。
+- `session_compact`、`session_tree`：事件处理时仍处于 busy；排一次 `setImmediate`，让 Pi 完成清理后再 flush。回调只作用于捕获的同一个 runtime，不能替新会话补发。不使用定时轮询。
+- tree 取消/失败：Pi 1.3.0 的 `AgentSession.navigateTree()` 在取消返回和失败抛出时，只在 `finally` 清 `_branchSummaryAbortController`，不发结束事件；成功路径才发 `session_tree`。此公开 API 缺口按 Holder 裁定保留，不能承诺取消/失败后立即补发或在完全没有后续事件时自动恢复。pending 不丢失：`TaskRuntime.flushNotifications()` 在 sink 返回 false 时直接返回，不把任务标记 queued/failed；`prune()` 保护 pending，后续 `agent_settled`、compact/tree 成功、compact 失败等 flush 仍由 `eligible()` 选中。关闭/恢复的历史通知抑制规则不变。
+
+真实 SDK 回归 `tree-cancel` 证明缺口不会把任务变成不可恢复状态：tree 期间完成 → 取消后 idle、仍 pending、completion=0 → 发下一条 prompt → `agent_settled` → completion 恰好一次，下一模型请求看见它。`compact`、`compact-cancel`、`tree` 分别证明成功压缩、取消压缩和成功导航后未读结果无需再发 prompt 即通知一次。
+
+复现与回归命令：`node scripts/pi-smoke.mjs`。脚本使用真实 Pi 1.3.0 AgentSession、原生 Bash 和本地脚本化 provider（无网络请求），由 Pi 驱动工具派发及 follow-up 队列。在 main `7cb217f`、源码未改时，before-wait 场景顺序为：request 1 → Bash 自动 detach → request 2 中等待 350ms（Bash 在约 120ms 完成，通知 debounce 5ms）→ wait 返回完整 RACE_A → request 3 → meantime-completion 送达 → request 4 看到该 completion。说明 observed 筛选发生在 Pi 入队之前，无法撤回已经交给 Pi 的消息。修复后该场景只有三次请求、无 completion。脚本还覆盖 wait 进行中完成、未读任务通知一次、部分批次已读，以及 wait timeout=0 尚未取到结果后仍正常通知。每个场景打印消息顺序、请求数及通知任务。
 
 `wait` 按 Node 定时器上限分段等待，不截断总等待时长。预先取消和等待中取消都终止等待，不取消 producer、不确认结果。恢复任务没有本地 Promise 可等待时立即返回当前状态。
 

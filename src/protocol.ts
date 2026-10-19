@@ -108,6 +108,8 @@ export interface EventMap {
   session_start: { type: 'session_start' };
   session_shutdown: { type: 'session_shutdown'; reason?: string };
   session_tree: { type: 'session_tree' };
+  session_compact: { type: 'session_compact' };
+  session_compact_failed: { type: 'session_compact_failed' };
   before_agent_start: { type: 'before_agent_start'; systemPromptOptions: { sections: Record<string, string> } };
   agent_settled: { type: 'agent_settled'; aborted?: boolean };
   mcp_servers_change: { type: 'mcp_servers_change' };
@@ -121,6 +123,8 @@ export interface EventResultMap {
   session_start: void;
   session_shutdown: void;
   session_tree: void;
+  session_compact: void;
+  session_compact_failed: void;
   before_agent_start: BeforeAgentStartEventResult;
   agent_settled: void;
   mcp_servers_change: void;
