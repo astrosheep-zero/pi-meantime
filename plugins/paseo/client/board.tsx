@@ -84,7 +84,7 @@ export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps)
         </Text>
       </View>
       {error ? <Text style={styles.error}>{error}</Text> : null}
-      {tasks.length > 0 ? <TaskTable tasks={tasks} colors={colors} layout={layout} /> : null}
+      {tasks.length > 0 ? <TaskTable tasks={tasks} colors={colors} layout={layout} showId /> : null}
       {hasOlder
         ? <Text style={styles.muted}>Only the latest {PAGE_LIMIT} timeline entries were scanned; older tasks may be missing.</Text>
         : null}

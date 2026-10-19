@@ -67,6 +67,16 @@ export function stateLabel(state: string): string {
   return state ? state.replaceAll("_", " ").toUpperCase() : "MISSING STATE";
 }
 
+/** Human-facing compact status, without task bookkeeping jargon. */
+export function stateText(state: string): string {
+  switch (state) {
+    case "completed": return "done";
+    case "cancel_requested": return "cancelling";
+    case "outcome_unknown": return "unknown";
+    default: return state ? state.replaceAll("_", " ") : "unknown";
+  }
+}
+
 /** Distinct process-table codes; the accessible label retains the full state. */
 export function stateCode(state: string): string {
   switch (state) {

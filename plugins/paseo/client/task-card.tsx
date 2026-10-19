@@ -14,18 +14,21 @@ export function MeantimeTaskCard({ item, theme, layout }: PluginTimelineItemProp
     : data.tasks;
   return (
     <View style={{ gap: 8 }}>
-      {data.source === "completion" ? data.tasks.map(task => (
-        <TaskPanel key={task.id} colors={colors} layout={layout} title={<>
-          {task.tool ? `${task.tool} ` : ""}{task.id} ─ <Text style={{ color: stateColor(task.state, colors) }}>{completionResult(task)}</Text>
-        </>}>
-          {task.command || task.tool ? <TaskCommand task={task} colors={colors} layout={layout} /> : null}
-          <TaskNotes task={task} colors={colors} layout={layout} />
-          {formatElapsed(task) ? <Text style={{ textAlign: "right", color: secondaryColor(colors),
-            fontFamily: monoFont(layout.platform), fontSize: 10, lineHeight: 16 }}>
-            {formatElapsed(task)}
-          </Text> : null}
-        </TaskPanel>
-      )) : <TaskTable tasks={tasks} colors={colors} layout={layout} />}
+      {data.source === "completion" ? data.tasks.map(task => {
+        const hasIdentity = Boolean(task.command || task.tool);
+        const result = <Text style={{ color: stateColor(task.state, colors) }}>{completionResult(task)}</Text>;
+        return (
+          <TaskPanel key={task.id} colors={colors} layout={layout}
+            title={hasIdentity ? result : <>{task.id} ─ {result}</>}>
+            {hasIdentity ? <TaskCommand task={task} colors={colors} layout={layout} /> : null}
+            <TaskNotes task={task} colors={colors} layout={layout} />
+            {formatElapsed(task) ? <Text style={{ textAlign: "right", color: secondaryColor(colors),
+              fontFamily: monoFont(layout.platform), fontSize: 10, lineHeight: 16 }}>
+              {formatElapsed(task)}
+            </Text> : null}
+          </TaskPanel>
+        );
+      }) : <TaskTable tasks={tasks} colors={colors} layout={layout} />}
       {data.moreOffset !== undefined ? <Text style={{ color: secondaryColor(colors), fontSize: 10,
         fontFamily: monoFont(layout.platform) }}>More tasks not shown (offset {data.moreOffset})</Text> : null}
     </View>

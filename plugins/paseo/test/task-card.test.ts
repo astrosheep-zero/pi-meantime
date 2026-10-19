@@ -19,8 +19,8 @@ const render = module.exports.render!;
 
 test("actual handle card says started even if launch snapshot said running", () => {
   const html = render({ source: "handle", phase: "complete", tasks: [{ id: "mt_a1b2c3d4", state: "running", command: "npm test", createdAt: 1000 }] });
-  assert.match(html, /STARTED/);
-  assert.doesNotMatch(html, /RUNNING|1 R|seen |LIVE|00:01/);
+  assert.match(html, />started</);
+  assert.doesNotMatch(html, /RUNNING|1 R|seen |LIVE|00:01|meantime|snapshots|mt_a1b2c3d4/);
   assert.match(html, /npm/);
 });
 
@@ -32,14 +32,14 @@ test("actual sparse completion renders id and only the supplied result", () => {
   assert.doesNotMatch(html, /exit [01]|seen |00:00|bash/);
 });
 
-test("terminal table results stay in the state cell, not extra exit rows", () => {
+test("timeline tables lead with commands and keep bookkeeping out of the way", () => {
   const html = render({ source: "meantime", phase: "complete", tasks: [
     { id: "mt_a1b2c3d4", state: "completed", command: "npm test", exitCode: 0 },
     { id: "mt_deadbeef", state: "failed", command: "make test", exitCode: 1 },
   ] });
   assert.match(html, /aria-label="COMPLETED · exit 0"/);
   assert.match(html, /aria-label="FAILED · exit 1"/);
-  assert.match(html, />X0<\/div>/);
-  assert.match(html, />E1<\/div>/);
-  assert.doesNotMatch(html, />exit [01]<\/div>/);
+  assert.match(html, />done<\/div>/);
+  assert.match(html, />failed<\/div>/);
+  assert.doesNotMatch(html, />X0<\/div>|>E1<\/div>|meantime|snapshots|mt_a1b2c3d4|mt_deadbeef/);
 });

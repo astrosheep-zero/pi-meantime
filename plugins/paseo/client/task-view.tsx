@@ -2,7 +2,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import type { ReactNode } from "react";
 import { Text, View } from "react-native";
 import type { TaskSummary } from "../shared/tasks.js";
-import { formatElapsed, frameColor, monoFont, secondaryColor, stateColor, taskStateCode, taskStateLabel } from "./rows.js";
+import { formatElapsed, frameColor, monoFont, secondaryColor, stateColor, stateText, taskStateLabel } from "./rows.js";
 
 type Colors = PluginTheme["colors"];
 type Layout = { compact: boolean; platform: "ios" | "android" | "web" };
@@ -40,26 +40,32 @@ export function TaskCommand({ task, colors, layout }: { task: TaskSummary; color
   );
 }
 
-/** Aligned S | TIME+ | ID | COMMAND columns, without status decorations. */
-export function TaskLine({ task, colors, layout, compact }: { task: TaskSummary; colors: Colors; layout: Layout; compact?: boolean }) {
+/**
+ * Command first; status and elapsed are trailing facts. Task ids are shown only
+ * where the user can act on them (the board), not as timeline decoration.
+ */
+export function TaskLine({ task, colors, layout, showId, showStatus = true }: {
+  task: TaskSummary; colors: Colors; layout: Layout; showId?: boolean; showStatus?: boolean;
+}) {
   const mono = monoFont(layout.platform);
   const cell = { fontFamily: mono, fontSize: 10, lineHeight: 16, color: secondaryColor(colors) };
   const elapsed = formatElapsed(task);
   return (
     <View>
-      <View style={{ flexDirection: "row", alignItems: "baseline", gap: 6 }}>
-        <Text accessibilityLabel={taskStateLabel(task)} style={{ ...cell, width: 13, color: stateColor(task.state, colors) }} numberOfLines={1}>
-          {taskStateCode(task)}
-        </Text>
-        {!compact || elapsed ? (
-          <Text style={{ ...cell, width: 30 }} numberOfLines={1}>{elapsed ?? "—"}</Text>
-        ) : null}
-        {!compact ? (
-          <Text accessibilityLabel={task.id} selectable style={{ ...cell, width: 24 }} numberOfLines={1}>
+      <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
+        <TaskCommand task={task} colors={colors} layout={layout} />
+        {showId ? (
+          <Text accessibilityLabel={task.id} selectable style={{ ...cell, opacity: 0.8 }} numberOfLines={1}>
             {task.id.replace(/^mt_/, "").slice(0, 4)}
           </Text>
         ) : null}
-        <TaskCommand task={task} colors={colors} layout={layout} />
+        {elapsed ? <Text style={{ ...cell, width: 30, textAlign: "right" }} numberOfLines={1}>{elapsed}</Text> : null}
+        {showStatus ? (
+          <Text accessibilityLabel={taskStateLabel(task)} style={{ ...cell, width: 56, textAlign: "right",
+            color: stateColor(task.state, colors) }} numberOfLines={1}>
+            {stateText(task.state)}
+          </Text>
+        ) : null}
       </View>
       <TaskNotes task={task} colors={colors} layout={layout} />
     </View>
@@ -78,14 +84,20 @@ export function TaskNotes({ task, colors, layout }: { task: TaskSummary; colors:
   ))}</>;
 }
 
-export function TaskTable({ tasks, colors, layout }: { tasks: readonly TaskSummary[]; colors: Colors; layout: Layout }) {
+export function TaskTable({ tasks, colors, layout, showId }: {
+  tasks: readonly TaskSummary[]; colors: Colors; layout: Layout; showId?: boolean;
+}) {
   const running = tasks.filter(task => task.state === "running").length;
-  const compact = tasks.length === 1;
-  const shortId = compact ? tasks[0]!.id.replace(/^mt_/, "").slice(0, 4) : undefined;
+  const single = tasks.length === 1 ? tasks[0] : undefined;
+  const title = single
+    ? <Text style={{ color: stateColor(single.state, colors) }}>{stateText(single.state)}</Text>
+    : running
+      ? <><Text style={{ color: stateColor("running", colors) }}>{running} running</Text><Text> · {tasks.length} total</Text></>
+      : `${tasks.length} tasks`;
   return (
-    <TaskPanel title={<>meantime{shortId ? ` ${shortId}` : ""} ─ <Text style={{ color: running ? stateColor("running", colors) : secondaryColor(colors) }}>
-      {running ? `${running} R` : "snapshots"}</Text></>} colors={colors} layout={layout}>
-      {tasks.map(task => <TaskLine key={task.id} task={task} colors={colors} layout={layout} compact={compact} />)}
+    <TaskPanel title={title} colors={colors} layout={layout}>
+      {tasks.map(task => <TaskLine key={task.id} task={task} colors={colors} layout={layout}
+        showId={showId} showStatus={!single} />)}
     </TaskPanel>
   );
 }
