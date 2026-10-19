@@ -13,7 +13,7 @@ export function TaskPanel({ title, colors, layout, children }: {
 }) {
   return (
     <View style={{ marginTop: 6, borderWidth: 0.5, borderColor: frameColor(colors), borderRadius: 3,
-      paddingTop: 8, paddingHorizontal: 9, paddingBottom: 7, backgroundColor: colors.surface0 }}>
+      paddingTop: 5, paddingHorizontal: 9, paddingBottom: 7, backgroundColor: colors.surface0 }}>
       <View style={{ position: "absolute", top: -7, left: 8, right: 8 }}>
         <Text numberOfLines={1} style={{ alignSelf: "flex-start", maxWidth: "100%",
           paddingHorizontal: 4, backgroundColor: colors.surface0, color: secondaryColor(colors),
@@ -21,7 +21,7 @@ export function TaskPanel({ title, colors, layout, children }: {
           {title}
         </Text>
       </View>
-      <View style={{ marginTop: 2 }}>{children}</View>
+      <View>{children}</View>
     </View>
   );
 }
