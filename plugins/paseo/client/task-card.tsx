@@ -1,49 +1,33 @@
 import type { PluginTimelineItemProps } from "@getpaseo/plugin/client";
-import { Icon } from "@getpaseo/plugin/client/react-native";
-import { useMemo } from "react";
 import { Text, View } from "react-native";
 import type { MeantimeCardData } from "../shared/tasks.js";
-import { SectionLabel, TaskLine } from "./task-view.js";
+import { completionResult, formatElapsed, monoFont, stateColor } from "./rows.js";
+import { TaskCommand, TaskNotes, TaskPanel, TaskTable } from "./task-view.js";
 
 export function MeantimeTaskCard({ item, theme, layout }: PluginTimelineItemProps<MeantimeCardData>) {
   const { colors } = theme;
   const data = item.data;
-  const styles = useMemo(() => ({
-    card: {
-      backgroundColor: colors.surface1,
-      borderColor: colors.border,
-      borderWidth: 1,
-      borderRadius: 10,
-      paddingVertical: layout.compact ? 8 : 10,
-      paddingHorizontal: layout.compact ? 10 : 12,
-      gap: 10,
-    },
-    footer: { color: colors.foregroundMuted, fontSize: 10.5 },
-  }), [colors, layout.compact]);
-
-  const header = data.source === "handle"
-    ? "Background task"
-    : data.source === "completion"
-      ? "Task completion"
-      : `meantime${data.action ? ` · ${data.action}` : ""}`;
-
+  // Even a snapshot-backed launch handle is historical evidence of starting,
+  // not a continuing observation of a running process.
+  const tasks = data.source === "handle"
+    ? data.tasks.map(task => task.state === "running" ? { ...task, state: "started" } : task)
+    : data.tasks;
   return (
-    <View style={styles.card}>
-      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-          <Icon name={data.source === "completion" ? "CircleCheck" : "Layers"} size={11} color={colors.foregroundMuted} />
-          <SectionLabel text={header} colors={colors} />
-        </View>
-        {data.phase === "streaming" ? (
-          <Text style={{ color: colors.accent, fontSize: 10.5, fontWeight: "600", letterSpacing: 1 }}>LIVE</Text>
-        ) : null}
-      </View>
-      {data.tasks.map(task => (
-        <TaskLine key={task.id} task={task} colors={colors} layout={layout} />
-      ))}
-      {data.moreOffset !== undefined
-        ? <Text style={styles.footer}>More tasks not shown (offset {data.moreOffset})</Text>
-        : null}
+    <View style={{ gap: 8 }}>
+      {data.source === "completion" ? data.tasks.map(task => (
+        <TaskPanel key={task.id} colors={colors} layout={layout} title={<>
+          {task.tool ? `${task.tool} ` : ""}{task.id} ─ <Text style={{ color: stateColor(task.state, colors) }}>{completionResult(task)}</Text>
+        </>}>
+          {task.command || task.tool ? <TaskCommand task={task} colors={colors} layout={layout} /> : null}
+          <TaskNotes task={task} colors={colors} layout={layout} />
+          {formatElapsed(task) ? <Text style={{ textAlign: "right", color: colors.foregroundMuted,
+            fontFamily: monoFont(layout.platform), fontSize: 10, lineHeight: 16, opacity: 0.65 }}>
+            {formatElapsed(task)}
+          </Text> : null}
+        </TaskPanel>
+      )) : <TaskTable tasks={tasks} colors={colors} layout={layout} />}
+      {data.moreOffset !== undefined ? <Text style={{ color: colors.foregroundMuted, fontSize: 10,
+        fontFamily: monoFont(layout.platform) }}>More tasks not shown (offset {data.moreOffset})</Text> : null}
     </View>
   );
 }

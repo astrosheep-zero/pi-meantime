@@ -1,100 +1,84 @@
 import type { PluginTheme } from "@getpaseo/plugin";
+import type { ReactNode } from "react";
 import { Text, View } from "react-native";
 import type { TaskSummary } from "../shared/tasks.js";
-import { formatElapsed, monoFont, stateColor, stateLabel, tint } from "./rows.js";
+import { formatElapsed, monoFont, stateColor, taskStateCode, taskStateLabel } from "./rows.js";
 
 type Colors = PluginTheme["colors"];
 type Layout = { compact: boolean; platform: "ios" | "android" | "web" };
 
-export function StatePill({ state, colors }: { state: string; colors: Colors }) {
-  const color = stateColor(state, colors);
-  return (
-    <View style={{
-      backgroundColor: tint(color, "1F"),
-      borderRadius: 999,
-      paddingHorizontal: 7,
-      paddingVertical: 2,
-    }}>
-      <Text style={{ color, fontSize: 10, fontWeight: "600", letterSpacing: 0.6 }}>
-        {stateLabel(state)}
-      </Text>
-    </View>
-  );
-}
-
-/**
- * One task as a self-contained row: state-colored rail on the left, mono id
- * and tool on the first line, command/progress below, pill and elapsed on
- * the right. Shared by the timeline card and the board.
- */
-export function TaskLine({ task, colors, layout, now }: {
-  task: TaskSummary;
-  colors: Colors;
-  layout: Layout;
-  now?: number;
+/** A4 / B5's shared thin frame. The title masks the border with the host surface. */
+export function TaskPanel({ title, colors, layout, children }: {
+  title: ReactNode; colors: Colors; layout: Layout; children: ReactNode;
 }) {
-  const color = stateColor(task.state, colors);
-  const mono = monoFont(layout.platform);
-  const elapsed = formatElapsed(task, now);
-  const sub = task.progress ?? task.command;
-  const notes: string[] = [];
-  if (task.exitCode !== undefined) notes.push(`exit ${task.exitCode}`);
-  if (task.cancelRequested) notes.push("cancel requested");
-  if (task.recovered) notes.push("recovered");
-  if (task.isError && task.state !== "failed") notes.push("error");
-
   return (
-    <View style={{ flexDirection: "row", gap: 10, alignItems: "stretch" }}>
-      <View style={{ width: 3, borderRadius: 2, backgroundColor: color }} />
-      <View style={{ flex: 1, gap: 3, minWidth: 0 }}>
-        <View style={{ flexDirection: "row", alignItems: "baseline", gap: 6 }}>
-          <Text style={{ color: colors.foreground, fontSize: 12.5, fontFamily: mono }} numberOfLines={1}>
-            {task.id}
-          </Text>
-          {task.tool ? (
-            <Text style={{ color: colors.foregroundMuted, fontSize: 11 }} numberOfLines={1}>
-              {task.tool}
-            </Text>
-          ) : null}
-        </View>
-        {sub ? (
-          <Text style={{ color: colors.foregroundMuted, fontSize: 11, fontFamily: mono }} numberOfLines={1}>
-            {sub}
-          </Text>
-        ) : null}
-        {task.outputPath && task.state !== "running" ? (
-          <Text style={{ color: colors.foregroundMuted, fontSize: 10.5, fontFamily: mono, opacity: 0.8 }} numberOfLines={1}>
-            {task.outputPath}
-          </Text>
-        ) : null}
-        {notes.length ? (
-          <Text style={{ color: colors.foregroundMuted, fontSize: 10.5 }} numberOfLines={1}>
-            {notes.join(" · ")}
-          </Text>
-        ) : null}
+    <View style={{ marginTop: 6, borderWidth: 0.5, borderColor: colors.border, borderRadius: 3,
+      paddingTop: 4, paddingHorizontal: 8, paddingBottom: 5, backgroundColor: colors.surface0 }}>
+      <View style={{ position: "absolute", top: -7, left: 8, right: 8 }}>
+        <Text numberOfLines={1} style={{ alignSelf: "flex-start", maxWidth: "100%",
+          paddingHorizontal: 4, backgroundColor: colors.surface0, color: colors.foregroundMuted,
+          fontFamily: monoFont(layout.platform), fontSize: 8.5, lineHeight: 12, letterSpacing: 0.6 }}>
+          {title}
+        </Text>
       </View>
-      <View style={{ alignItems: "flex-end", gap: 3 }}>
-        <StatePill state={task.state} colors={colors} />
-        {elapsed ? (
-          <Text style={{ color: colors.foregroundMuted, fontSize: 10.5, fontVariant: ["tabular-nums"] }}>
-            {elapsed}
-          </Text>
-        ) : null}
-      </View>
+      <View style={{ marginTop: 2 }}>{children}</View>
     </View>
   );
 }
 
-/** Small letterspaced section label, the premium-looking kind. */
-export function SectionLabel({ text, colors, trailing }: { text: string; colors: Colors; trailing?: string }) {
+export function TaskCommand({ task, colors, layout }: { task: TaskSummary; colors: Colors; layout: Layout }) {
+  const command = task.command;
+  const split = command?.search(/\s/);
+  const head = command && split !== undefined && split >= 0 ? command.slice(0, split) : command;
+  const tail = command && split !== undefined && split >= 0 ? command.slice(split) : "";
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-      <Text style={{ color: colors.foregroundMuted, fontSize: 10.5, fontWeight: "600", letterSpacing: 1.4 }}>
-        {text.toUpperCase()}
-      </Text>
-      {trailing ? (
-        <Text style={{ color: colors.foregroundMuted, fontSize: 10.5, letterSpacing: 0.4 }}>{trailing}</Text>
-      ) : null}
+    <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, color: colors.foreground,
+      fontFamily: monoFont(layout.platform), fontSize: 10, lineHeight: 16 }}>
+      {command ? <><Text style={{ fontWeight: "600" }}>{head}</Text><Text style={{ color: colors.foregroundMuted }}>{tail}</Text></>
+        : <Text style={{ color: colors.foregroundMuted }}>{task.tool ?? task.id}</Text>}
+    </Text>
+  );
+}
+
+/** Aligned S | TIME+ | ID | COMMAND columns, without status decorations. */
+export function TaskLine({ task, colors, layout }: { task: TaskSummary; colors: Colors; layout: Layout }) {
+  const mono = monoFont(layout.platform);
+  const cell = { fontFamily: mono, fontSize: 10, lineHeight: 16, color: colors.foregroundMuted };
+  return (
+    <View>
+      <View style={{ flexDirection: "row", alignItems: "baseline", gap: 7 }}>
+        <Text accessibilityLabel={taskStateLabel(task)} style={{ ...cell, width: 15, color: stateColor(task.state, colors) }} numberOfLines={1}>
+          {taskStateCode(task)}
+        </Text>
+        <Text style={{ ...cell, width: 36 }} numberOfLines={1}>{formatElapsed(task) ?? "—"}</Text>
+        <Text accessibilityLabel={task.id} selectable style={{ ...cell, width: 25, opacity: 0.65 }} numberOfLines={1}>
+          {task.id.replace(/^mt_/, "").slice(0, 4)}
+        </Text>
+        <TaskCommand task={task} colors={colors} layout={layout} />
+      </View>
+      <TaskNotes task={task} colors={colors} layout={layout} />
     </View>
+  );
+}
+
+/** Preserve real task annotations without displacing the command. No synthetic progress. */
+export function TaskNotes({ task, colors, layout }: { task: TaskSummary; colors: Colors; layout: Layout }) {
+  const notes = [task.progress, task.outputPath,
+    task.cancelRequested && task.state !== "cancel_requested" ? "cancel requested" : undefined,
+    task.recovered ? "recovered" : undefined,
+    task.isError && task.state !== "failed" ? "error reported" : undefined];
+  return <>{notes.filter(Boolean).map((note, index) => (
+    <Text key={index} numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 10,
+      lineHeight: 16, fontFamily: monoFont(layout.platform), opacity: 0.65 }}>{note}</Text>
+  ))}</>;
+}
+
+export function TaskTable({ tasks, colors, layout }: { tasks: readonly TaskSummary[]; colors: Colors; layout: Layout }) {
+  const running = tasks.filter(task => task.state === "running").length;
+  return (
+    <TaskPanel title={<>meantime ─ <Text style={{ color: running ? colors.statusWarning : colors.foregroundMuted }}>
+      {running ? `${running} R` : "snapshots"}</Text></>} colors={colors} layout={layout}>
+      {tasks.map(task => <TaskLine key={task.id} task={task} colors={colors} layout={layout} />)}
+    </TaskPanel>
   );
 }

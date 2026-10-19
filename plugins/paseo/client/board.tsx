@@ -4,7 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import type { TaskSummary } from "../shared/tasks.js";
 import { foldItem, isActiveTask, sortTasks } from "../shared/tasks.js";
-import { SectionLabel, TaskLine } from "./task-view.js";
+import { monoFont } from "./rows.js";
+import { TaskTable } from "./task-view.js";
 
 const PAGE_LIMIT = 500;
 
@@ -20,16 +21,9 @@ export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps)
   const [tasks, setTasks] = useState<readonly TaskSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [hasOlder, setHasOlder] = useState(false);
-  const [now, setNow] = useState(() => Date.now());
 
   const active = useMemo(() => tasks.filter(isActiveTask), [tasks]);
   const finished = useMemo(() => tasks.filter(task => !isActiveTask(task)), [tasks]);
-
-  useEffect(() => {
-    if (active.length === 0) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [active.length]);
 
   useEffect(() => {
     const handle = paseo.agents.ref(agentId);
@@ -74,19 +68,11 @@ export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps)
       width: "100%" as const,
       alignSelf: "center" as const,
     },
-    title: { color: colors.foreground, fontSize: layout.compact ? 20 : 24, fontWeight: "600" as const },
-    summary: { color: colors.foregroundMuted, fontSize: 12 },
-    muted: { color: colors.foregroundMuted, fontSize: 11.5 },
-    error: { color: colors.statusDanger, fontSize: 13 },
-    card: {
-      backgroundColor: colors.surface1,
-      borderColor: colors.border,
-      borderWidth: 1,
-      borderRadius: 10,
-      paddingVertical: layout.compact ? 9 : 11,
-      paddingHorizontal: layout.compact ? 10 : 12,
-    },
-  }), [colors, layout.compact]);
+    title: { color: colors.foreground, fontSize: 10, lineHeight: 16, fontFamily: monoFont(layout.platform) },
+    summary: { color: colors.foregroundMuted, fontSize: 10, lineHeight: 16, fontFamily: monoFont(layout.platform) },
+    muted: { color: colors.foregroundMuted, fontSize: 10, lineHeight: 16, fontFamily: monoFont(layout.platform) },
+    error: { color: colors.statusDanger, fontSize: 10, fontFamily: monoFont(layout.platform) },
+  }), [colors, layout.compact, layout.platform]);
 
   return (
     <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.screen}>
@@ -98,26 +84,7 @@ export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps)
         </Text>
       </View>
       {error ? <Text style={styles.error}>{error}</Text> : null}
-      {active.length > 0 ? (
-        <View style={{ gap: 8 }}>
-          <SectionLabel text="Active" colors={colors} trailing={String(active.length)} />
-          {active.map(task => (
-            <View key={task.id} style={styles.card}>
-              <TaskLine task={task} colors={colors} layout={layout} now={now} />
-            </View>
-          ))}
-        </View>
-      ) : null}
-      {finished.length > 0 ? (
-        <View style={{ gap: 8 }}>
-          <SectionLabel text="Finished" colors={colors} trailing={String(finished.length)} />
-          {finished.map(task => (
-            <View key={task.id} style={styles.card}>
-              <TaskLine task={task} colors={colors} layout={layout} now={now} />
-            </View>
-          ))}
-        </View>
-      ) : null}
+      {tasks.length > 0 ? <TaskTable tasks={tasks} colors={colors} layout={layout} /> : null}
       {hasOlder
         ? <Text style={styles.muted}>Only the latest {PAGE_LIMIT} timeline entries were scanned; older tasks may be missing.</Text>
         : null}

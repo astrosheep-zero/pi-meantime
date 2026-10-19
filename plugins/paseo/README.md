@@ -12,12 +12,17 @@ Paseo client plugin for [pi-meantime](../../README.md) background tasks. Pure cl
 
 Non-goals (v1): no cancel/control channel, no `setStatus`/`setWidget`/`custom()` equivalents — those Pi TUI surfaces are invisible over RPC by design; the timeline is the only source of truth.
 
+## Display
+
+Timeline cards and the board use a compact, thin-framed process table. States and elapsed durations are snapshots, not live liveness indicators: launch handles say `STARTED`; elapsed appears only when both start and end are known. Completion receipts may have only an id and result. No progress meter or client-side ticking is inferred.
+
 ## Develop
 
 ```bash
 npm install
 npm run typecheck
 npm test
+node scripts/render-a4.mjs      # actual RN-web component previews (headless)
 paseo plugin reload pi-meantime   # after edits, if installed
 ```
 

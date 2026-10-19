@@ -6,28 +6,32 @@ export function stateColor(state: string, colors: PluginTheme["colors"]): string
   switch (state) {
     case "running":
     case "started":
-      return colors.accent;
-    case "completed":
-      return colors.statusSuccess;
-    case "failed":
-      return colors.statusDanger;
-    case "cancelled":
+    case "queued":
     case "cancel_requested":
       return colors.statusWarning;
+    case "failed":
+      return colors.statusDanger;
     default:
       return colors.foregroundMuted;
   }
 }
 
-/** Badge text for a raw pi-meantime state. */
 export function stateLabel(state: string): string {
+  return state ? state.replaceAll("_", " ").toUpperCase() : "MISSING STATE";
+}
+
+/** Distinct process-table codes; the accessible label retains the full state. */
+export function stateCode(state: string): string {
   switch (state) {
-    case "cancel_requested":
-      return "CANCELING";
-    case "outcome_unknown":
-      return "UNKNOWN";
-    default:
-      return state.toUpperCase();
+    case "running": return "R";
+    case "started": return "S";
+    case "queued": return "Q";
+    case "completed": return "X";
+    case "failed": return "E";
+    case "cancel_requested": return "C?";
+    case "cancelled": return "C";
+    case "outcome_unknown": return "?";
+    default: return state ? "?" : "—";
   }
 }
 
@@ -36,16 +40,27 @@ export function monoFont(platform: "ios" | "android" | "web"): string {
   return platform === "ios" ? "Menlo" : "monospace";
 }
 
-export function formatElapsed(task: TaskSummary, now?: number): string | undefined {
-  const seconds = elapsedSeconds(task, now);
+/** Snapshot only. A creation time without an end is not an elapsed duration. */
+export function formatElapsed(task: TaskSummary): string | undefined {
+  const seconds = elapsedSeconds(task);
   if (seconds === undefined) return undefined;
-  if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
-  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+  if (minutes < 60) return `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+  return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}`;
 }
 
-/** Hex-alpha tint of a theme color for pill/badge backgrounds. */
-export function tint(color: string, alpha: string): string {
-  return /^#[0-9a-fA-F]{6}$/.test(color) ? `${color}${alpha}` : color;
+export function completionResult(task: TaskSummary): string {
+  // Never manufacture exit 0 from a successful state (or exit 1 from failure).
+  const state = stateLabel(task.state).toLowerCase();
+  return task.exitCode === undefined ? state : `${state} · exit ${task.exitCode}`;
+}
+
+export function taskStateLabel(task: TaskSummary): string {
+  return task.exitCode === undefined ? stateLabel(task.state) : `${stateLabel(task.state)} · exit ${task.exitCode}`;
+}
+
+export function taskStateCode(task: TaskSummary): string {
+  const code = stateCode(task.state);
+  return task.exitCode !== undefined && (task.state === "completed" || task.state === "failed")
+    ? `${code}${task.exitCode}` : code;
 }
