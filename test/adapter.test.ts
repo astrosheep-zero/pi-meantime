@@ -374,8 +374,8 @@ test('short management receipts retain structured data and cancellation semantic
     assert.deepEqual(status.result.structuredContent, { task: JSON.parse(JSON.stringify(status.result.details)), result_available: false });
     assert.ok(!text(status.result).includes('{'));
     const cancelled = await h.pi.call('meantime', { action: 'cancel', id: task.id });
-    assert.match(text(cancelled.result), /cancellation requested; native outcome may not be settled/);
-    assert.deepEqual(cancelled.result.structuredContent, { task: JSON.parse(JSON.stringify(cancelled.result.details)) });
+    assert.match(text(cancelled.result), /cancel_requested/);
+    assert.deepEqual(cancelled.result.structuredContent, { task: JSON.parse(JSON.stringify(cancelled.result.details)), result_available: false });
     const missing = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: 'missing' });
     assert.equal(missing.isError, true);
     assert.match(text(missing.result), /No task with that id in this session/);

@@ -50,7 +50,7 @@ test('no mode disables timed detachment but remains cancellable', async () => {
     assert.equal(h.runtime.detachAll('timeout'), 0);
     assert.equal(h.runtime.list()[0]!.delivery, 'foreground'); assert.equal(h.records.size, 0);
     const id = h.runtime.list()[0]!.id; h.runtime.cancel(id); const view = await wait;
-    assert.equal(aborted, true); assert.equal(view.task.state, 'failed'); assert.equal(view.task.isError, true);
+    assert.equal(aborted, true); assert.equal(view.task.state, 'cancelled'); assert.equal(view.task.isError, true);
   } finally { await h.close(); }
 });
 test('no-mode user detachment waits for approval and nested-call readiness', async () => {
@@ -110,7 +110,8 @@ test('capacity counts actual live producers, not foreground waiters', async () =
     assert.equal(h.runtime.get(view.task.id).state, 'cancel_requested');
     assert.throws(() => h.runtime.run({ tool: 'two', kind: 'tool', callId: 'c2', mode: 'yes', canDetach: true, execute: async () => ok() }), /capacity/);
     work.resolve(ok()); await until(() => TaskRuntime.liveProducerCount() === 0);
-    assert.equal(h.runtime.get(view.task.id).state, 'completed'); // A late success is truth, even after cancel.
+    assert.equal(h.runtime.get(view.task.id).state, 'cancelled');
+    assert.equal(h.runtime.get(view.task.id).isError, false); // Late native success is retained, not relabelled as an error.
   } finally { work.resolve(ok()); await h.close(); }
 });
 test('non-cooperative producer survives local cancel; shutdown is bounded and no late notification leaks', async () => {

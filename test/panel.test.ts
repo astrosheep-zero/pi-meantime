@@ -87,6 +87,9 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
     work.resolve(ok('recent output'));
     await until(() => (instance.inspect() as { tasks: Snapshot[] }).tasks.every(task => !task.localRunning));
     assert.equal(renders, before, 'closed panel has no changed sink listener');
+    await until(() => pi.notifications.length === 1);
+    assert.match(pi.notifications[0]!.content, new RegExp(`Meantime ${idB} cancelled`));
+    assert.equal((instance.inspect() as { tasks: Snapshot[] }).tasks.find(task => task.id === idB)!.state, 'cancelled');
 
     await command('status');
     assert.equal(closed, 1);
@@ -94,6 +97,8 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
     const reopened = command();
     panel!.handleInput!('\r');
     assert.match(text(), /recent output/); assert.doesNotMatch(text(), /Output:/);
+    assert.match(text(), /cancelled/);
+    await sleep(10); assert.equal(pi.notifications.length, 1);
     panel!.handleInput!('\u001b'); await reopened;
     assert.equal(closed, 2);
 

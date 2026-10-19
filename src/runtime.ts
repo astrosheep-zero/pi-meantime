@@ -37,7 +37,7 @@ interface Task {
   resolveView?: (view: View) => void;
   cleanupParent?: () => void; autoTimer?: ReturnType<typeof setTimeout>;
   cancelTimer?: ReturnType<typeof setTimeout>;
-  done?: Promise<void>; notifyAttempts: number; finishSequence?: number;
+  done?: Promise<void>; notifyAttempts: number; finishSequence?: number; waiters: number;
 }
 export interface RuntimeSink {
   /** false defers handoff until the host's next idle flush. */
@@ -76,9 +76,9 @@ export class TaskRuntime {
       if (completion) Object.assign(meta, { endedAt: completion.endedAt, isError: completion.isError,
         cancelRequestedAt: completion.cancelRequestedAt, exitCode: completion.exitCode,
         outputPath: completion.outputPath,
-        state: completion.isError ? 'failed' : 'completed' });
+        state: completion.cancelRequestedAt !== undefined ? 'cancelled' : completion.isError ? 'failed' : 'completed' });
       this.tasks.set(meta.id, { meta, outputTail: completion?.text.slice(-1026), result: completion ? { content: [{ type: 'text', text: completion.text }], details: undefined } : undefined,
-        callId: '', published: true, observed: false, viewSettled: true, canDetach: false, notifyAttempts: 0 });
+        callId: '', published: true, observed: false, viewSettled: true, canDetach: false, notifyAttempts: 0, waiters: 0 });
     }
   }
 
@@ -93,7 +93,7 @@ export class TaskRuntime {
       ...(request.command !== undefined ? { command: request.command } : {}),
       state: 'running', delivery: 'foreground', createdAt: Date.now(), localRunning: true, notification: 'none' };
     const task: Task = { meta, callId: request.callId, controller: new AbortController(), published: false,
-      observed: false, viewSettled: false, canDetach: request.canDetach, readyToDetach: request.readyToDetach, notifyAttempts: 0 };
+      observed: false, viewSettled: false, canDetach: request.canDetach, readyToDetach: request.readyToDetach, notifyAttempts: 0, waiters: 0 };
     const view = new Promise<View>(resolve => { task.resolveView = resolve; });
     this.tasks.set(id, task); leases().add(id);
     const onParentAbort = () => {
@@ -197,14 +197,15 @@ export class TaskRuntime {
   private finish(task: Task, result: Result, isError: boolean, thrown?: { error: unknown }): void {
     task.meta.localRunning = false; task.meta.endedAt = Date.now(); task.finishSequence = ++this.completionSequence;
     clearTimeout(task.autoTimer); clearTimeout(task.cancelTimer); task.cleanupParent?.();
-    // These states describe Pi's returned outcome, never inferred remote rollback.
+    // Cancellation is a lifecycle fact, not a claim of remote rollback.
     task.meta.isError = isError;
-    task.meta.state = isError ? 'failed' : 'completed';
+    task.meta.state = task.meta.cancelRequestedAt !== undefined ? 'cancelled' : isError ? 'failed' : 'completed';
     task.controller = undefined;
     if (!task.viewSettled) {
       // Pi already persists the foreground result, including its native payload.
       this.resolveView(task, { kind: 'result', task: snap(task), result, isError, thrown });
-      this.tasks.delete(task.meta.id);
+      if (task.waiters) task.result = result;
+      else this.tasks.delete(task.meta.id);
       return;
     }
     task.result = result;
@@ -241,26 +242,41 @@ export class TaskRuntime {
     if (!task) throw new Error('No task with that id in this session');
     return task;
   }
-  /** Block until the task settles, the timeout passes or the caller aborts, then return result(). */
-  async wait(id: string, timeoutMs: number, signal?: AbortSignal): Promise<{ task: Snapshot; result?: Result }> {
+  /** Wait (optionally requesting cancellation first), then acknowledge the available result. */
+  async wait(id: string, timeoutMs: number, signal?: AbortSignal, cancel = false): Promise<{ task: Snapshot; result?: Result }> {
     signal?.throwIfAborted();
     const task = this.lookup(id);
-    await this.waitUntil(task.meta.localRunning ? task.done : undefined, timeoutMs, signal);
-    return this.result(task.meta.id);
+    return this.withWaiters([task], async () => {
+      if (cancel) this.cancel(id);
+      signal?.throwIfAborted();
+      await this.waitUntil(task.meta.localRunning ? task.done : undefined, timeoutMs, signal);
+      return this.result(task.meta.id);
+    });
   }
   async waitMany(ids: string[], mode: 'any' | 'all', timeoutMs: number, signal?: AbortSignal): Promise<{ tasks: { task: Snapshot; result?: Result }[]; pending: Snapshot[] }> {
     signal?.throwIfAborted();
     // Resolve every prefix before waiting or acknowledging any result.
     const tasks = [...new Set(ids.map(id => this.lookup(id)))];
-    const done = tasks.map(task => task.meta.localRunning ? task.done : undefined);
-    await this.waitUntil(mode === 'any' ? Promise.race(done) : Promise.all(done), timeoutMs, signal);
-    const settled: { task: Snapshot; result?: Result }[] = [], pending: Snapshot[] = [];
-    for (const task of tasks) {
-      const snapshot = this.get(task.meta.id);
-      if (!snapshot.localRunning && snapshot.endedAt !== undefined) settled.push(this.result(task.meta.id));
-      else pending.push(snapshot);
+    return this.withWaiters(tasks, async () => {
+      const done = tasks.map(task => task.meta.localRunning ? task.done : undefined);
+      await this.waitUntil(mode === 'any' ? Promise.race(done) : Promise.all(done), timeoutMs, signal);
+      const settled: { task: Snapshot; result?: Result }[] = [], pending: Snapshot[] = [];
+      for (const task of tasks) {
+        const snapshot = this.get(task.meta.id);
+        if (!snapshot.localRunning && snapshot.endedAt !== undefined) settled.push(this.result(task.meta.id));
+        else pending.push(snapshot);
+      }
+      return { tasks: settled, pending };
+    });
+  }
+  private async withWaiters<T>(tasks: Task[], operation: () => Promise<T>): Promise<T> {
+    for (const task of tasks) task.waiters++;
+    try {
+      return await operation();
+    } finally {
+      for (const task of tasks) task.waiters--;
+      this.scheduleNotifications(); this.prune();
     }
-    return { tasks: settled, pending };
   }
   private async waitUntil(done: Promise<unknown> | undefined, timeoutMs: number, signal?: AbortSignal): Promise<void> {
     if (done && timeoutMs > 0) {
@@ -327,7 +343,7 @@ export class TaskRuntime {
     }
   }
   private eligible(): Task[] {
-    return [...this.tasks.values()].filter(t => t.published && !t.observed && t.meta.notification === 'pending' && !t.meta.localRunning);
+    return [...this.tasks.values()].filter(t => t.published && !t.observed && !t.waiters && t.meta.notification === 'pending' && !t.meta.localRunning);
   }
   private scheduleNotifications(): void {
     if (!this.open || this.promptDepth > 0 || this.promptResume || this.notifyTimer || this.eligible().length === 0) return;
@@ -382,7 +398,7 @@ export class TaskRuntime {
       .sort((a, b) => Number(b.meta.id === retainId) - Number(a.meta.id === retainId)
         || (b.meta.endedAt ?? 0) - (a.meta.endedAt ?? 0) || (b.finishSequence ?? 0) - (a.finishSequence ?? 0));
     for (const task of ended.slice(this.config.maxRetained)) {
-      if (!task.published || task.meta.notification === 'pending' || leases().has(task.meta.id)) continue;
+      if (!task.published || task.waiters || task.meta.notification === 'pending' || leases().has(task.meta.id)) continue;
       try {
         this.sink.index({ removed: [task.meta.id] }); this.tasks.delete(task.meta.id);
       } catch (error) { task.meta.indexError = String(error); }

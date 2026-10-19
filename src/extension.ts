@@ -454,16 +454,13 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
         }
       }
       if (typeof params.id !== 'string') throw new Error('id is required for this action');
-      if (params.action === 'wait') {
-        const { task, result } = await r.wait(params.id, timeout, signal);
-        return result ? storedResult(task, result) : {
-          ...textResult(`${receipt(task)}\nResult is not available. Do not relaunch the operation.`, task),
-          structuredContent: { task: json(task), result_available: false },
-        };
-      }
-      const task = params.action === 'cancel' ? r.cancel(params.id) : undefined;
-      if (!task) throw new Error('Unknown meantime action');
-      return { ...textResult(taskReceipt(task), task), structuredContent: { task: json(task) } };
+      if (params.action !== 'wait' && params.action !== 'cancel') throw new Error('Unknown meantime action');
+      const cancel = params.action === 'cancel';
+      const { task, result } = await r.wait(params.id, cancel ? config.shutdownGraceMs : timeout, signal, cancel);
+      return result ? storedResult(task, result) : {
+        ...textResult(`${receipt(task)}\nResult is not available. Do not relaunch the operation.`, task),
+        structuredContent: { task: json(task), result_available: false },
+      };
     },
   });
 

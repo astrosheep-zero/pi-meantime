@@ -25,6 +25,45 @@ test('waitMany races any, times out all, and returns settled results in requeste
   } finally { a.resolve(ok()); b.resolve(ok()); await h.close(); }
 });
 
+for (const ending of ['completion', 'timeout', 'abort'] as const) test(`waitMany retains a concurrently cancelled result under retention pressure until ${ending}`, async () => {
+  const h = runtimeHarness({ maxRetained: 1, shutdownGraceMs: 100, notifyDebounceMs: 0 });
+  const a = deferred<Outcome>(), b = deferred<Outcome>(); const caller = new AbortController();
+  try {
+    const first = await h.runtime.run({ tool: 'a', kind: 'tool', callId: 'a', mode: 'yes', canDetach: true,
+      execute: signal => {
+        signal.addEventListener('abort', () => a.resolve(ok('A cancelled')));
+        return a.promise;
+      } });
+    const second = await h.runtime.run({ tool: 'b', kind: 'tool', callId: 'b', mode: 'yes', canDetach: true, execute: () => b.promise });
+    h.runtime.published('a'); h.runtime.published('b');
+    const ids = [first.task.id, second.task.id];
+    const batch = h.runtime.waitMany(ids, 'all', ending === 'timeout' ? 10 : 5000, caller.signal);
+    const cancelled = await h.runtime.wait(first.task.id, h.config.shutdownGraceMs, undefined, true);
+    assert.equal(cancelled.task.state, 'cancelled'); assert.equal(cancelled.task.notification, 'observed');
+    if (ending === 'abort') {
+      caller.abort(new Error('stop batch'));
+      await assert.rejects(batch, /stop batch/);
+    } else if (ending === 'timeout') {
+      const partial = await batch;
+      assert.deepEqual(partial.tasks.map(view => view.task.id), [first.task.id]);
+      assert.deepEqual(partial.pending.map(task => task.id), [second.task.id]);
+    }
+    b.resolve(ok('B completed'));
+    if (ending === 'completion') {
+      const complete = await batch;
+      assert.deepEqual(complete.tasks.map(view => view.task.id), ids);
+      assert.deepEqual(complete.tasks.map(view => view.task.state), ['cancelled', 'completed']);
+      assert.deepEqual(complete.tasks.map(view => view.result?.structuredContent), [{ value: 'A cancelled' }, { value: 'B completed' }]);
+      assert.deepEqual(complete.pending, []);
+      h.runtime.flushNotifications(); assert.equal(h.notifications.length, 0);
+    } else {
+      await until(() => h.notifications.length === 1);
+      assert.deepEqual(h.notifications.flat().map(task => task.id), [second.task.id]);
+    }
+    assert.deepEqual(h.runtime.list().map(task => task.id), [second.task.id], 'released guards allow normal pruning');
+  } finally { a.resolve(ok()); b.resolve(ok()); await h.close(); }
+});
+
 test('waitMany validates all ids before ack and abort only stops the wait', async () => {
   const h = runtimeHarness(); const a = deferred<Outcome>(), b = deferred<Outcome>();
   let producerSignal: AbortSignal | undefined;

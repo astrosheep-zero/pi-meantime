@@ -10,6 +10,7 @@
 - `no` 只关闭计时转后台：runtime/适配器回归覆盖 steer、快捷键、`/meantime detach`，以及审批拒绝、调用进入、索引失败和 print/json admission 门槛；模型控制语义集中在共享 system prompt，代理只保留原工具名与控制字段提示，Schema 仅验证可选的 `auto|yes|no` 枚举。不代表真实终端快捷键验收。
 - `npm run check` 覆盖单个/批量 wait 的折叠及展开正文预览；`node scripts/pi-smoke.mjs` 覆盖批量 wait 的原生 structuredContent/文本结果，并检查控制说明字符数、共享 prompt 语义及 codemode-only/deferred 代理的发现与调用。
 - 官方 SDK 结果钩子、取消和权限检查通过；选择器由测试适配器提供，不代表真实终端菜单验收。
+- 模型取消（含真实 SDK Codemode）复用单任务 wait：宽限期内落定返回原生结果并标记 observed，宽限期超时或调用中断后仍保留结束通知；TUI 命令和面板取消保留通知，取消后的终态为 cancelled，原生错误及远端副作用语义不变。
 - `node scripts/pi-smoke.mjs` 的 `EARLY_STEER` 使用真实 AgentSession、脚本化 provider 和真正的 Codemode/QuickJS worker（无外部模型请求）。覆盖外层代理审批前 steer（`no` 模式批准后仍响应用户 steer；拒绝不执行）、Codemode 尚无 managed task 时的 steer、公开 execution-start 精确 admission 边界、已有 producer 的 steer、`detachOnSteer=false`。批准前没有业务执行/句柄；拒绝不运行 producer；批准后句柄出现时 producer 仍被 gate 持有、后续独立完成且 signal 未取消。每例证明 steer 文本进入下一 provider context、下一模型回合的无关 held task 仍在前台；拒绝例再关闭旧会话、重载资源并绑定新的 AgentSession，复用 call ID，证明新会话无旧意图。日志打印调用/父 ID、任务数、审批、执行、句柄和模型请求顺序；不把真实 RPC-mode SDK 当作 RPC transport 或 TUI 验收。
 
 ## 0.1.4 历史验证
