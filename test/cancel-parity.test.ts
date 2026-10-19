@@ -68,7 +68,7 @@ async function commandHarness() {
   pi.registerTool(basicTool('mcp__test__one', async (_id, _args, signal) => {
     signal?.addEventListener('abort', () => { aborts++; }); return (await work.promise).result;
   }));
-  const instance = install(pi, { config: validateConfig({ storageRoot: root, autoDetachMs: 0, shutdownGraceMs: 10 }), makeBash: fixtureBash });
+  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, shutdownGraceMs: 10 }), makeBash: fixtureBash });
   await pi.emit('session_start', { type: 'session_start' }); await sleep(1); pi.refresh();
   assert.equal(pi.commands.get('bg'), pi.commands.get('meantime'));
   const command = (args: string) => pi.commands.get('meantime')!(args, pi.ctx);
@@ -144,7 +144,7 @@ test('recovery retains the authoritative outcome flag with text-only results', a
       const view = await h.runtime.run({ tool: 'hooked', kind: 'tool', callId: `r-${isError}`, mode: 'yes', canDetach: true,
         execute: () => work.promise });
       work.resolve({ result: payload, isError }); await until(() => TaskRuntime.liveProducerCount() === 0);
-      const recovered = new TaskRuntime(h.store, h.config, { ...h.sink, notify() { throw new Error('must not notify'); } }, [...h.records.values()]);
+      const recovered = new TaskRuntime(h.config, { ...h.sink, notify() { throw new Error('must not notify'); } }, [...h.records.values()]);
       try {
         const restored = recovered.result(view.task.id);
         assert.equal(restored.task.isError, isError); assert.deepEqual(restored.result!.content, payload.content);

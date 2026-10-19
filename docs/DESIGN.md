@@ -1,6 +1,6 @@
 # 设计说明与决策记录
 
-版本：0.2.0。宿主目标：Pi 1.3.0。
+版本：0.4.0 开发版。宿主目标：Pi 1.3.0。
 
 ## 1. 范围
 
@@ -13,7 +13,7 @@ model -> bash + __background__ -> Pi 原生 Bash factory ------+
                                                            |
 model -> original_mt + __background__ -> ctx.executeTool ---+--> TaskRuntime
                                          |                 |      |
-                                原工具校验/权限/钩子         |      +--> TaskStore
+                                原工具校验/权限/钩子         |      +--> Pi session index
                                          |                 |      +--> completion outbox
                                       MCP/扩展工具          |      +--> meantime 查询
                                                            |
@@ -104,7 +104,7 @@ delivery: foreground -> background
 
 Bash 任务保存完整命令供 wait 详情读取；任务列表和完成通知把命令合为单行、截取最多 120 UTF-8 字节的预览，截断时加省略号。不新增 name/description 入参。
 
-通知包含 task ID、工具名、状态、Bash 命令预览，以及约 1KB 的文本输出尾巴；尾巴用 `<untrusted-output-tail>` 包裹并声明为不可信数据，不是指令。通知明确声明是自动完成消息，不是用户输入或批准；没有新信息时静默处理。尾巴只含文本，不含图片和结构化数据；尾巴或落盘结果截断都会标注 truncated。省去常见场景下多一轮 `meantime(action="wait", id=..., timeout=0)`；完整保留结果仍通过 `meantime(action="wait", id=..., timeout=0)` 读取。
+通知包含 task ID、工具名、状态、Bash 命令预览，以及约 1KB 的文本输出尾巴；尾巴用 `<untrusted-output-tail>` 包裹并声明为不可信数据，不是指令。通知明确声明是自动完成消息，不是用户输入或批准；没有新信息时静默处理。尾巴只含文本，不含图片和结构化数据；仅当通知尾巴自身截断时标注 truncated，原生截断提示仍属于原结果。省去常见场景下多一轮 `meantime(action="wait", id=..., timeout=0)`；完整保留结果仍通过 `meantime(action="wait", id=..., timeout=0)` 读取。
 
 采用 `followUp + triggerTurn:true`；多项完成合成一条消息。只有公开 `ctx.isIdle()` 为真才交给 Pi；忙时保留 pending，后续 flush 重新筛选，排除期间被 wait 读取的任务，不消耗失败重试次数。部分已读批次只通知仍未读的任务。同步入队失败最多重试三次。`queued`只表示 sendMessage 调用已成功返回，不等于模型必然收到。宿主接口没有投递确认，进程崩溃时不宣称 exactly-once。重启后不自动投递历史通知，避免旧任务打断新工作。
 
@@ -123,33 +123,33 @@ Pi 1.3.0 的公开扩展事件恢复路径（核对 SDK `dist/core/extensions/ty
 
 Bash 使用 Pi 原生进程清理；MCP/一般扩展工具仍经原名 ctx.executeTool 和 Pi 原生 AbortSignal 通路。最终 Outcome.isError（包括 afterToolCall 的最终裁决）决定 failed/completed，result payload 保留原样；最终错误位与文本单独写入 completion 索引，避免把旧 payload.isError 冒充最终裁决。cancelRequestedAt 仅记请求事实；没有最终结果且失去本地控制时显示 outcome_unknown。
 
-`/reload`、会话切换和退出请求取消、等待有限 grace，并停止旧通知。尚未结束的前台调用也经过后台晋升路径，记录索引再释放句柄。普通 detach 若索引写入失败则保持前台；强制取消/关闭仍可释放句柄并显示 storageError。**不承诺 reload 保活。** 同一会话内树导航共享任务，不重启 runtime、不请求取消；fork/clone 使用新 owner，不接管复制历史中的旧任务。
+`/reload`、会话切换和退出请求取消、等待有限 grace，并停止旧通知。尚未结束的前台调用也经过后台晋升路径，记录索引再释放句柄。普通 detach 若索引写入失败则保持前台；强制取消/关闭仍可释放句柄并显示 indexError。**不承诺 reload 保活。** 同一会话内树导航共享任务，不重启 runtime、不请求取消；fork/clone 使用新 owner，不接管复制历史中的旧任务。
 
 进程全局配额只保留存活 producer 的租约，不保留旧宿主上下文。非协作任务在实际 Promise 结束前不释放配额，防止反复 reload 绕过并发上限。Pi 进程退出后，这种保护自然结束；这不等于能追踪失联的远端作业。
 
-恢复通过 Pi getEntries() 读取全部分支中的 meantime-index，按 owner 过滤并应用 task、completion 和 removed 记录。缺少 completion 的任务投影为 outcome_unknown；不恢复 Promise、不盲目 kill PID、更不重放原请求。晚到的超大工具文本文件可由 list/wait 暴露路径，但不证明执行结果。
+恢复通过 Pi getEntries() 读取全部分支中的 meantime-index，按 owner 过滤并应用 task、completion 和 removed 记录。缺少 completion 的任务投影为 outcome_unknown；不恢复 Promise、不盲目 kill PID、更不重放原请求。没有完成索引时不扫描文件推测路径或结果。
 
-旧 producer 只能写原 owner 目录的超大工具文本，不能向新会话追加索引或通知。通知、已读确认和重试都只在内存；恢复后不发历史通知。不支持两个 Pi 进程同时操作同一 owner 的存储。
+旧 producer 不能向新会话追加索引或通知，也没有扩展私有结果目录可写。通知、已读确认和重试都只在内存；恢复后不发历史通知。不支持两个 Pi 进程同时写同一个会话索引。
 
-## 9. 存储、大小与成本
+## 9. 原生结果、持久化与成本
 
-每个会话使用 hashed 目录，目录 0700、文件 0600；写临时文件再原子 rename。task ID 严格校验，拒绝结果文件 symlink。这个本地存储位于当前 OS 用户的信任域，不能代替文件系统或沙箱隔离。
+对齐目标是**不安装 pi-meantime 时，同一个工具在 Pi 内的行为**，不是另造理想化的客户端。代理通过 Pi 调原工具，收到的已经是原生结果；完成时直接 `task.result = result`，保留原 content block 顺序、details、structuredContent 和错误信息。所有种类统一提取 `structuredContent.full_output_path ?? details.fullOutputPath` 作为可选路径，扩展不创建、扫描或删除任何结果文件。
 
-除用于辨识任务的 Bash 命令外，不保存业务入参和环境变量。结果可能含敏感数据，因此采用私有权限，但不做自动内容脱敏；保留原工具结果钩子的脱敏结果。
+Pi 1.3.0 MCP 的 `convertMcpResult` / `limitMcpContent` 已在模型文本超过 20KiB 时中段截断、加原生 warning，并经 `writeOutputFile` 将全文写入系统临时目录，路径位于 `details.fullOutputPath`；structuredContent 仍含完整 MCP 结果。Bash 使用其原生有界文本及 `full_output_path`。普通扩展工具没有统一大小保证，遵循其自身策略，不由 meantime 补第二道限制。临时文件生命周期沿用 Pi（当前 MCP 不自动清理），不是 meantime 的保留策略。
 
-转后台时 Pi appendEntry 保存任务索引（id、tool、kind、command、mode、createdAt、detachReason）。绑定会话内完成时追加 completion（id、endedAt、isError、cancelRequestedAt?、exitCode?、text、truncated、outputPath?）。Bash 使用原生有界文本，路径优先 structuredContent.full_output_path，其次 details.fullOutputPath；不额外截断、不写扩展文件。其他工具 cleanText 后不超过 50KiB 的文本只进索引；更大时原子写入 `<sha256(owner)[0:32]>/mt_xxx.txt`，索引保留约 2000 字节预览和路径。图片和 structuredContent 只留当前进程内存，恢复只有文本，回执说明省略。
+原生 MCP/tool 返回路径不会清洗控制字符，真实 MCP fixture 也证明原生模型文本保留 ANSI/NUL。因此移除自定义 cleanText，不改变结果或索引文本；只在终端展示边界使用 Pi 的 stripTerminalSequences。通知保留约 1KiB 尾部，批量 wait 正文共享 32KiB 预算；这些展示预算不改保留结果。单任务 wait 沿用回执 envelope，原生文本不另截断，structuredContent 原样供程序读取；details 保留原生字段（如 truncation、fullOutputPath），并加入 task 回执；回执不内联图片。
 
-默认保留最近完成的128个后台任务；等待通知、仍有全局存活租约以及没有 endedAt 的不确定任务暂不淘汰。活跃 runtime 在完成、通知、读取时执行清理；关闭后的晚结果延后至原会话恢复清理。显式读取时优先保留刚返回条目。清理先删除扩展自己的工具文本文件（绝不删除 Pi 的 Bash 文件），再追加 removed 索引事件，防止恢复时复活为 unknown；删除失败保留索引与内存记录并暴露 storageError，后续可重试。文件和会话索引之间没有跨文件事务保证。
+除用于辨识任务的 Bash 命令外，扩展不另保存业务入参和环境变量；原生结果本身仍可能包含敏感数据，不自动脱敏，保留原工具结果钩子的处理。转后台时 Pi appendEntry 保存任务索引（id、tool、kind、command、mode、createdAt、detachReason），完成时追加 completion（id、endedAt、isError、cancelRequestedAt?、exitCode?、text、outputPath?）。text 是原生 text blocks 按换行拼接，没有额外 cap。Pi agent-core 的 createToolResultMessage 将结果投影为 content/details/usage/isError（不含 structuredContent），AgentSession 在 message_end 交给 SessionManager.appendMessage，再将完整 message entry JSON.stringify 写入 session JSONL，没有第二次文本持久化截断；meantime 不额外增加。MCP 模型文本已由宿主限长，完整 structuredContent 在原生执行结果中仍可能很大，但原生会话历史也不持久化它。图片、details 和 structuredContent 只在任务当前进程内存中保留，恢复只有索引文本与元数据，回执说明省略。
 
-超大工具文本文件默认最多4MiB；只有文件本身被截断才标记 truncated，索引预览不等于丢失完整文本。任务列表默认10条、最多32条并支持 offset。旧版完成文件格式不迁移、不读取，也不自动删除。
+默认保留最近完成的128个后台任务；等待通知、仍有全局存活租约以及没有 endedAt 的不确定任务暂不淘汰。清理只追加 removed 索引事件并删内存记录，绝不删除原生输出文件；不重写历史 session 条目。显式读取时优先保留刚返回条目。索引追加失败用 indexError 报告：普通 detach 留前台；完成记录失败不篡改内存中的原生结果/最终状态，恢复缺少 completion 时仍是 outcome_unknown；removed 失败保留记录可重试。
 
-入站工具已经构造出来的超大结果，在截断前仍可能占内存，扩展无法用结果截断阻止上游一次性分配。用户移除整个结果目录时会失去历史数据；扩展不自动跨会话清理其他目录。
+任务列表默认10条、最多32条并支持 offset。
 
 原始 `usage` 只在当前进程的任务结果中保留。前台嵌套 usage 由 Pi 自动归到父调用，包装器不重复加一次；后台晚到 usage 的 Pi 全局汇总可能不完整。扩展不修改 Pi 的历史费用记录。这是明确的已知宿主集成缺口，不是通过测试的指标。
 
 ## 10. 验收层级
 
-1. Runtime/Schema/Store 单元测试。
+1. Runtime/Schema/原生结果复用单元测试。
 2. 公共接口宿主替身下的适配器和事件测试。
 3. 同一适配器配真实本地 Shell 和真实 MCP JSON-RPC/stdio 传输。
 4. 实际 Pi SDK、provider 消息投影和 TUI/RPC 集成。

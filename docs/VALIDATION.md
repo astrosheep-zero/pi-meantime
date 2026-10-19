@@ -4,8 +4,9 @@
 
 ## 当前开发版已验证范围
 
-- 正式 SDK 类型检查和单元/组件测试通过，覆盖前台不落盘、后台晋升、晚结果、owner 隔离、结果清理失败后恢复重试。
-- 无模型调用的真实 SDK smoke：原生 Bash、本地 MCP、后台结果嵌套读取；使用磁盘 SessionManager，确认前台无扩展文件/索引，重开会话文件并重新加载扩展后读回 completion 文本。小 Bash 无文件，超大 Bash 引用 Pi 原生文件，超大扩展工具文本只写一个 `.txt`；恢复保留路径及预览，图片/结构化数据不持久化。
+- 正式 SDK 类型检查和单元/组件测试通过，覆盖前台透明返回、后台保留原生结果对象及 block 顺序/控制字符、原生路径恢复与淘汰不删文件、晚结果与 owner 隔离、索引失败。
+- 无外部模型调用的真实 SDK smoke：先用**不安装 meantime 的独立 AgentSession** 调本地 MCP 大文本，检查原生结果及 session JSONL；再通过后台代理调同一 MCP 工具，确认 wait 文本除原生随机路径外与基线完全相同、路径是原生 details.fullOutputPath、structuredContent 保留全文/控制字符，另测原生 MCP 错误结果。原生 Bash 仍引用 Pi 文件；公开 wait 的 details.fullOutputPath 对 Bash 和 MCP 都保留，并验证 Bash truncation 与 MCP 原生 details。磁盘 SessionManager 的 completion index 保存原生文本/路径，重开会话并重载扩展后完整读回该文本与路径；任务索引不另加大小上限，恢复仍是 text-only。
+- 先决证据：真实本地 MCP 返回 60,018 字节，原工具和代理收到的模型文本均为 20,707 字节，含原生 `Warning: truncated output`、`details.fullOutputPath`，文件及 structuredContent 保留全文；ANSI/NUL 在原生模型文本中保留。持久化核对 Pi 1.3.0 agent-core 的 `createToolResultMessage`：历史消息保留 content/details，不包含 structuredContent；coding-agent 的 `dist/core/agent-session.js` message_end → `SessionManager.appendMessage`，以及 `dist/core/session-manager.js` `_persist` / `_rewriteFile` 将该消息直接 JSON 序列化，没有二次文本截断；smoke 读回实际原生工具结果 JSONL，验证文本与路径相同、structuredContent 未持久化。没有用理想化的输出上限替代真实宿主行为。
 - `no` 只关闭计时转后台：runtime/适配器回归覆盖 steer、快捷键、`/meantime detach`，以及审批拒绝、调用进入、索引失败和 print/json admission 门槛；模型说明与 Schema 描述同步验证。不代表真实终端快捷键验收。
 - 官方 SDK 结果钩子、取消和权限检查通过；选择器由测试适配器提供，不代表真实终端菜单验收。
 - `node scripts/pi-smoke.mjs` 的 `EARLY_STEER` 使用真实 AgentSession、脚本化 provider 和真正的 Codemode/QuickJS worker（无外部模型请求）。覆盖外层代理审批前 steer（`no` 模式批准后仍响应用户 steer；拒绝不执行）、Codemode 尚无 managed task 时的 steer、公开 execution-start 精确 admission 边界、已有 producer 的 steer、`detachOnSteer=false`。批准前没有业务执行/句柄；拒绝不运行 producer；批准后句柄出现时 producer 仍被 gate 持有、后续独立完成且 signal 未取消。每例证明 steer 文本进入下一 provider context、下一模型回合的无关 held task 仍在前台；拒绝例再关闭旧会话、重载资源并绑定新的 AgentSession，复用 call ID，证明新会话无旧意图。日志打印调用/父 ID、任务数、审批、执行、句柄和模型请求顺序；不把真实 RPC-mode SDK 当作 RPC transport 或 TUI 验收。
@@ -27,7 +28,7 @@
 npm ci --ignore-scripts
 npm run check
 npm run demo
-npm run test:pi
+npm run test:pi     # 等价于 node scripts/pi-smoke.mjs
 node --experimental-strip-types scripts/sdk-cancel-permissions.mjs
 ```
 

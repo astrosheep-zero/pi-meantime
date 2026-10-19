@@ -6,7 +6,7 @@
  * MCP dispatch in a headless SDK session. Human TUI steering is a separate gate.
  */
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +23,8 @@ if (sdk) {
   const root = mkdtempSync(join(tmpdir(), 'pi-bg-real-sdk-'));
   let session; let extension;
   const outputs = [];
+  const largeMcpText = '\x1b[31m\x00HEAD' + 'M'.repeat(60000) + 'TAIL\x1b[0m';
+  const nativeMcpResults = new Map();
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = join(root, 'agent');
   try {
@@ -32,6 +34,8 @@ if (sdk) {
     for (const scenario of ['in-flight', 'before-wait', 'unobserved', 'partial', 'timeout', 'compact', 'compact-cancel', 'tree', 'tree-cancel']) {
       await completionRace(sdk, root, scenario);
     }
+    const baseline = await nativeMcpBaseline(sdk, root, largeMcpText);
+    outputs.push({ path: baseline.details.fullOutputPath });
     const settingsManager = sdk.SettingsManager.inMemory({ defaultTools: ['bash', 'meantime'] });
     const loader = new sdk.DefaultResourceLoader({
       cwd: root, agentDir: join(root, 'agent'), settingsManager,
@@ -41,13 +45,10 @@ if (sdk) {
           args: [fileURLToPath(new URL('../test/fixtures/mcp-server.mjs', import.meta.url))],
           exposure: 'direct', timeout: 10,
         });
-        pi.registerTool({
-          name: 'large_text_probe', label: 'large text probe', description: 'Oversized tool text fixture',
-          parameters: { type: 'object', properties: {} },
-          async execute() {
-            await new Promise(resolve => setTimeout(resolve, 100));
-            return { content: [{ type: 'text', text: 'M'.repeat(60000) }] };
-          },
+        pi.on('tool_execution_end', event => {
+          if (event.toolName.startsWith('mcp__meantime_fixture__') && !event.toolName.endsWith('_mt')) {
+            nativeMcpResults.set(event.toolName, event.result);
+          }
         });
         pi.registerTool({
           name: 'background_probe', label: 'background probe', description: 'Test nested background result retrieval',
@@ -65,7 +66,7 @@ if (sdk) {
             assert.doesNotMatch(collected.result.content.map(b => b.text).join('\n'), /Output:/);
             for (const [tool, args] of [
               ['bash', { command: `sleep 0.1; node -e 'process.stdout.write("B".repeat(60000))'` }],
-              ['large_text_probe_mt', {}],
+              ['mcp__meantime_fixture__slow_mt', { ms: 100, text: largeMcpText }],
             ]) {
               const handle = await ctx.executeTool(tool, { ...args, __background__: 'yes' });
               const id = handle.result.structuredContent.task.id;
@@ -73,17 +74,44 @@ if (sdk) {
               assert.equal(result.isError, false);
               const task = result.result.structuredContent.task;
               assert.ok(task.outputPath, JSON.stringify({ tool, task, result: result.result.structuredContent.result }).slice(0, 2000));
+              assert.equal(result.result.details.fullOutputPath, task.outputPath, `${tool}: wait preserves native fullOutputPath`);
+              assert.equal(result.result.details.task.id, task.id);
               assert.match(result.result.content[0].text, /\nOutput: /);
-              assert.equal(readFileSync(task.outputPath, 'utf8').length, 60000);
-              outputs.push({ id, path: task.outputPath });
+              const retained = result.result.structuredContent.result;
+              const text = result.result.content[1].text;
+              if (tool.startsWith('mcp__')) {
+                const native = nativeMcpResults.get('mcp__meantime_fixture__slow');
+                const { task: _task, ...details } = result.result.details;
+                assert.deepEqual(details, native.details);
+                assert.equal(task.outputPath, native.details.fullOutputPath);
+                assert.deepEqual(result.result.content.slice(1), native.content);
+                assert.deepEqual(retained, native.structuredContent);
+                assert.match(text, /^Warning: truncated output/);
+                assert.equal(text.replaceAll(task.outputPath, '<native-path>'),
+                  baseline.content[0].text.replaceAll(baseline.details.fullOutputPath, '<native-path>'));
+                assert.ok(text.includes('\x1b[31m\x00HEAD'), 'native MCP controls must survive');
+                assert.equal(retained.content[0].text, largeMcpText);
+              } else {
+                assert.equal(result.result.details.truncation.truncated, true, 'wait preserves native Bash truncation');
+              }
+              assert.equal(readFileSync(task.outputPath, 'utf8'), tool === 'bash' ? 'B'.repeat(60000) : largeMcpText);
+              outputs.push({ id, path: task.outputPath, text });
             }
-            assert.equal(outputs[0].path.includes('pi-bash-'), true);
-            assert.equal(outputs[1].path.endsWith('.txt'), true);
+            assert.equal(outputs[1].path.includes('pi-bash-'), true);
+            assert.equal(outputs[2].path.includes('pi-mcp-'), true);
+            const failed = await ctx.executeTool('mcp__meantime_fixture__fail_mt', { ms: 100, __background__: 'yes' });
+            const failure = await ctx.executeTool('meantime', { action: 'wait', id: failed.result.structuredContent.task.id });
+            const nativeFailure = nativeMcpResults.get('mcp__meantime_fixture__fail');
+            assert.equal(failure.isError, true);
+            assert.equal(failure.result.structuredContent.task.state, 'failed');
+            assert.deepEqual(failure.result.content.slice(1), nativeFailure.content);
+            assert.deepEqual(failure.result.structuredContent.result, nativeFailure.structuredContent);
+            assert.equal(failure.result.content[1].text, 'fixture failure');
             return collected.result;
           },
         });
         extension = install(pi, {
-          config: validateConfig({ storageRoot: join(root, 'tasks'), autoDetachMs: 0, include: ['mcp__*', 'large_text_probe'] }),
+          config: validateConfig({ autoDetachMs: 0 }),
           makeBash: cwd => sdk.createBashToolDefinition(cwd),
         });
       }],
@@ -113,7 +141,7 @@ if (sdk) {
     }
     // SDK may keep added MCP tools outside its initial active set. Explicit activation
     // here is part of the test setup, not the extension's production policy.
-    session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), target, 'mcp__meantime_fixture__slow', 'meantime', 'bash', 'background_probe', 'large_text_probe', 'large_text_probe_mt'])]);
+    session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), target, 'mcp__meantime_fixture__slow', 'mcp__meantime_fixture__fail', 'mcp__meantime_fixture__fail_mt', 'meantime', 'bash', 'background_probe'])]);
     const wrapped = session.agent.state.tools.find(t => t.name === target);
     assert.ok(wrapped, 'proxy must be activated in the test session');
     const result = await wrapped.execute('smoke', { ms: 1, text: 'REAL_PI_MCP_OK', __background__: 'no' }, new AbortController().signal);
@@ -124,18 +152,27 @@ if (sdk) {
     assert.deepEqual(shell.content, [{ type: 'text', text: 'REAL_PI_BASH_OK' }]);
     assert.equal(shell.structuredContent.exit_code, 0);
     assert.equal(shell.structuredContent.task, undefined);
-    assert.equal(existsSync(join(root, 'tasks')), false, 'foreground must not create task storage');
     assert.equal(manager.getEntries().filter(e => e.customType === 'meantime-index').length, 0);
     const probe = session.agent.state.tools.find(t => t.name === 'background_probe');
     const completed = await probe.execute('background-probe', {}, new AbortController().signal);
     const id = completed.structuredContent.task.id;
     const sessionFile = manager.getSessionFile();
+    const completions = manager.getEntries().filter(e => e.customType === 'meantime-index' && e.data.change.completion);
+    assert.equal(completions.length, 4);
+    for (const { id, path, text } of outputs.filter(o => o.id)) {
+      const indexed = completions.find(e => e.data.change.completion.id === id).data.change.completion;
+      assert.equal(indexed.text, text); assert.equal(indexed.outputPath, path);
+    }
+    const persisted = readFileSync(sessionFile, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const persistedCompletions = persisted.filter(e => e.customType === 'meantime-index' && e.data.change.completion);
+    assert.deepEqual(persistedCompletions.map(e => e.data.change.completion),
+      JSON.parse(JSON.stringify(completions.map(e => e.data.change.completion))));
     await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
     await extension.dispose();
     session.dispose();
     await loader.reload();
     const reopened = sdk.SessionManager.open(sessionFile);
-    assert.equal(reopened.getEntries().filter(e => e.customType === 'meantime-index').length, 6);
+    assert.equal(reopened.getEntries().filter(e => e.customType === 'meantime-index').length, 8);
     ({ session } = await sdk.createAgentSession({ cwd: root, resourceLoader: loader, settingsManager, sessionManager: reopened }));
     await session.bindExtensions({ mode: 'rpc' });
     session.setActiveToolsByName(['meantime']);
@@ -144,16 +181,14 @@ if (sdk) {
     assert.equal(restored.structuredContent.task.recovered, true);
     assert.equal(restored.structuredContent.result, 'REAL_BACKGROUND_OK');
     assert.match(restored.content.map(b => b.text).join('\n'), /contains text only/);
-    for (const { id, path } of outputs) {
+    for (const { id, path, text } of outputs.filter(o => o.id)) {
       const result = await session.agent.state.tools.find(t => t.name === 'meantime')
         .execute('restored-output', { action: 'wait', timeout: 0, id }, new AbortController().signal);
       assert.equal(result.structuredContent.task.outputPath, path);
       assert.match(result.content[0].text, /\nOutput: /);
-      assert.equal(result.structuredContent.task.resultTruncated, false);
+      assert.equal(result.content[1].text, text);
+      assert.equal(result.structuredContent.result, text);
     }
-    const ownerDir = readdirSync(join(root, 'tasks'));
-    assert.equal(ownerDir.length, 1);
-    assert.deepEqual(readdirSync(join(root, 'tasks', ownerDir[0])), [outputs[1].id + '.txt']);
   } finally {
     try {
       // AgentSession.dispose() invalidates context and listeners, but does not
@@ -166,12 +201,71 @@ if (sdk) {
       finally {
         session?.dispose();
         if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-        for (const output of outputs) if (output.path.includes('pi-bash-')) rmSync(output.path, { force: true });
+        for (const output of outputs) rmSync(output.path, { force: true });
         rmSync(root, { recursive: true, force: true });
       }
     }
   }
   console.log('REAL_PI_SMOKE_PASS: official SDK registration, nested MCP and native Bash; shutdown cleanup completed. No external model call; scripted provider completion-ordering regression passed. SDK RPC-mode detach and nested result retrieval passed; no actual TUI/CLI transport exercised.');
+}
+
+/** Alignment baseline: the same real MCP server/tool without meantime installed. */
+async function nativeMcpBaseline(sdk, root, text) {
+  let requests = 0, native;
+  const settingsManager = sdk.SettingsManager.inMemory({ defaultTools: ['mcp__meantime_fixture__slow'] });
+  const loader = new sdk.DefaultResourceLoader({ cwd: root, agentDir: join(root, 'baseline-agent'), settingsManager,
+    noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true,
+    extensionFactories: [sdk.createMcpExtension(), pi => {
+      pi.registerMcpServer('meantime_fixture', { command: process.execPath,
+        args: [fileURLToPath(new URL('../test/fixtures/mcp-server.mjs', import.meta.url))], exposure: 'direct', timeout: 10 });
+      pi.on('tool_execution_end', event => { if (event.toolName === 'mcp__meantime_fixture__slow') native = event.result; });
+      pi.registerProvider('native-fixture', { api: 'openai-completions', baseUrl: 'https://fixture.invalid', apiKey: 'unused',
+        models: [{ id: 'fixture', name: 'fixture', reasoning: false, input: ['text'],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 64000, maxTokens: 1024 }],
+        streamSimple(model) {
+          const stream = createAssistantMessageEventStream(), first = ++requests === 1;
+          const message = { role: 'assistant', api: model.api, provider: model.provider, model: model.id,
+            content: first ? [{ type: 'toolCall', id: 'baseline', name: 'mcp__meantime_fixture__slow', arguments: { ms: 1, text } }] : [{ type: 'text', text: 'done' }],
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: first ? 'toolUse' : 'stop', timestamp: Date.now() };
+          stream.push({ type: 'start', partial: message });
+          if (first) {
+            stream.push({ type: 'toolcall_start', contentIndex: 0, partial: message });
+            stream.push({ type: 'toolcall_end', contentIndex: 0, toolCall: message.content[0], partial: message });
+          }
+          stream.push({ type: 'done', reason: message.stopReason, message }); stream.end(); return stream;
+        } });
+    }] });
+  let session;
+  try {
+    await loader.reload();
+    const manager = sdk.SessionManager.create(root, join(root, 'baseline-sessions'));
+    const modelRuntime = await sdk.ModelRuntime.create({ authPath: join(root, 'auth.json'), modelsPath: join(root, 'models.json') });
+    ({ session } = await sdk.createAgentSession({ cwd: root, resourceLoader: loader, settingsManager, modelRuntime, sessionManager: manager }));
+    await session.bindExtensions({ mode: 'rpc' });
+    await session.setModel(modelRuntime.getModel('native-fixture', 'fixture'));
+    const name = 'mcp__meantime_fixture__slow', deadline = Date.now() + 8000;
+    while (!session.getAllTools().some(t => t.name === name)) {
+      if (Date.now() > deadline) throw new Error('Baseline MCP registration timed out');
+      await new Promise(r => setTimeout(r, 25));
+    }
+    session.setActiveToolsByName([name]);
+    await session.prompt('exercise native result persistence');
+    const result = native;
+    const entries = readFileSync(manager.getSessionFile(), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const persisted = entries.find(e => e.message?.role === 'toolResult' && e.message.toolName === name).message;
+    assert.deepEqual(persisted.content, result.content);
+    assert.equal(persisted.structuredContent, undefined, 'Pi toolResult history projects content/details, not structuredContent');
+    assert.equal(persisted.details.fullOutputPath, result.details.fullOutputPath);
+    assert.match(result.content[0].text, /^Warning: truncated output/);
+    assert.ok(result.details.fullOutputPath);
+    assert.equal(readFileSync(result.details.fullOutputPath, 'utf8'), text);
+    console.log(`NATIVE_MCP_BASELINE: ${JSON.stringify({ nativeTextBytes: Buffer.byteLength(result.content[0].text), rawBytes: Buffer.byteLength(text), fullOutputPath: result.details.fullOutputPath })}`);
+    return result;
+  } finally {
+    if (session) await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
+    session?.dispose();
+  }
 }
 
 /** Real AgentSession + scripted provider: no network/model credentials. The provider
@@ -233,7 +327,7 @@ async function completionRace(sdk, root, scenario) {
         },
       });
       extension = install(pi, {
-        config: validateConfig({ storageRoot: join(root, 'race-tasks-' + scenario), autoDetachMs: 10, notifyDebounceMs: 5 }),
+        config: validateConfig({ autoDetachMs: 10, notifyDebounceMs: 5 }),
         makeBash: cwd => sdk.createBashToolDefinition(cwd),
       });
       if (compact) pi.on('session_before_compact', async event => {
@@ -388,7 +482,7 @@ async function earlySteerRace(sdk, root, scenario) {
           }
           stream.push({ type: 'done', reason: message.stopReason, message }); stream.end(); return stream;
         } });
-      extension = install(pi, { config: validateConfig({ include: ['fixture'], storageRoot: join(root, 'early-tasks-' + scenario),
+      extension = install(pi, { config: validateConfig({ include: ['fixture'],
         autoDetachMs: 0, detachOnSteer: !disabled, notifyDebounceMs: 5000 }), makeBash: cwd => sdk.createBashToolDefinition(cwd) });
       pi.on('tool_execution_start', async event => {
         trace.push(`start ${event.toolCallId} parent=${event.parentToolCallId ?? '-'} tasks=${extension.inspect().tasks.length}`);

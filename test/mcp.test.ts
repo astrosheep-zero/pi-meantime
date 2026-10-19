@@ -15,7 +15,7 @@ async function harness() {
   const tools = await client.connect();
   for (const tool of tools) pi.registerTool(basicTool(`mcp__fixture__${tool.name}`,
     (_id, args, signal) => client.call(tool.name, args, signal), { parameters: tool.inputSchema }));
-  const extension = install(pi, { config: validateConfig({ storageRoot: root, autoDetachMs: 0, notifyDebounceMs: 2, shutdownGraceMs: 30 }), makeBash: fixtureBash });
+  const extension = install(pi, { config: validateConfig({ autoDetachMs: 0, notifyDebounceMs: 2, shutdownGraceMs: 30 }), makeBash: fixtureBash });
   await pi.emit('session_start', { type: 'session_start' });
   return { root, client, pi, async close() { await extension.dispose(); await client.close(); rmSync(root, { recursive: true, force: true }); } };
 }

@@ -91,7 +91,7 @@ try {
           return makeResult(args.rawError, args.tag);
         },
       });
-      extension = install(pi, { config: validateConfig({ storageRoot: join(root, 'tasks'), autoDetachMs: 15,
+      extension = install(pi, { config: validateConfig({ autoDetachMs: 15,
         include: ['sdk_fixture_*', 'mcp__sdk_permissions__*'], blockOriginalCalls: false, shutdownGraceMs: 100, maxRunning: 1 }),
         makeBash: cwd => sdk.createBashToolDefinition(cwd) });
       pi.on('tool_result', event => {

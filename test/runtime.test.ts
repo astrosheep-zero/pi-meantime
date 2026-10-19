@@ -1,6 +1,5 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
 import { TaskRuntime } from '../src/runtime.ts';
 import { deferred, ok, runtimeHarness, sleep, until } from './helpers.ts';
 import type { Outcome } from '../src/protocol.ts';
@@ -12,7 +11,7 @@ test('fast foreground result completes without a completion notification', async
     const view = await h.runtime.run({ tool: 'one', kind: 'tool', callId: 'c1', mode: 'auto', canDetach: true, execute: async () => ok() });
     assert.equal(view.kind, 'result'); assert.equal(view.task.state, 'completed');
     h.runtime.published('c1'); await sleep(15); assert.equal(h.notifications.length, 0);
-    assert.equal(view.task.outputPath, undefined); assert.equal(existsSync(h.store.directory), false);
+    assert.equal(view.task.outputPath, undefined);
     assert.equal(h.records.size, 0); assert.equal(h.runtime.list().length, 0);
   } finally { await h.close(); }
 });
@@ -95,7 +94,7 @@ test('reading result acknowledges completion and prevents duplicate notification
 });
 test('notification enqueue failure is retried; it is not falsely marked delivered', async () => {
   const h = runtimeHarness(); await h.runtime.close(); let sends = 0;
-  const runtime = new TaskRuntime(h.store, h.config, { ...h.sink, notify() { if (++sends < 2) throw new Error('busy'); } });
+  const runtime = new TaskRuntime(h.config, { ...h.sink, notify() { if (++sends < 2) throw new Error('busy'); } });
   const work = deferred<Outcome>();
   try {
     const view = await runtime.run({ tool: 'one', kind: 'tool', callId: 'c1', mode: 'yes', canDetach: true, execute: () => work.promise });
@@ -128,7 +127,7 @@ test('recovery never replays unfinished work or generates stale notifications', 
   const h = runtimeHarness(); const work = deferred<Outcome>();
   const view = await h.runtime.run({ tool: 'remote', kind: 'tool', callId: 'c1', mode: 'yes', canDetach: true, execute: () => work.promise });
   await h.runtime.close();
-  const other = new TaskRuntime(h.store, h.config, { ...h.sink, notify() { throw new Error('must not notify'); } }, [...h.records.values()]);
+  const other = new TaskRuntime(h.config, { ...h.sink, notify() { throw new Error('must not notify'); } }, [...h.records.values()]);
   try {
     const restored = other.get(view.task.id); assert.equal(restored.state, 'outcome_unknown'); assert.equal(restored.recovered, true);
     assert.throws(() => other.cancel(restored.id), /no live local controller/);
@@ -183,14 +182,14 @@ test('late tool usage stays in the task ledger without inventing foreground usag
 test('quota is retained across runtime shutdown until non-cooperative producers actually settle', async () => {
   const h = runtimeHarness({ maxRunning: 1 }); const work = deferred<Outcome>();
   await h.runtime.run({ tool: 'one', kind: 'tool', callId: 'c1', mode: 'yes', canDetach: true, execute: () => work.promise });
-  await h.runtime.close(); const next = new TaskRuntime(h.store, h.config, h.sink, [...h.records.values()]);
+  await h.runtime.close(); const next = new TaskRuntime(h.config, h.sink, [...h.records.values()]);
   try {
     assert.throws(() => next.run({ tool: 'next', kind: 'tool', callId: 'c2', mode: 'yes', canDetach: true, execute: async () => ok() }), /capacity/);
     work.resolve(ok()); await until(() => TaskRuntime.liveProducerCount() === 0);
     assert.equal((await next.run({ tool: 'next', kind: 'tool', callId: 'c3', mode: 'auto', canDetach: true, execute: async () => ok() })).kind, 'result');
   } finally { work.resolve(ok()); await next.close(); await h.close(); }
 });
-test('terminal retention is bounded and oversized text keeps only its preview in memory', async () => {
+test('terminal retention bounds task count without a second text limit', async () => {
   const h = runtimeHarness({ maxRetained: 2 });
   try {
     for (let i = 0; i < 5; i++) {
@@ -201,7 +200,7 @@ test('terminal retention is bounded and oversized text keeps only its preview in
       h.runtime.result(view.task.id);
     }
     assert.equal(h.runtime.list().length, 2);
-    for (const task of h.runtime.tasks.values()) assert.ok(task.result!.content[0]!.type === 'text' && task.result!.content[0]!.text.length <= 2000);
+    for (const task of h.runtime.tasks.values()) assert.deepEqual(task.result!.content, ok('x'.repeat(100_000)).result.content);
   } finally { await h.close(); }
 });
 

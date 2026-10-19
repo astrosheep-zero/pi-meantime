@@ -43,5 +43,5 @@ test('patterns are globs, never arbitrary regex', () => {
   assert.equal(matches('mcp.*', ['mcp.*']), true);
 });
 test('configuration rejects unsafe or unknown options', () => {
-  for (const value of [{ maxRunning: 0 }, { maxRunning: NaN }, { autoDetachMs: -1 }, { typo: true }, { include: [3] }, { storageRoot: '../data' }]) assert.throws(() => validateConfig(value));
+  for (const value of [{ maxRunning: 0 }, { maxRunning: NaN }, { autoDetachMs: -1 }, { typo: true }, { include: [3] }]) assert.throws(() => validateConfig(value));
 });

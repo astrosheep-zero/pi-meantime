@@ -18,7 +18,7 @@ import { deferred, ok, sleep, until } from './helpers.ts';
 export async function setup(tools: Tool[] = [], config: Partial<Config> = {}, mode: 'tui' | 'print' = 'tui') {
   const root = mkdtempSync(join(tmpdir(), 'pi-bg-adapter-')); const pi = new FakePi('A', mode);
   for (const tool of tools) pi.registerTool(tool);
-  const instance = install(pi, { config: validateConfig({ storageRoot: root, autoDetachMs: 0, notifyDebounceMs: 5, shutdownGraceMs: 15, ...config }), makeBash: fixtureBash });
+  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, notifyDebounceMs: 5, shutdownGraceMs: 15, ...config }), makeBash: fixtureBash });
   await pi.emit('session_start', { type: 'session_start' }); await sleep(1); pi.refresh();
   return { pi, instance, root, async close() { await instance.dispose(); rmSync(root, { recursive: true, force: true }); } };
 }
@@ -306,7 +306,7 @@ test('print mode auto waits and explicit background returns a truthful error', a
 
 test('initial loading does not touch runtime-only settings through the Bash factory', async () => {
   const root = mkdtempSync(join(tmpdir(), 'pi-bg-load-')); const pi = new FakePi(); let bound = false; let calls = 0;
-  const instance = install(pi, { config: validateConfig({ storageRoot: root }), baseBash: fixtureBash(root),
+  const instance = install(pi, { config: validateConfig({}), baseBash: fixtureBash(root),
     makeBash(cwd) { assert.ok(bound, 'factory invoked before Pi runtime binding'); calls++; return fixtureBash(cwd); },
   });
   try {
@@ -537,7 +537,6 @@ test('multi-task wait shares its text budget for Bash and MCP, reports omission,
           const text = view.result.content.filter(b => b.type === 'text').map(b => b.text);
           assert.equal(text.filter(t => /^(A+|B+|M+)$/.test(t)).join('').length, 24000);
           assert.doesNotMatch(text.join('\n'), /Inline text omitted/);
-          assert.equal(snapshot(view).resultTruncated, false);
         }
       }
     } finally { work.resolve(ok().result); await h.close(); }

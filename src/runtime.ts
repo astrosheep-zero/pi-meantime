@@ -1,7 +1,7 @@
 import type { Config } from './config.ts';
 import type { Mode, Outcome, Result, Update } from './protocol.ts';
 import { isRecord } from './schema.ts';
-import { TASK_ID, TaskStore, cleanText, newTaskId, truncateUtf8 } from './store.ts';
+import { TASK_ID, newTaskId, truncateUtf8 } from './store.ts';
 
 export type TaskState = 'running' | 'cancel_requested' | 'completed' | 'failed' | 'cancelled' | 'outcome_unknown';
 export type DetachReason = 'explicit' | 'shortcut' | 'steer' | 'timeout';
@@ -10,15 +10,15 @@ export interface Snapshot {
   mode: Mode; delivery: 'foreground' | 'background'; createdAt: number;
   endedAt?: number; detachReason?: DetachReason; cancelRequestedAt?: number;
   localRunning: boolean; progress?: string; outputPath?: string; exitCode?: number;
-  resultTruncated?: boolean; storageError?: string;
-  /** Final native Outcome error flag (or a local persistence error), independent of stale result.isError. */
+  indexError?: string;
+  /** Final native Outcome error flag, independent of stale result.isError. */
   isError?: boolean;
   recovered?: boolean; notification: 'none' | 'pending' | 'queued' | 'observed' | 'failed' | 'suppressed';
 }
 export type TaskIndex = Pick<Snapshot, 'id' | 'tool' | 'kind' | 'command' | 'mode' | 'createdAt' | 'detachReason'>;
 export interface Completion {
   id: string; endedAt: number; isError: boolean; cancelRequestedAt?: number;
-  exitCode?: number; text: string; truncated: boolean; outputPath?: string;
+  exitCode?: number; text: string; outputPath?: string;
 }
 export type TaskRecord = TaskIndex & { completion?: Completion };
 export type IndexChange = { task: TaskIndex } | { completion: Completion } | { removed: string[] };
@@ -58,7 +58,6 @@ function failure(error: unknown): Result {
 function snap(task: Task): Snapshot { return { ...task.meta }; }
 
 export class TaskRuntime {
-  readonly store: TaskStore;
   readonly config: Config;
   readonly tasks = new Map<string, Task>();
   private open = true;
@@ -68,15 +67,15 @@ export class TaskRuntime {
   private notifyTimer?: ReturnType<typeof setTimeout>;
   private sink: RuntimeSink;
 
-  constructor(store: TaskStore, config: Config, sink: RuntimeSink, records: TaskRecord[] = []) {
-    this.store = store; this.config = config; this.sink = sink;
+  constructor(config: Config, sink: RuntimeSink, records: TaskRecord[] = []) {
+    this.config = config; this.sink = sink;
     for (const { completion, ...record } of records) {
       if (!TASK_ID.test(record.id)) continue;
       const meta: Snapshot = { ...record, delivery: 'background', state: 'outcome_unknown',
         recovered: true, localRunning: false, notification: 'suppressed' };
       if (completion) Object.assign(meta, { endedAt: completion.endedAt, isError: completion.isError,
         cancelRequestedAt: completion.cancelRequestedAt, exitCode: completion.exitCode,
-        outputPath: completion.outputPath, resultTruncated: completion.truncated,
+        outputPath: completion.outputPath,
         state: completion.isError ? 'failed' : 'completed' });
       this.tasks.set(meta.id, { meta, outputTail: completion?.text.slice(-1026), result: completion ? { content: [{ type: 'text', text: completion.text }], details: undefined } : undefined,
         callId: '', published: true, observed: false, viewSettled: true, canDetach: false, notifyAttempts: 0 });
@@ -89,7 +88,7 @@ export class TaskRuntime {
     if (request.mode === 'yes' && !request.canDetach) throw new Error('Background execution is unavailable in print/json mode or for this tool');
     if (leases().size >= this.config.maxRunning) throw new Error(`Background capacity ${this.config.maxRunning} reached; inspect or cancel a task, do not retry in a loop`);
     let id = newTaskId();
-    while (this.tasks.has(id) || leases().has(id) || this.store.find(id)) id = newTaskId();
+    while (this.tasks.has(id) || leases().has(id)) id = newTaskId();
     const meta: Snapshot = { id, tool: request.tool, kind: request.kind, mode: request.mode,
       ...(request.command !== undefined ? { command: request.command } : {}),
       state: 'running', delivery: 'foreground', createdAt: Date.now(), localRunning: true, notification: 'none' };
@@ -104,7 +103,7 @@ export class TaskRuntime {
     task.cleanupParent = () => request.parentSignal?.removeEventListener('abort', onParentAbort);
     const update: Update = partial => {
       if (!task.meta.localRunning) return;
-      task.meta.progress = truncateUtf8(cleanText(partial.content.filter(b => b.type === 'text').map(b => b.text).join('\n')), 2048);
+      task.meta.progress = truncateUtf8(partial.content.filter(b => b.type === 'text').map(b => b.text).join('\n'), 2048);
       if (this.open && !task.viewSettled && task.meta.delivery === 'foreground') {
         try { request.onUpdate?.(partial); } catch { /* A dead renderer cannot kill the producer. */ }
       }
@@ -157,7 +156,7 @@ export class TaskRuntime {
       const { id, tool, kind, command, mode, createdAt, detachReason } = task.meta;
       try { this.sink.index({ task: { id, tool, kind, command, mode, createdAt, detachReason } }); }
       catch (error) {
-        task.meta.storageError = `Task index could not be saved: ${String(error)}`;
+        task.meta.indexError = `Task index could not be saved: ${String(error)}`;
         if (!force) { task.canDetach = false; return false; }
       }
       task.meta.delivery = 'background';
@@ -208,24 +207,20 @@ export class TaskRuntime {
       this.tasks.delete(task.meta.id);
       return;
     }
+    task.result = result;
+    const text = result.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+    task.outputTail = text.slice(-1026); // Enough UTF-16 units for the notification's UTF-8 tail budget.
+    const data = isRecord(result.structuredContent) ? result.structuredContent : {};
+    const details = isRecord(result.details) ? result.details : {};
+    const path = data.full_output_path ?? details.fullOutputPath;
+    const outputPath = typeof path === 'string' ? path : undefined;
+    const exitCode = typeof data.exit_code === 'number' ? data.exit_code : undefined;
+    Object.assign(task.meta, { outputPath, exitCode });
     try {
-      const text = result.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
-      task.outputTail = text.slice(-1026); // Enough UTF-16 units for the notification's UTF-8 tail budget.
-      const data = isRecord(result.structuredContent) ? result.structuredContent : {};
-      const details = isRecord(result.details) ? result.details : {};
-      const saved = task.meta.kind === 'bash'
-        ? { text, truncated: false, outputPath: data.full_output_path ?? details.fullOutputPath }
-        : this.store.save(task.meta.id, text);
-      const outputPath = typeof saved.outputPath === 'string' ? saved.outputPath : undefined;
-      const exitCode = typeof data.exit_code === 'number' ? data.exit_code : undefined;
-      Object.assign(task.meta, { outputPath, exitCode, resultTruncated: saved.truncated });
-      task.result = { ...result, content: [{ type: 'text', text: saved.text }, ...result.content.filter(b => b.type === 'image')] };
       if (this.open) this.sink.index({ completion: { id: task.meta.id, endedAt: task.meta.endedAt,
-        isError, cancelRequestedAt: task.meta.cancelRequestedAt, exitCode,
-        text: saved.text, truncated: saved.truncated, outputPath } });
+        isError, cancelRequestedAt: task.meta.cancelRequestedAt, exitCode, text, outputPath } });
     } catch (error) {
-      task.result = failure(`Result could not be persisted: ${String(error)}. The operation may already have executed; inspect externally before retrying.`);
-      task.meta.storageError = String(error); task.meta.state = 'outcome_unknown'; task.meta.isError = true;
+      task.meta.indexError = `Completion index could not be saved: ${String(error)}`;
     }
     task.meta.notification = this.open ? 'pending' : 'suppressed';
     this.scheduleNotifications(); this.prune(); this.changed();
@@ -244,7 +239,6 @@ export class TaskRuntime {
       task = hits[0];
     }
     if (!task) throw new Error('No task with that id in this session');
-    this.refresh(task);
     return task;
   }
   /** Block until the task settles, the timeout passes or the caller aborts, then return result(). */
@@ -296,16 +290,8 @@ export class TaskRuntime {
       }
     }
   }
-  // A late producer can leave text, but without a bound index its outcome is unknown.
-  private refresh(task: Task): void {
-    if (task.meta.recovered && task.meta.endedAt === undefined && task.meta.kind === 'tool') {
-      try { task.meta.outputPath = this.store.find(task.meta.id); }
-      catch (error) { task.meta.storageError = String(error); }
-    }
-  }
   get(id: string): Snapshot { return snap(this.lookup(id)); }
   list(): Snapshot[] {
-    for (const task of this.tasks.values()) this.refresh(task);
     this.prune();
     return [...this.tasks.values()].map(snap).sort((a, b) => b.createdAt - a.createdAt);
   }
@@ -398,9 +384,8 @@ export class TaskRuntime {
     for (const task of ended.slice(this.config.maxRetained)) {
       if (!task.published || task.meta.notification === 'pending' || leases().has(task.meta.id)) continue;
       try {
-        if (task.meta.kind === 'tool') this.store.remove(task.meta.id);
         this.sink.index({ removed: [task.meta.id] }); this.tasks.delete(task.meta.id);
-      } catch (error) { task.meta.storageError = String(error); }
+      } catch (error) { task.meta.indexError = String(error); }
     }
   }
   static liveProducerCount(): number { return leases().size; }

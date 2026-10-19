@@ -4,7 +4,6 @@
   "autoDetachMs": 1000,
   "maxRunning": 4,
   "maxRetained": 128,
-  "maxResultBytes": 4194304,
   "reconcileMs": 500,
   "shutdownGraceMs": 1000,
   "notifyDebounceMs": 50,

@@ -1,6 +1,5 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { TaskRuntime } from '../src/runtime.ts';
 import type { Snapshot } from '../src/runtime.ts';
 import { install } from '../src/extension.ts';
@@ -12,10 +11,10 @@ const run = (runtime: TaskRuntime, callId: string, work: Promise<Outcome>) => ru
   tool: 'noncooperative', kind: 'tool', callId, mode: 'yes', canDetach: true, execute: () => work,
 });
 
-test('late oversized text is discoverable but cannot establish an outcome without a bound completion index', async () => {
+test('late text cannot establish an outcome without a bound completion index', async () => {
   const h = runtimeHarness({ maxRunning: 1 }); const work = deferred<Outcome>();
   const view = await run(h.runtime, 'late', work.promise); h.runtime.published('late'); await h.runtime.close();
-  const restored = new TaskRuntime(h.store, h.config, { ...h.sink, notify() { assert.fail('stale notification'); } }, [...h.records.values()]);
+  const restored = new TaskRuntime(h.config, { ...h.sink, notify() { assert.fail('stale notification'); } }, [...h.records.values()]);
   try {
     assert.equal(restored.get(view.task.id).state, 'outcome_unknown');
     assert.equal(restored.result(view.task.id).result, undefined);
@@ -24,14 +23,9 @@ test('late oversized text is discoverable but cannot establish an outcome withou
     work.resolve(ok('LATE_RESULT'.repeat(6000))); await until(() => TaskRuntime.liveProducerCount() === 0);
     const result = restored.result(view.task.id.slice(3));
     assert.equal(result.task.state, 'outcome_unknown'); assert.equal(result.task.recovered, true);
-    assert.equal(result.result, undefined);
-    const before = readFileSync(result.task.outputPath!, 'utf8');
-    assert.match(before, /LATE_RESULT/);
+    assert.equal(result.result, undefined); assert.equal(result.task.outputPath, undefined);
     assert.equal(h.records.get(view.task.id)!.completion, undefined);
-    restored.flushNotifications(); await restored.close();
-    assert.equal(readFileSync(result.task.outputPath!, 'utf8'), before);
-    assert.equal(h.notifications.length, 0);
-    assert.equal(readdirSync(h.store.directory).length, 1);
+    restored.flushNotifications(); assert.equal(h.notifications.length, 0);
   } finally { work.resolve(ok()); await restored.close(); await h.close(); }
 });
 
@@ -46,23 +40,40 @@ test('cancellation grace and shutdown both index an unfinished foreground handle
     await sleep(1); // The producer has started before shutdown requests cancellation.
     await h.runtime.close(); const shutdownHandle = await shutdownWait;
     assert.equal(shutdownHandle.kind, 'handle'); assert.equal(h.records.size, 2);
-    assert.equal(existsSync(h.store.directory), false);
     cancelled.resolve(ok()); closing.resolve(ok()); await until(() => TaskRuntime.liveProducerCount() === 0);
-    assert.equal(existsSync(h.store.directory), false);
     assert.equal(h.records.size, 2);
   } finally { cancelled.resolve(ok()); closing.resolve(ok()); await until(() => TaskRuntime.liveProducerCount() === 0); await h.close(); }
 });
 
 test('failed index append keeps normal detach in the foreground without an uncaught timer error', async () => {
   const h = runtimeHarness(); const work = deferred<Outcome>();
-  const runtime = new TaskRuntime(h.store, h.config, { notify() {}, index() { throw new Error('disk full'); } });
+  const runtime = new TaskRuntime(h.config, { notify() {}, index() { throw new Error('disk full'); } });
   try {
     const wait = runtime.run({ tool: 'one', kind: 'tool', callId: 'one', mode: 'no', canDetach: true, execute: () => work.promise });
     assert.equal(runtime.detachAll('shortcut'), 0);
     await sleep(5); assert.equal(runtime.list()[0]!.delivery, 'foreground');
-    assert.match(runtime.list()[0]!.storageError!, /disk full/);
+    assert.match(runtime.list()[0]!.indexError!, /disk full/);
     work.resolve(ok()); assert.equal((await wait).kind, 'result');
-    assert.equal(existsSync(h.store.directory), false);
+  } finally { work.resolve(ok()); await runtime.close(); await h.close(); }
+});
+
+test('completion index failure does not replace the native result; recovery remains unknown', async () => {
+  const h = runtimeHarness(); const work = deferred<Outcome>();
+  const runtime = new TaskRuntime(h.config, { ...h.sink, index(change) {
+    if ('completion' in change) throw new Error('disk full');
+    h.sink.index(change);
+  } });
+  try {
+    const view = await run(runtime, 'one', work.promise);
+    const native = ok('native result'); work.resolve(native);
+    const collected = await runtime.wait(view.task.id, 1000);
+    assert.strictEqual(collected.result, native.result);
+    assert.equal(collected.task.state, 'completed'); assert.equal(collected.task.isError, false);
+    assert.match(collected.task.indexError!, /Completion index.*disk full/);
+    await runtime.close();
+    const restored = new TaskRuntime(h.config, h.sink, [...h.records.values()]);
+    try { assert.equal(restored.result(view.task.id).task.state, 'outcome_unknown'); }
+    finally { await restored.close(); }
   } finally { work.resolve(ok()); await runtime.close(); await h.close(); }
 });
 
@@ -78,40 +89,14 @@ test('retention protects pending notifications and removes both the result and i
     assert.equal(h.runtime.list().length, 2); assert.equal(h.records.size, 2);
     h.runtime.prompt(false); await new Promise<void>(resolve => setImmediate(resolve)); h.runtime.flushNotifications();
     assert.equal(h.notifications.flat().length, 2); assert.equal(h.records.size, 1);
-    assert.equal(readdirSync(h.store.directory).length, 1);
     await h.runtime.close();
-    const restored = new TaskRuntime(h.store, h.config, h.sink, [...h.records.values()]);
+    const restored = new TaskRuntime(h.config, h.sink, [...h.records.values()]);
     try {
       assert.equal(restored.list().length, 1);
       assert.throws(() => restored.get(handles[0]!.task.id), /No task/);
       assert.ok(restored.result(handles[1]!.task.id).result);
     } finally { await restored.close(); }
   } finally { jobs.forEach(w => w.resolve(ok())); await h.close(); }
-});
-
-test('retention deletion failure remains discoverable after restore and can be retried', async () => {
-  const h = runtimeHarness({ maxRetained: 1 });
-  const remove = h.store.remove.bind(h.store);
-  h.store.remove = () => { throw new Error('EACCES'); };
-  let restored: TaskRuntime | undefined;
-  try {
-    for (let i = 0; i < 2; i++) {
-      const work = deferred<Outcome>();
-      const handle = await run(h.runtime, `delete${i}`, work.promise);
-      h.runtime.published(`delete${i}`);
-      work.resolve(ok('x'.repeat(60_000))); await until(() => TaskRuntime.liveProducerCount() === 0);
-      h.runtime.result(handle.task.id);
-    }
-    assert.equal(h.records.size, 2);
-    assert.ok(h.runtime.list().some(task => task.storageError?.includes('EACCES')));
-    await h.runtime.close();
-    restored = new TaskRuntime(h.store, h.config, h.sink, [...h.records.values()]);
-    assert.equal(restored.list().length, 2);
-    h.store.remove = remove;
-    assert.equal(restored.list().length, 1);
-    assert.equal(h.records.size, 1);
-    assert.equal(readdirSync(h.store.directory).length, 1);
-  } finally { h.store.remove = remove; await restored?.close(); await h.close(); }
 });
 
 test('Pi session index survives tree navigation and resume, but a fork cannot adopt its tasks', async () => {

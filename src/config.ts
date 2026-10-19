@@ -9,11 +9,9 @@ export interface Config {
   autoDetachMs: number;
   maxRunning: number;
   maxRetained: number;
-  maxResultBytes: number;
   reconcileMs: number;
   shutdownGraceMs: number;
   notifyDebounceMs: number;
-  storageRoot: string;
   blockOriginalCalls: boolean;
   detachOnSteer: boolean;
 }
@@ -23,11 +21,9 @@ export const DEFAULT_CONFIG: Config = {
   autoDetachMs: 120_000,
   maxRunning: 4,
   maxRetained: 128,
-  maxResultBytes: 4 * 1024 * 1024,
   reconcileMs: 500,
   shutdownGraceMs: 1000,
   notifyDebounceMs: 50,
-  storageRoot: join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), '.pi', 'agent'), 'meantime-tasks'),
   blockOriginalCalls: true,
   detachOnSteer: true,
 };
@@ -40,7 +36,7 @@ export function validateConfig(raw: unknown): Config {
   }
   const bounds: [keyof Config, number, number][] = [
     ['autoDetachMs', 0, 2_147_483_647], ['maxRunning', 1, 32], ['maxRetained', 1, 512],
-    ['maxResultBytes', 4096, 16 * 1024 * 1024], ['reconcileMs', 100, 60_000],
+    ['reconcileMs', 100, 60_000],
     ['shutdownGraceMs', 0, 10_000], ['notifyDebounceMs', 0, 5000],
   ];
   for (const [key, min, max] of bounds) {
@@ -50,7 +46,6 @@ export function validateConfig(raw: unknown): Config {
   for (const key of ['blockOriginalCalls', 'detachOnSteer'] as const) {
     if (typeof config[key] !== 'boolean') throw new Error(`${key} must be boolean`);
   }
-  if (typeof config.storageRoot !== 'string' || !isAbsolute(config.storageRoot)) throw new Error('storageRoot must be absolute');
   return config;
 }
 /** Only explicit/global configuration, never automatically consume untrusted project config. */

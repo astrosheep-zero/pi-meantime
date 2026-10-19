@@ -18,7 +18,7 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
   const pi = new FakePi();
   const work = deferred<Outcome>();
   let aborts = 0, update: ((text: string) => void) | undefined;
-  const instance = install(pi, { config: validateConfig({ storageRoot: root, autoDetachMs: 0, shutdownGraceMs: 1 }),
+  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, shutdownGraceMs: 1 }),
     makeBash: () => ({ ...fixtureBash(root), async execute(_id, _args, signal, onUpdate) {
       signal?.addEventListener('abort', () => { aborts++; });
       update = text => onUpdate?.(ok(text).result);
@@ -111,7 +111,7 @@ for (const mode of ['print', 'json'] as const) test(`${mode} bare command lists 
   const root = mkdtempSync(join(tmpdir(), 'meantime-text-'));
   const pi = new FakePi('A', mode);
   const work = deferred<Outcome>();
-  const instance = install(pi, { config: validateConfig({ storageRoot: root }),
+  const instance = install(pi, { config: validateConfig({}),
     makeBash: () => ({ ...fixtureBash(root), async execute() { return (await work.promise).result; } }),
   });
   try {
