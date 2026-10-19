@@ -3,225 +3,249 @@ import type { ToolRenderers } from '@earendil-works/pi-coding-agent';
 import { Text } from '@earendil-works/pi-tui';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { install } from '../src/extension.ts';
 import { validateConfig } from '../src/config.ts';
-import { TaskRuntime } from '../src/runtime.ts';
 import type { Config } from '../src/config.ts';
 import type { Content, Outcome, Result, Tool } from '../src/protocol.ts';
 import type { Snapshot } from '../src/runtime.ts';
-import { FakePi, basicTool, fixtureBash } from './host.ts';
+import { TaskRuntime } from '../src/runtime.ts';
+import { FakePi, basicTool } from './host.ts';
 import { deferred, ok, sleep, until } from './helpers.ts';
 
-export async function setup(tools: Tool[] = [], config: Partial<Config> = {}, mode: 'tui' | 'print' = 'tui') {
-  const root = mkdtempSync(join(tmpdir(), 'pi-bg-adapter-')); const pi = new FakePi('A', mode);
+async function setup(tools: Tool[] = [], config: Partial<Config> = {}, mode: 'tui' | 'print' = 'tui') {
+  const pi = new FakePi('A', mode);
   for (const tool of tools) pi.registerTool(tool);
-  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, notifyDebounceMs: 5, shutdownGraceMs: 15, ...config }), makeBash: fixtureBash });
-  await pi.emit('session_start', { type: 'session_start' }); await sleep(1); pi.refresh();
-  return { pi, instance, root, async close() { await instance.dispose(); rmSync(root, { recursive: true, force: true }); } };
+  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, notifyDebounceMs: 5, shutdownGraceMs: 15, ...config }), connect: () => pi });
+  await pi.emit('session_start', { type: 'session_start' });
+  return { pi, instance, async close() { await instance.dispose(); } };
 }
 function snapshot(outcome: Outcome): Snapshot {
-  const value = outcome.result.structuredContent as { task: unknown }; return value.task as Snapshot;
+  return (outcome.result.structuredContent as { task: unknown }).task as Snapshot;
 }
 
-test('model-facing execution control reflects the configured auto-detach timer', async () => {
-  for (const autoDetachMs of [120_000, 1750, 0]) {
-    const h = await setup([basicTool('mcp__model_text')], { autoDetachMs });
-    try {
-      const event = { type: 'before_agent_start' as const, systemPromptOptions: { sections: {} as Record<string, string> } };
-      await h.pi.emit('before_agent_start', event);
-      const text = event.systemPromptOptions.sections.meantime!;
-      if (autoDetachMs) assert.ok(text.includes(`detaches after ${autoDetachMs / 1000}s if still running`));
-      else { assert.match(text, /never detaches on a timer/); assert.doesNotMatch(text, /\b0s\b/); }
-      assert.match(text, /"no" disables automatic backgrounding\./);
-      assert.doesNotMatch(text, /"no" (?:stays|always)|always foreground/);
-      assert.match(text, /Managed bash accepts the same control; timeout remains a hard command timeout/);
-      for (const name of ['bash', 'mcp__model_text_mt']) {
-        const tool = h.pi.definitions.get(name)!;
-        assert.ok(tool.description.length < 200, 'only a short control pointer is added per tool');
-        assert.match(tool.description, /__background__/);
-        assert.doesNotMatch(tool.description, /detaches after|never detaches on a timer|Detaching does not cancel/);
-        const parameters = tool.parameters as { properties: Record<string, unknown>; required?: string[] };
-        assert.deepEqual(parameters.properties.__background__, { type: 'string', enum: ['auto', 'yes', 'no'] });
-        assert.ok(!parameters.required?.includes('__background__'));
-      }
-      assert.match(h.pi.definitions.get('mcp__model_text_mt')!.description, /Proxy for mcp__model_text;/);
-    } finally { await h.close(); }
-  }
-});
-
-test('model sees schema-preserving proxies; originals stay internally callable and disappear from direct declarations', async () => {
-  const original = basicTool('mcp__test__search', undefined, { parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false } });
-  const h = await setup([original]);
+test('one original name, schema-preserving control and a single shared execution policy', async () => {
+  const original = basicTool('mcp__fixture', undefined, { parameters: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'], additionalProperties: false } });
+  const nativeParameters = original.parameters, nativeExecute = original.execute;
+  const h = await setup([original], { autoDetachMs: 1750 });
   try {
-    assert.ok(h.pi.modelTools().includes('mcp__test__search_mt')); assert.ok(!h.pi.modelTools().includes(original.name));
-    assert.ok(h.pi.callable().some(t => t.name === original.name));
-    assert.ok(h.pi.definitions.get(original.name + '_mt')!.parameters);
-    assert.equal(h.pi.registrations, 4); // original, bash, meantime, proxy
-    for (let i = 0; i < 10; i++) { h.pi.refresh(); await sleep(0); }
-    assert.equal(h.pi.registrations, 4); // no registration feedback loop
+    assert.deepEqual(h.pi.modelTools().sort(), ['bash', 'mcp__fixture', 'meantime']);
+    assert.equal(h.pi.definitions.get(original.name), original);
+    assert.equal(original.description, 'Fixture mcp__fixture');
+    assert.deepEqual(original.parameters.required, ['q']);
+    assert.equal(original.parameters.additionalProperties, false);
+    assert.deepEqual((original.parameters.properties as Record<string, unknown>).__background__, { type: 'string', enum: ['auto', 'yes', 'no'] });
+    const registrations = h.pi.registrations;
+    for (let i = 0; i < 10; i++) h.pi.refresh();
+    assert.equal(h.pi.registrations, registrations, 'no registration or reconciliation feedback loop');
+    const event = { type: 'before_agent_start' as const, systemPromptOptions: { sections: {} as Record<string, string> } };
+    await h.pi.emit('before_agent_start', event);
+    assert.match(event.systemPromptOptions.sections.meantime!, /original names/);
+    assert.match(event.systemPromptOptions.sections.meantime!, /detaches after 1.75s/);
+    assert.match(event.systemPromptOptions.sections.meantime!, /"no" disables automatic backgrounding\./);
+    assert.doesNotMatch(JSON.stringify(h.pi.getAllTools()) + JSON.stringify(event), /_mt/);
   } finally { await h.close(); }
+  assert.equal(original.parameters, nativeParameters); assert.equal(original.execute, nativeExecute);
+  assert.equal(Object.hasOwn(original, 'prepareArguments'), false);
 });
 
-test('codemode/deferred proxies inherit exposure and dispatch through the real original', async () => {
-  const seen: string[] = [];
-  const tool = (name: string, exposure: 'codemode' | 'deferred') => basicTool(name, async (_id, args) => {
-    seen.push(`${name}:${String(args.query)}`);
-    return ok(`RESULT:${String(args.query)}`).result;
-  }, { exposure, parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false } });
-  const h = await setup([
-    tool('mcp__private__search', 'codemode'),
-    tool('mcp__private__deferred', 'deferred'),
-    basicTool('mcp__private__direct'),
-  ]);
+test('codemode/deferred original definitions retain exposure, source, metadata and native preparation', async () => {
+  let prepares = 0, checks = 0, effects = 0;
+  const seen: unknown[] = [];
+  const tools = (['codemode', 'deferred'] as const).map(exposure => basicTool(`mcp__${exposure}`, async (_id, args) => {
+    effects++; seen.push(args); return ok(exposure).result;
+  }, { exposure, namespace: { name: 'fixture' }, sourceInfo: { path: '/owner' }, annotations: { readOnlyHint: true },
+    parameters: { type: 'object', properties: { n: { type: 'number' } }, required: ['n'], additionalProperties: false },
+    prepareArguments(raw) { prepares++; assert.ok(typeof raw === 'object'); assert.equal('__background__' in raw!, false); return { ...raw as object, n: 2 }; },
+  }));
+  const h = await setup(tools);
+  h.pi.on('tool_call', event => { if (event.toolName.startsWith('mcp__')) { checks++; event.input.extra = 'permission mutation'; } });
   try {
-    const visible = h.pi.modelTools();
-    assert.ok(visible.includes('mcp__private__direct_mt'));
-    for (const [name, exposure] of [['mcp__private__search', 'codemode'], ['mcp__private__deferred', 'deferred']] as const) {
-      const proxy = h.pi.definitions.get(name + '_mt');
-      assert.equal(proxy?.exposure, exposure);
-      assert.ok(!visible.includes(name), 'original not promoted to direct');
-      assert.ok(!visible.includes(name + '_mt'), 'proxy not promoted to direct');
-      assert.ok(h.pi.callable().some(t => t.name === name), 'original still callable');
-      assert.ok(h.pi.callable().some(t => t.name === name + '_mt'), 'proxy available to codemode/tool_search');
-      assert.deepEqual(proxy?.parameters.required, ['query']);
-      const output = await h.pi.call(name + '_mt', { query: exposure, __background__: 'no' });
-      assert.equal(output.isError, false);
-      assert.match(JSON.stringify(output.result), new RegExp(`RESULT:${exposure}`));
-      const raw = await h.pi.call(name, { query: 'raw' });
-      assert.equal(raw.isError, true, 'direct calls to original rejected when blocking enabled');
+    for (const tool of tools) {
+      assert.ok(!h.pi.modelTools().includes(tool.name));
+      assert.ok(h.pi.callable().includes(tool));
+      assert.equal(tool.namespace?.name, 'fixture'); assert.equal(tool.sourceInfo?.path, '/owner');
+      const result = await h.pi.call(tool.name, { n: 'repaired', __background__: 'no' });
+      assert.equal(result.isError, false);
     }
-    assert.deepEqual(seen, ['mcp__private__search:codemode', 'mcp__private__deferred:deferred']);
+    assert.equal(prepares, 2); assert.equal(checks, 2); assert.equal(effects, 2);
+    assert.deepEqual(seen, [{ n: 2, extra: 'permission mutation' }, { n: 2, extra: 'permission mutation' }]);
   } finally { await h.close(); }
 });
 
-test('codemode script can call codemode _mt proxy but not the unwrapped original', async () => {
-  const original = basicTool('mcp__private__slow', async () => ok('CODERESULT').result, { exposure: 'codemode' });
-  const caller = basicTool('codemode_fixture', async (_id, args, _s, _u, ctx) => {
-    return (await ctx.executeTool(String(args.target), { __background__: 'no' })).result;
-  }, { parameters: { type: 'object', properties: { target: { type: 'string' } }, required: ['target'] } });
-  const h = await setup([original, caller]);
+test('owner replacement, hidden/restored spreads and incompatible schemas reconcile synchronously', async () => {
+  const name = 'mcp__changing'; const first = basicTool(name, async () => ok('old').result);
+  const h = await setup([first]);
   try {
-    const viaProxy = await h.pi.call('codemode_fixture', { target: original.name + '_mt' });
-    assert.equal(viaProxy.isError, false);
-    assert.match(JSON.stringify(viaProxy.result), /CODERESULT/);
-    const bypass = await h.pi.call('codemode_fixture', { target: original.name });
-    assert.equal(bypass.isError, true);
+    const replacement = basicTool(name, async () => ok('new').result, { parameters: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] } });
+    h.pi.registerTool(replacement);
+    assert.deepEqual(h.pi.definitions.get(name)!.parameters.required, ['q']);
+    assert.match(JSON.stringify((await h.pi.call(name, { q: 'x' })).result), /new/);
+    h.pi.registerTool({ ...replacement, exposure: 'hidden' });
+    assert.equal((await h.pi.call(name, {})).isError, true);
+    h.pi.registerTool({ ...h.pi.definitions.get(name)!, exposure: 'direct' });
+    assert.equal((await h.pi.call(name, { q: 'x' })).isError, false, 'copied execute unwraps rather than recurring');
+    h.pi.registerTool(basicTool(name, undefined, { parameters: { type: 'object', allOf: [] } }));
+    assert.deepEqual(h.pi.definitions.get(name)!.parameters, { type: 'object', allOf: [] });
+    assert.match(h.pi.uiMessages.at(-1)!, /Unsupported/);
+    const late = basicTool('mcp__late'); h.pi.registerTool(late);
+    assert.ok((late.parameters.properties as Record<string, unknown>).__background__);
+    assert.equal((await h.pi.call(late.name, {})).isError, false);
   } finally { await h.close(); }
 });
 
-test('exposure changes preserve visibility without reusing stale proxy definitions', async () => {
-  const name = 'mcp__exposure__echo';
-  const h = await setup([basicTool(name, undefined, { exposure: 'codemode' })]);
-  try {
-    assert.equal(h.pi.definitions.get(name + '_mt')?.exposure, 'codemode');
-    h.pi.registerTool(basicTool(name, undefined, { exposure: 'deferred' })); await sleep(2);
-    assert.equal(h.pi.definitions.get(name + '_mt')?.exposure, 'deferred');
-    h.pi.registerTool(basicTool(name, undefined, { exposure: 'direct' })); await sleep(2);
-    assert.equal(h.pi.definitions.get(name + '_mt')?.exposure, 'direct');
-    assert.ok(h.pi.modelTools().includes(name + '_mt'));
-    assert.ok(!h.pi.modelTools().includes(name));
-    h.pi.registerTool(basicTool(name, undefined, { exposure: 'hidden' })); await sleep(2);
-    assert.equal(h.pi.definitions.get(name + '_mt')?.exposure, 'hidden');
-  } finally { await h.close(); }
+test('model-only, hidden, sequential, excluded and conflicting tools stay native', async () => {
+  const tools = [basicTool('mcp__seq', undefined, { executionMode: 'sequential' }),
+    basicTool('mcp__ask', undefined, { exposure: 'model-only' }), basicTool('mcp__hidden', undefined, { exposure: 'hidden' }),
+    basicTool('write'), basicTool('mcp__collision', undefined, { parameters: { type: 'object', properties: { __background__: { type: 'number' } } } })];
+  const executes = tools.map(t => t.execute), schemas = tools.map(t => t.parameters);
+  const h = await setup(tools, { include: ['*'] });
+  try { tools.forEach((tool, i) => { assert.equal(tool.execute, executes[i]); assert.equal(tool.parameters, schemas[i]); }); }
+  finally { await h.close(); }
 });
 
-test('business args are stripped correctly and the original permission hooks still execute', async () => {
-  let seen: unknown; let allowedChecks = 0;
-  const h = await setup([basicTool('mcp__t__echo', async (_id, args) => { seen = args; return ok('echo').result; }, { parameters: { type: 'object', properties: { text: { type: 'string' } }, additionalProperties: false } })]);
-  h.pi.on('tool_call', event => { if (event.toolName === 'mcp__t__echo') allowedChecks++; });
+test('all permissions finish before admission; denied and invalid calls start no producer', async () => {
+  const approval = deferred<void>(), entered = deferred<void>(); let effects = 0;
+  const h = await setup([basicTool('mcp__guarded', async () => { effects++; return ok().result; })]);
+  h.pi.on('tool_call', async event => { if (event.toolName === 'mcp__guarded') { entered.resolve(); await approval.promise; return { block: true, reason: 'denied' }; } });
   try {
-    const out = await h.pi.call('mcp__t__echo_mt', { text: 'hello', __background__: 'no' });
-    assert.equal(out.isError, false); assert.deepEqual(seen, { text: 'hello' }); assert.equal(allowedChecks, 1);
-    assert.ok(h.pi.trace.some(e => e.type === 'execute' && e.name === 'mcp__t__echo' && e.id!.includes('/')));
-  } finally { await h.close(); }
+    const call = h.pi.call('mcp__guarded', { __background__: 'yes' }); await entered.promise;
+    await h.pi.commands.get('meantime')!('detach', h.pi.ctx);
+    assert.deepEqual((h.instance.inspect() as { tasks: unknown[] }).tasks, []);
+    assert.equal(effects, 0); approval.resolve();
+    assert.equal((await call).isError, true);
+    assert.equal((await h.pi.call('mcp__guarded', { invalid: true })).isError, true);
+    assert.equal(effects, 0); assert.deepEqual((h.instance.inspect() as { tasks: unknown[] }).tasks, []);
+  } finally { approval.resolve(); await h.close(); }
 });
-test('original validation, permission rejection and result redaction are preserved', async () => {
-  let executed = 0;
-  const h = await setup([basicTool('mcp__t__secret', async () => { executed++; return ok('secret').result; })]);
-  const dispose = h.pi.on('tool_call', e => e.toolName === 'mcp__t__secret' ? { block: true, reason: 'permission denied' } : undefined);
+
+test('detached finalized results feed wait, completion tail and native renderer only once', async () => {
+  const work = deferred<Result>(); let effects = 0, posts = 0;
+  const h = await setup([basicTool('mcp__slow', () => { effects++; return work.promise; }), basicTool('local_fast')]);
+  h.pi.after.push((name, result) => { if (name !== 'mcp__slow') return result; posts++; return { ...result, content: [{ type: 'text', text: 'FINAL' }], details: { safe: true }, structuredContent: { safe: true } }; });
   try {
-    assert.equal((await h.pi.call('mcp__t__secret_mt', { bad: 1 })).isError, true);
-    const denied = await h.pi.call('mcp__t__secret_mt', {}); assert.equal(denied.isError, true); assert.equal(executed, 0);
-    dispose();
-    h.pi.after.push((name, result) => name === 'mcp__t__secret' ? { ...result, content: [{ type: 'text', text: 'REDACTED' }], structuredContent: null } : result);
-    const out = await h.pi.call('mcp__t__secret_mt', {}); assert.equal(out.isError, false);
-    assert.match(JSON.stringify(out.result), /REDACTED/); assert.equal(executed, 1);
-  } finally { await h.close(); }
-});
-test('raw original and unrelated codemode-style nested bypasses are blocked', async () => {
-  const target = basicTool('mcp__t__echo');
-  const caller = basicTool('codemode_fixture', async (_id, _args, _s, _u, ctx) => (await ctx.executeTool(target.name, {})).result);
-  const h = await setup([target, caller]);
-  try {
-    assert.equal((await h.pi.call(target.name, {})).isError, true);
-    assert.equal((await h.pi.call(caller.name, {})).isError, true);
-    assert.equal((await h.pi.call(target.name + '_mt', {})).isError, false);
-  } finally { await h.close(); }
-});
-test('model explicit background continues in parallel with another tool and finishes once', async () => {
-  const work = deferred<Result>();
-  const h = await setup([basicTool('mcp__t__slow', () => work.promise), basicTool('local_fast')]);
-  try {
-    const out = await h.pi.call('mcp__t__slow_mt', { __background__: 'yes' }); const task = snapshot(out);
-    assert.equal(task.delivery, 'background'); assert.equal(task.state, 'running');
-    const fast = await h.pi.call('local_fast', {}); assert.equal(fast.isError, false);
-    work.resolve(ok('slow result').result); await until(() => h.pi.notifications.length === 1);
-    assert.match(JSON.stringify(out.result), /execution continues independently\./);
-    assert.match(h.pi.notifications[0]!.content, /If the results are already known or unneeded, take no further action\./);
-    assert.match(h.pi.notifications[0]!.content, /<untrusted-output-tail>\nslow result\n<\/untrusted-output-tail>/);
-    assert.match(task.id, /^mt_[a-f0-9]{8}$/);
-    const byPrefix = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: task.id.slice(3, 9) });
-    assert.equal(byPrefix.isError, false); assert.match(JSON.stringify(byPrefix.result), new RegExp(task.id));
-    const result = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: task.id });
-    assert.match(JSON.stringify(result.result), /slow result/); assert.equal(result.isError, false);
-    assert.equal(h.pi.trace.filter(e => e.type === 'execute' && e.name === 'mcp__t__slow').length, 1);
+    const handle = await h.pi.call('mcp__slow', { __background__: 'yes' }); const task = snapshot(handle);
+    assert.equal(task.delivery, 'background'); assert.equal(posts, 0, 'handle bypasses original result hooks');
+    assert.equal((await h.pi.call('local_fast', {})).isError, false);
+    work.resolve(ok('SECRET').result); await until(() => h.pi.notifications.length === 1);
+    assert.match(h.pi.notifications[0]!.content, /<untrusted-output-tail>\nFINAL\n/);
+    assert.doesNotMatch(JSON.stringify(h.pi.entries) + JSON.stringify(h.pi.notifications), /SECRET/);
+    const collected = await h.pi.call('meantime', { action: 'wait', id: task.id.slice(3, 9), timeout: 0 });
+    assert.equal(collected.isError, false); assert.match(JSON.stringify(collected.result), /FINAL/);
+    assert.equal(posts, 1); assert.equal(effects, 1);
   } finally { work.resolve(ok().result); await h.close(); }
 });
-test('steer releases no-mode foreground without abort or consuming text/images', async () => {
-  const work = deferred<Result>(); let childSignal: AbortSignal | undefined;
-  const h = await setup([basicTool('mcp__t__slow', (_id, _a, signal) => { childSignal = signal; return work.promise; })]);
+
+for (const trigger of ['timeout', 'steer', 'shortcut', 'command'] as const) test(`${trigger} detaches once without aborting, no-mode only disables timer`, async () => {
+  const work = deferred<Result>(); let signal: AbortSignal | undefined;
+  const h = await setup([basicTool('mcp__slow', (_id, _args, s) => { signal = s; return work.promise; })], { autoDetachMs: 10 });
   try {
-    const running = h.pi.call('mcp__t__slow_mt', { __background__: 'no' }); await until(() => !!childSignal);
-    const images: Content[] = [{ type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' }];
-    const event = { type: 'input' as const, text: 'change direction', streamingBehavior: 'steer' as const, source: 'interactive' as const, images };
-    const responses = await h.pi.emit('input', event); const out = await running;
-    assert.equal(snapshot(out).detachReason, 'steer'); assert.equal(childSignal!.aborted, false);
-    assert.ok(responses.some(r => JSON.stringify(r) === '{"action":"continue"}'));
-    assert.deepEqual(event.images, images); assert.equal(h.pi.abortCalls, 0);
+    const running = h.pi.call('mcp__slow', trigger === 'timeout' ? {} : { __background__: 'no' }); await until(() => !!signal);
+    if (trigger !== 'timeout') {
+      await sleep(20); assert.equal((h.instance.inspect() as { tasks: Snapshot[] }).tasks[0]!.delivery, 'foreground');
+      if (trigger === 'steer') {
+        const images: Content[] = [{ type: 'image', data: 'eA==', mimeType: 'image/png' }];
+        const event = { type: 'input' as const, text: 'next', source: 'rpc' as const, streamingBehavior: 'steer' as const, images };
+        assert.deepEqual(await h.pi.emit('input', event), [{ action: 'continue' }]); assert.equal(event.images, images);
+      } else if (trigger === 'shortcut') await h.pi.shortcuts.get('ctrl+shift+b')!(h.pi.ctx);
+      else await h.pi.commands.get('bg')!('detach', h.pi.ctx);
+    }
+    assert.equal(snapshot(await running).detachReason, trigger === 'command' ? 'shortcut' : trigger);
+    assert.equal(signal!.aborted, false); assert.equal(h.pi.abortCalls, 0);
   } finally { work.resolve(ok().result); await h.close(); }
 });
-test('steer, shortcut and command promptly release pending waits without stopping producers', async () => {
-  for (const trigger of ['steer', 'shortcut', 'command'] as const) {
-    const work = deferred<Result>(); const caller = new AbortController(); let signal: AbortSignal | undefined;
-    const h = await setup([basicTool('mcp__t__slow', (_id, _args, s) => { signal = s; return work.promise; })]);
-    try {
-      const { id } = snapshot(await h.pi.call('mcp__t__slow_mt', { __background__: 'yes' }));
-      const baseline = await h.pi.call('meantime', { action: 'wait', id, timeout: 0 });
-      const waiting = h.pi.call('meantime', { action: 'wait', id, timeout: 600 }, caller.signal);
-      await until(() => h.pi.trace.filter(e => e.type === 'execute' && e.name === 'meantime').length === 2);
-      const started = performance.now();
-      if (trigger === 'steer') await h.pi.emit('input', { type: 'input', text: 'next', source: 'interactive', streamingBehavior: 'steer' });
-      else if (trigger === 'shortcut') await h.pi.shortcuts.get('ctrl+shift+b')!(h.pi.ctx);
-      else await h.pi.commands.get('meantime')!('detach', h.pi.ctx);
-      const released = await Promise.race([waiting, sleep(1000).then(() => { throw new Error('detach did not release wait'); })]);
-      assert.ok(performance.now() - started < 1000);
-      assert.deepEqual(released, { ...baseline, toolCall: released.toolCall });
-      assert.equal((released.result.structuredContent as { result_available: boolean }).result_available, false);
-      assert.match(JSON.stringify(released.result.content), /Result is not available. Do not relaunch the operation./);
-      assert.equal(signal!.aborted, false); assert.equal(snapshot(released).localRunning, true);
-      assert.equal(h.pi.notifications.length, 0);
-      work.resolve(ok('finished after detach').result);
-      await until(() => h.pi.notifications.length === 1);
-      await h.pi.emit('agent_settled', { type: 'agent_settled' });
-      assert.equal(h.pi.notifications.length, 1);
-      assert.match(h.pi.notifications[0]!.content, /finished after detach/);
-      assert.equal(h.pi.trace.filter(e => e.type === 'execute' && e.name === 'mcp__t__slow').length, 1);
-    } finally { caller.abort(); work.resolve(ok().result); await h.close(); }
-  }
+
+test('early manual detach follows the live call, not a later sibling', async () => {
+  const approval = deferred<void>(), entered = deferred<void>(), work = deferred<Result>(); let bodies = 0, first = true;
+  const h = await setup([basicTool('mcp__held', () => { bodies++; return work.promise; })]);
+  h.pi.on('tool_call', async event => { if (event.toolName === 'mcp__held' && first) { first = false; entered.resolve(); await approval.promise; } });
+  try {
+    const original = h.pi.call('mcp__held', {}); await entered.promise;
+    await h.pi.commands.get('meantime')!('detach', h.pi.ctx);
+    const sibling = h.pi.call('mcp__held', {}); await until(() => bodies === 1);
+    approval.resolve(); assert.equal(snapshot(await original).detachReason, 'shortcut');
+    assert.equal((h.instance.inspect() as { tasks: Snapshot[] }).tasks.filter(t => t.delivery === 'foreground').length, 1);
+    work.resolve(ok().result); assert.equal(((await sibling).result.structuredContent as { task?: unknown } | undefined)?.task, undefined);
+  } finally { approval.resolve(); work.resolve(ok().result); await h.close(); }
 });
+
+for (const trigger of ['steer', 'shortcut', 'command'] as const) test(`${trigger} releases pending waits without cancelling or observing unfinished work`, async () => {
+  const work = deferred<Result>(); let signal: AbortSignal | undefined;
+  const h = await setup([basicTool('mcp__slow', (_id, _args, s) => { signal = s; return work.promise; })]);
+  try {
+    const { id } = snapshot(await h.pi.call('mcp__slow', { __background__: 'yes' }));
+    const baseline = await h.pi.call('meantime', { action: 'wait', id, timeout: 0 });
+    const waiting = h.pi.call('meantime', { action: 'wait', id, timeout: 600 });
+    await until(() => h.pi.trace.filter(t => t.type === 'execute' && t.name === 'meantime').length === 2);
+    if (trigger === 'steer') await h.pi.emit('input', { type: 'input', text: 'next', source: 'rpc', streamingBehavior: 'steer' });
+    else if (trigger === 'shortcut') await h.pi.shortcuts.get('ctrl+shift+b')!(h.pi.ctx);
+    else await h.pi.commands.get('meantime')!('detach', h.pi.ctx);
+    const released = await Promise.race([waiting, sleep(1000).then(() => { throw new Error('detach did not release wait'); })]);
+    assert.deepEqual(released.result, baseline.result); assert.equal(signal!.aborted, false);
+    work.resolve(ok('later').result); await until(() => h.pi.notifications.length === 1);
+  } finally { work.resolve(ok().result); await h.close(); }
+});
+
+test('disabled steer is non-sticky for existing calls and new waits', async () => {
+  const work = deferred<Result>(); const h = await setup([basicTool('mcp__slow', () => work.promise)], { detachOnSteer: false });
+  try {
+    let returned = false;
+    const running = h.pi.call('mcp__slow', {}).then(out => { returned = true; return out; });
+    await until(() => h.pi.trace.some(t => t.type === 'execute' && t.name === 'mcp__slow'));
+    await h.pi.emit('input', { type: 'input', text: 'next', source: 'rpc', streamingBehavior: 'steer' });
+    await sleep(5); assert.equal(returned, false);
+    await h.pi.commands.get('bg')!('detach', h.pi.ctx); const { id } = snapshot(await running);
+    let waited = false;
+    const waiting = h.pi.call('meantime', { action: 'wait', id, timeout: 600 }).then(out => { waited = true; return out; });
+    await sleep(5); assert.equal(waited, false, 'earlier detach is not sticky');
+    work.resolve(ok('done').result); assert.equal(((await waiting).result.structuredContent as { result_available: boolean }).result_available, true);
+    assert.equal(h.pi.notifications.length, 0);
+  } finally { work.resolve(ok().result); await h.close(); }
+});
+
+test('global sequential and print modes never detach; explicit yes fails before effects', async () => {
+  let effects = 0;
+  const h = await setup([basicTool('mcp__one', async () => { effects++; return ok().result; })]);
+  try {
+    h.pi.sequentialNested = true;
+    assert.equal((await h.pi.call('mcp__one', { __background__: 'yes' })).isError, true); assert.equal(effects, 0);
+    assert.equal((await h.pi.call('mcp__one', {})).isError, false);
+    h.pi.sequentialNested = false; h.pi.ctx = { ...h.pi.ctx, mode: 'print' };
+    assert.equal((await h.pi.call('mcp__one', { __background__: 'yes' })).isError, true); assert.equal(effects, 1);
+    assert.equal((await h.pi.call('mcp__one', {})).isError, false);
+  } finally { await h.close(); }
+});
+
+test('wait previews show native single and batch bodies, while handle cards retain task details', async () => {
+  const body = Array.from({ length: 25 }, (_, i) => `BODY_${i + 1}`).join('\n');
+  const h = await setup([basicTool('mcp__preview', async () => { await sleep(10); return ok(body).result; })]);
+  type Render = NonNullable<ToolRenderers['renderResult']>;
+  const theme = { fg: (_color: string, value: string) => value } as Parameters<Render>[2];
+  try {
+    const resolve = h.pi.renderers[0]!;
+    const native = new Text('NATIVE', 0, 0);
+    const managed = resolve('mcp__preview', () => ({ renderResult: () => native }))!;
+    assert.equal(managed.renderResult!(ok().result, { expanded: false, isPartial: false }, theme, {} as Parameters<Render>[3]), native);
+    assert.equal(resolve('read', () => undefined), undefined);
+    const handles = [];
+    for (let i = 0; i < 2; i++) handles.push(await h.pi.call('mcp__preview', { __background__: 'yes' }));
+    const ids = handles.map(out => snapshot(out).id);
+    assert.match(managed.renderResult!(handles[0]!.result, { expanded: false, isPartial: false }, theme, {} as Parameters<Render>[3]).render(200).join('\n'), /mcp__preview \| running/);
+    initTheme('dark', false);
+    const ui = { requestRender() {} } as ConstructorParameters<typeof ToolExecutionComponent>[5];
+    for (const args of [{ action: 'wait', id: ids[0] }, { action: 'wait', ids }]) {
+      const outcome = await h.pi.call('meantime', args);
+      const make = (renderers: ToolRenderers) => new ToolExecutionComponent('meantime', 'preview', args, { showImages: false }, renderers, ui, process.cwd());
+      const plain = make({}), preview = make(resolve('meantime', () => undefined)!);
+      plain.updateResult({ ...outcome.result, isError: outcome.isError }); preview.updateResult({ ...outcome.result, isError: outcome.isError });
+      assert.deepEqual(preview.render(200), plain.render(200)); assert.match(preview.render(200).join('\n'), /BODY_1\b/);
+      assert.doesNotMatch(preview.render(200).join('\n'), /BODY_25\b/);
+      plain.setExpanded(true); preview.setExpanded(true);
+      assert.deepEqual(preview.render(200), plain.render(200)); assert.match(preview.render(200).join('\n'), /BODY_25\b/);
+    }
+    assert.equal(TaskRuntime.liveProducerCount(), 0);
+  } finally { await h.close(); }
+});
+
 test('one user detach releases simultaneous batch and cancel grace waits with timeout-shaped results', async () => {
   const a = deferred<Result>(), b = deferred<Result>(), c = deferred<Result>();
   const caller = new AbortController(); let cancelled: AbortSignal | undefined;
@@ -232,7 +256,7 @@ test('one user detach releases simultaneous batch and cancel grace waits with ti
   h.pi.ctx.isIdle = () => false;
   try {
     const ids: string[] = [];
-    for (const name of ['a', 'b', 'c']) ids.push(snapshot(await h.pi.call(`mcp__t__${name}_mt`, { __background__: 'yes' })).id);
+    for (const name of ['a', 'b', 'c']) ids.push(snapshot(await h.pi.call(`mcp__t__${name}`, { __background__: 'yes' })).id);
     a.resolve(ok('A settled').result);
     await until(() => (h.instance.inspect() as { tasks: Snapshot[] }).tasks.some(t => t.id === ids[0] && !t.localRunning));
     const batch = h.pi.call('meantime', { action: 'wait', ids: ids.slice(0, 2), mode: 'all', timeout: 600 }, caller.signal);
@@ -258,293 +282,12 @@ test('one user detach releases simultaneous batch and cancel grace waits with ti
     assert.deepEqual(h.pi.notifications.flatMap(n => (n.details as { taskIds: string[] }).taskIds).sort(), ids.slice(1).sort());
   } finally { caller.abort(); a.resolve(ok().result); b.resolve(ok().result); c.resolve(ok().result); await h.close(); }
 });
-test('detach is not sticky for new waits and disabled steer leaves a pending wait intact', async () => {
-  const work = deferred<Result>(); const caller = new AbortController();
-  const h = await setup([basicTool('mcp__t__slow', () => work.promise)], { detachOnSteer: false });
-  try {
-    const { id } = snapshot(await h.pi.call('mcp__t__slow_mt', { __background__: 'yes' }));
-    await h.pi.commands.get('meantime')!('detach', h.pi.ctx);
-    let settled = false;
-    const waiting = h.pi.call('meantime', { action: 'wait', id, timeout: 600 }, caller.signal).then(out => { settled = true; return out; });
-    await until(() => h.pi.trace.some(e => e.type === 'execute' && e.name === 'meantime'));
-    await sleep(10); assert.equal(settled, false, 'earlier detach must not release a later wait');
-    await h.pi.emit('input', { type: 'input', text: 'next', source: 'interactive', streamingBehavior: 'steer' });
-    await sleep(10); assert.equal(settled, false, 'disabled steer must not release waits');
-    work.resolve(ok('normal completion').result);
-    const completed = await waiting;
-    assert.equal((completed.result.structuredContent as { result_available: boolean }).result_available, true);
-    assert.match(JSON.stringify(completed.result.content), /normal completion/);
-    await h.pi.emit('agent_settled', { type: 'agent_settled' });
-    assert.equal(h.pi.notifications.length, 0, 'normal wait still observes the result');
-  } finally { caller.abort(); work.resolve(ok().result); await h.close(); }
-});
-test('disabled steer detach keeps input intact; explicit detach still works', async () => {
-  const work = deferred<Result>();
-  const h = await setup([basicTool('mcp__t__slow', () => work.promise)], { detachOnSteer: false });
-  try {
-    let settled = false;
-    const running = h.pi.call('mcp__t__slow_mt', {}).then(out => { settled = true; return out; });
-    await until(() => h.pi.trace.some(t => t.type === 'execute' && t.name === 'mcp__t__slow'));
-    const event = { type: 'input' as const, text: 'next', source: 'rpc' as const, streamingBehavior: 'steer' as const };
-    assert.deepEqual(await h.pi.emit('input', event), [{ action: 'continue' }]);
-    await sleep(5); assert.equal(settled, false);
-    await h.pi.commands.get('bg')!('detach', h.pi.ctx);
-    assert.equal(snapshot(await running).delivery, 'background');
-    assert.throws(() => validateConfig({ detachOnSteer: 'false' }), /detachOnSteer/);
-  } finally { work.resolve(ok().result); await h.close(); }
-});
-test('shortcut and detach command release no-mode calls once without cancellation', async () => {
-  for (const trigger of ['shortcut', 'command'] as const) {
-    const work = deferred<Result>(); let signal: AbortSignal | undefined;
-    const h = await setup([basicTool('mcp__t__slow', (_id, _args, s) => { signal = s; return work.promise; })], { autoDetachMs: 5 });
-    try {
-      const running = h.pi.call('mcp__t__slow_mt', { __background__: 'no' });
-      await until(() => !!signal); await sleep(15);
-      assert.equal((h.instance.inspect() as { tasks: Snapshot[] }).tasks[0]!.delivery, 'foreground');
-      if (trigger === 'shortcut') await h.pi.shortcuts.get('ctrl+shift+b')!(h.pi.ctx);
-      else await h.pi.commands.get('meantime')!('detach', h.pi.ctx);
-      const task = snapshot(await running);
-      assert.equal(task.detachReason, 'shortcut'); assert.equal(task.mode, 'no'); assert.equal(signal!.aborted, false);
-      assert.match(h.pi.uiMessages.at(-1)!, /Detached 1 managed call/);
-      assert.doesNotMatch(h.pi.uiMessages.at(-1)!, /no-mode/);
-      assert.equal(h.pi.trace.filter(e => e.type === 'execute' && e.name === 'mcp__t__slow').length, 1);
-    } finally { work.resolve(ok().result); await h.close(); }
-  }
-});
-test('shortcut and auto timer both release managed waiters', async () => {
-  for (const trigger of ['shortcut', 'timeout'] as const) {
-    const work = deferred<Result>(); const h = await setup([basicTool('mcp__t__slow', () => work.promise)], { autoDetachMs: trigger === 'timeout' ? 10 : 0 });
-    try {
-      const running = h.pi.call('mcp__t__slow_mt', {});
-      await until(() => h.pi.trace.some(t => t.type === 'execute' && t.name === 'mcp__t__slow'));
-      if (trigger === 'shortcut') await h.pi.shortcuts.get('ctrl+shift+b')!(h.pi.ctx);
-      assert.equal(snapshot(await running).detachReason, trigger);
-    } finally { work.resolve(ok().result); await h.close(); }
-  }
-});
-test('late registration, schema replacement, disappearance and reappearance are reconciled', async () => {
-  const h = await setup();
-  try {
-    const name = 'mcp__late__echo'; h.pi.registerTool(basicTool(name)); await sleep(1); h.pi.refresh();
-    assert.ok(h.pi.modelTools().includes(name + '_mt'));
-    const changed = basicTool(name, undefined, { parameters: { type: 'object', properties: { message: { type: 'string' } }, required: ['message'] } });
-    h.pi.registerTool(changed); await sleep(1);
-    assert.deepEqual(h.pi.definitions.get(name + '_mt')!.parameters.required, ['message']);
-    h.pi.registerTool({ ...changed, exposure: 'hidden' }); await sleep(1);
-    assert.equal(h.pi.definitions.get(name + '_mt')!.exposure, 'hidden');
-    h.pi.registerTool({ ...changed, exposure: 'direct' }); await sleep(1);
-    assert.equal(h.pi.definitions.get(name + '_mt')!.exposure, 'direct');
-  } finally { await h.close(); }
-});
-test('schema/name collisions leave originals visible, never overwrite unrelated tools', async () => {
-  const name = 'mcp__t__collision'; const blocked = basicTool(name, undefined, { parameters: { type: 'object', properties: { __background__: { type: 'number' } } } });
-  const claimed = basicTool('mcp__t__claimed_mt', undefined, { description: 'Owned by another extension' });
-  const h = await setup([blocked, basicTool('mcp__t__claimed'), claimed]);
-  try {
-    assert.ok(h.pi.modelTools().includes(name)); assert.ok(h.pi.modelTools().includes('mcp__t__claimed'));
-    assert.equal(h.pi.definitions.get(claimed.name)!.description, claimed.description);
-  } finally { await h.close(); }
-});
-test('model-only, disabled, sequential and excluded file tools remain outside wrapper policy', async () => {
-  const h = await setup([
-    basicTool('mcp__t__seq', undefined, { executionMode: 'sequential' }),
-    basicTool('mcp__t__ask', undefined, { exposure: 'model-only' }),
-    basicTool('mcp__t__off', undefined, { exposure: 'hidden' }), basicTool('write'),
-  ], { include: ['*'] });
-  try {
-    for (const name of ['mcp__t__seq', 'mcp__t__ask', 'mcp__t__off', 'write']) assert.ok(!h.pi.modelTools().includes(name + '_mt'));
-  } finally { await h.close(); }
-});
-test('session switch suppresses callbacks and isolates task lookup', async () => {
-  const work = deferred<Result>(); const h = await setup([basicTool('mcp__t__slow', () => work.promise)]);
-  try {
-    const out = await h.pi.call('mcp__t__slow_mt', { __background__: 'yes' }); const id = snapshot(out).id;
-    await h.pi.emit('session_shutdown', { type: 'session_shutdown', reason: 'switch' });
-    h.pi.ctx = new FakePi('B').ctx; await h.pi.emit('session_start', { type: 'session_start' });
-    work.resolve(ok().result); await until(() => TaskRuntime.liveProducerCount() === 0);
-    assert.equal(h.pi.notifications.length, 0);
-    assert.equal((await h.pi.call('meantime', { action: 'wait', timeout: 0, id })).isError, true);
-  } finally { work.resolve(ok().result); await h.close(); }
-});
-test('real shell fixture runs, can detach without a second spawn, and result is retained', async () => {
-  const h = await setup();
-  try {
-    const command = `node -e 'setTimeout(()=>console.log("SHELL_DONE"),80)'\n# ${'long comment '.repeat(20)}`;
-    const out = await h.pi.call('bash', { command, __background__: 'yes' });
-    const task = snapshot(out); assert.equal(task.state, 'running');
-    assert.equal(task.command, command);
-    const list = await h.pi.call('meantime', { action: 'list' });
-    const preview = (list.result.details as { tasks: Snapshot[] }).tasks[0]!.command!;
-    assert.ok(preview.endsWith('…')); assert.ok(!preview.includes('\n'));
-    await until(() => h.pi.notifications.length === 1);
-    assert.match(h.pi.notifications[0]!.content, new RegExp(`Meantime ${task.id} completed`));
-    assert.match(h.pi.notifications[0]!.content, /<untrusted-output-tail>\nSHELL_DONE/);
-    const result = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: task.id });
-    assert.equal((result.result.details as { task: Snapshot }).task.command, command);
-    assert.match(JSON.stringify(result.result), /SHELL_DONE/);
-  } finally { await h.close(); }
-});
-test('print mode auto waits and explicit background returns a truthful error', async () => {
-  const h = await setup([basicTool('mcp__t__one')], {}, 'print');
-  try {
-    assert.equal((await h.pi.call('mcp__t__one_mt', { __background__: 'yes' })).isError, true);
-    assert.equal((await h.pi.call('mcp__t__one_mt', {})).isError, false);
-  } finally { await h.close(); }
-});
-
-test('initial loading does not touch runtime-only settings through the Bash factory', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'pi-bg-load-')); const pi = new FakePi(); let bound = false; let calls = 0;
-  const instance = install(pi, { config: validateConfig({}), baseBash: fixtureBash(root),
-    makeBash(cwd) { assert.ok(bound, 'factory invoked before Pi runtime binding'); calls++; return fixtureBash(cwd); },
-  });
-  try {
-    assert.equal(calls, 0); bound = true;
-    await pi.emit('session_start', { type: 'session_start' });
-    assert.equal((await pi.call('bash', { command: 'printf LOAD_OK' })).isError, false); assert.equal(calls, 1);
-  } finally { await instance.dispose(); rmSync(root, { recursive: true, force: true }); }
-});
-test('a later extension claiming a proxy name is never overwritten by the tombstone path', async () => {
-  const h = await setup([basicTool('mcp__t__one')]);
-  try {
-    h.pi.registerTool(basicTool('mcp__t__one_mt', undefined, { description: 'Foreign replacement' }));
-    await sleep(1); h.pi.refresh();
-    assert.equal(h.pi.definitions.get('mcp__t__one_mt')!.description, 'Foreign replacement');
-    assert.ok(h.pi.modelTools().includes('mcp__t__one'));
-  } finally { await h.close(); }
-});
-test('changing a supported schema to a composed schema withdraws only our proxy', async () => {
-  const h = await setup([basicTool('mcp__t__one')]);
-  try {
-    h.pi.registerTool(basicTool('mcp__t__one', undefined, { parameters: { type: 'object', allOf: [] } }));
-    await sleep(1); assert.equal(h.pi.definitions.get('mcp__t__one_mt')!.exposure, 'hidden');
-    assert.ok(h.pi.modelTools().includes('mcp__t__one'));
-  } finally { await h.close(); }
-});
-test('polling reconciles a tool that disappears without a public registry-change event', async () => {
-  const h = await setup([basicTool('mcp__t__one')], { reconcileMs: 100 });
-  try {
-    h.pi.definitions.delete('mcp__t__one'); h.pi.active.delete('mcp__t__one');
-    await until(() => h.pi.definitions.get('mcp__t__one_mt')!.exposure === 'hidden');
-  } finally { await h.close(); }
-});
-test('global nested sequential queue is respected; a queued request cannot claim to be detached early', async () => {
-  const a = deferred<Result>(); const b = deferred<Result>();
-  const h = await setup([basicTool('mcp__t__a', () => a.promise), basicTool('mcp__t__b', () => b.promise)]);
-  h.pi.sequentialNested = true;
-  try {
-    const first = await h.pi.call('mcp__t__a_mt', { __background__: 'yes' }); assert.equal(snapshot(first).state, 'running');
-    let returned = false;
-    const second = h.pi.call('mcp__t__b_mt', { __background__: 'yes' }).then(result => { returned = true; return result; });
-    await sleep(15); assert.equal(returned, false);
-    a.resolve(ok().result); const next = await second; assert.equal(snapshot(next).state, 'running');
-  } finally { a.resolve(ok().result); b.resolve(ok().result); await h.close(); }
-});
-test('short management receipts retain structured data and cancellation semantics', async () => {
-  const pending = deferred<Result>();
-  const h = await setup([basicTool('mcp__t__receipt', () => pending.promise)]);
-  const text = (result: Result) => result.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
-  try {
-    const handle = await h.pi.call('mcp__t__receipt_mt', { __background__: 'yes' });
-    const task = snapshot(handle);
-    assert.match(text(handle.result), new RegExp(`^Meantime ${task.id} running in background`));
-    assert.match(text(handle.result), /In the TUI use \/meantime or/);
-    assert.ok(text(handle.result).includes(`meantime(action="wait", id="${task.id}", timeout=0)`));
-    assert.ok(!text(handle.result).includes('status/result/cancel'));
-    const page = await h.pi.call('meantime', { action: 'list', limit: 1 });
-    const data = page.result.structuredContent as unknown as { tasks: Snapshot[]; next_offset: null; total: number };
-    assert.equal(data.tasks[0]!.id, task.id);
-    assert.deepEqual(data, JSON.parse(JSON.stringify(page.result.details)));
-    assert.match(text(page.result), new RegExp(`^${task.id} \\| mcp__t__receipt \\| running \\| \\d+s$`));
-    const status = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: task.id });
-    assert.deepEqual(status.result.structuredContent, { task: JSON.parse(JSON.stringify(status.result.details)), result_available: false });
-    assert.ok(!text(status.result).includes('{'));
-    const cancelled = await h.pi.call('meantime', { action: 'cancel', id: task.id });
-    assert.match(text(cancelled.result), /cancel_requested/);
-    assert.deepEqual(cancelled.result.structuredContent, { task: JSON.parse(JSON.stringify(cancelled.result.details)), result_available: false });
-    const missing = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: 'missing' });
-    assert.equal(missing.isError, true);
-    assert.match(text(missing.result), /No task with that id in this session/);
-  } finally { pending.resolve(ok().result); await h.close(); }
-});
-
-test('public renderer expands task details and delegates native foreground results', async () => {
-  const h = await setup();
-  type Render = NonNullable<ToolRenderers['renderResult']>;
-  const theme = { fg: (_color: string, value: string) => value } as Parameters<Render>[2];
-  const context = {} as Parameters<Render>[3];
-  const task: Snapshot = { id: 'mt_sample', tool: 'bash', kind: 'bash', state: 'failed',
-    command: 'printf first\\nprintf second', createdAt: 1000, endedAt: 6000,
-    mode: 'yes', delivery: 'background', localRunning: false, notification: 'observed',
-    progress: 'last update', isError: true, outputPath: '/tmp/sample.txt' };
-  try {
-    const resolve = h.pi.renderers[0]!;
-    const renderer = resolve('meantime', () => undefined)!;
-    const result: Result = { content: [], details: { task: { ...task, exitCode: 7 } } };
-    const render = (expanded: boolean) => renderer.renderResult!(result, { expanded, isPartial: false }, theme, context).render(200).join('\n');
-    assert.equal(render(false).trimEnd(), 'mt_sample | bash | failed | 5s');
-    const expanded = render(true);
-    for (const expected of ['Command: printf first', 'printf second', 'Progress: last update', 'Exit: 7', 'isError: true', 'Output: /tmp/sample.txt']) assert.ok(expanded.includes(expected), expected);
-    for (const name of ['bash', 'mcp__t__one_mt']) {
-      const native = new Text('NATIVE', 0, 0);
-      const managed = resolve(name, () => ({ renderResult: () => native }))!;
-      assert.equal(managed.renderResult!(ok().result, { expanded: false, isPartial: false }, theme, context), native);
-      // Real Pi only passes content/details to result renderers.
-      const handle = { content: result.content, details: task };
-      assert.match(managed.renderResult!(handle, { expanded: false, isPartial: false }, theme, context).render(200).join('\n'), /mt_sample \| bash \| failed \| 5s/);
-    }
-    assert.equal(resolve('read', () => undefined), undefined);
-    // Exercise Pi's actual fallback and wrapper, not a hand-written rendering
-    // expectation: collapsed previews, expansion hints and expanded output match.
-    initTheme('dark', false);
-    const ui = { requestRender() {} } as ConstructorParameters<typeof ToolExecutionComponent>[5];
-    const makeComponent = (renderers: ToolRenderers) => new ToolExecutionComponent(
-      'mcp__t__one_mt', 'foreground', {}, { showImages: false }, renderers, ui, process.cwd());
-    const plain = makeComponent({});
-    const managed = makeComponent(resolve('mcp__t__one_mt', () => ({}))!);
-    const foreground = { content: [{ type: 'text', text: Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n') }], details: undefined, isError: false };
-    plain.updateResult(foreground); managed.updateResult(foreground);
-    assert.deepEqual(managed.render(200), plain.render(200));
-    assert.ok(!managed.render(200).join('\n').includes('line 11'));
-    assert.match(managed.render(200).join('\n'), /20 more lines/);
-    plain.setExpanded(true); managed.setExpanded(true);
-    assert.deepEqual(managed.render(200), plain.render(200));
-    assert.match(managed.render(200).join('\n'), /line 30/);
-  } finally { await h.close(); }
-});
-
-test('wait previews show single and batch bodies through the existing generic renderer', async () => {
-  const body = Array.from({ length: 25 }, (_, i) => `RETAINED_BODY_${i + 1}`).join('\n');
-  const h = await setup([basicTool('mcp__t__preview', async () => { await sleep(5); return ok(body).result; })]);
-  try {
-    const ids = [];
-    for (let i = 0; i < 2; i++) ids.push(snapshot(await h.pi.call('mcp__t__preview_mt', { __background__: 'yes' })).id);
-    initTheme('dark', false);
-    const ui = { requestRender() {} } as ConstructorParameters<typeof ToolExecutionComponent>[5];
-    const renderer = h.pi.renderers[0]!('meantime', () => undefined)!;
-    for (const args of [{ action: 'wait', id: ids[0] }, { action: 'wait', ids }]) {
-      const outcome = await h.pi.call('meantime', args);
-      const result = { ...outcome.result, isError: outcome.isError };
-      const make = (renderers: ToolRenderers) => new ToolExecutionComponent(
-        'meantime', 'preview', args, { showImages: false }, renderers, ui, process.cwd());
-      const plain = make({}), managed = make(renderer);
-      plain.updateResult(result); managed.updateResult(result);
-      assert.match(managed.render(200).join('\n'), /RETAINED_BODY_1\b/, 'collapsed wait must show output, not just task metadata');
-      assert.doesNotMatch(managed.render(200).join('\n'), /RETAINED_BODY_25\b/);
-      assert.match(managed.render(200).join('\n'), /more lines/);
-      assert.deepEqual(managed.render(200), plain.render(200), 'reuse Pi-compatible preview and expansion hint');
-      plain.setExpanded(true); managed.setExpanded(true);
-      assert.deepEqual(managed.render(200), plain.render(200));
-      assert.match(managed.render(200).join('\n'), /RETAINED_BODY_25\b/);
-      if ('ids' in args) assert.equal(managed.render(200).join('\n').match(/RETAINED_BODY_25\b/g)?.length, 2);
-    }
-  } finally { await h.close(); }
-});
 
 test('management results are paginated rather than dumping the full registry into model context', async () => {
   const h = await setup([basicTool('mcp__t__one', async () => { await sleep(10); return ok().result; })]);
   try {
     for (let i = 0; i < 12; i++) {
-      await h.pi.call('mcp__t__one_mt', { __background__: 'yes' });
+      await h.pi.call('mcp__t__one', { __background__: 'yes' });
       await until(() => TaskRuntime.liveProducerCount() === 0);
     }
     const page = await h.pi.call('meantime', { action: 'list', limit: 5 });
@@ -553,6 +296,7 @@ test('management results are paginated rather than dumping the full registry int
     assert.match(page.result.content.filter(b => b.type === 'text').map(b => b.text).join('\n'), /\nMore: offset=5$/);
   } finally { await h.close(); }
 });
+
 test('wait is the single result path, with immediate reads and fractional seconds', async () => {
   const work = deferred<Result>();
   const h = await setup([basicTool('mcp__t__slow', () => work.promise)]);
@@ -562,7 +306,7 @@ test('wait is the single result path, with immediate reads and fractional second
     assert.deepEqual(schema.properties.timeout, { type: 'number', minimum: 0 });
     assert.equal('timeout_ms' in schema.properties, false);
     assert.equal(schema.additionalProperties, false);
-    const { id } = snapshot(await h.pi.call('mcp__t__slow_mt', { __background__: 'yes' }));
+    const { id } = snapshot(await h.pi.call('mcp__t__slow', { __background__: 'yes' }));
     for (const action of ['status', 'result', 'unknown']) {
       assert.equal((await h.pi.call('meantime', { action, id })).isError, true);
     }
@@ -587,8 +331,8 @@ test('multi-task wait exposes settled and pending tasks, validates ids, and shar
   const a = deferred<Result>(), b = deferred<Result>();
   const h = await setup([basicTool('mcp__t__a', () => a.promise), basicTool('mcp__t__b', () => b.promise)]);
   try {
-    const first = snapshot(await h.pi.call('mcp__t__a_mt', { __background__: 'yes' }));
-    const second = snapshot(await h.pi.call('mcp__t__b_mt', { __background__: 'yes' }));
+    const first = snapshot(await h.pi.call('mcp__t__a', { __background__: 'yes' }));
+    const second = snapshot(await h.pi.call('mcp__t__b', { __background__: 'yes' }));
     const immediate = await Promise.race([
       h.pi.call('meantime', { action: 'wait', ids: [first.id, second.id], timeout: 0 }),
       sleep(0).then(() => { throw new Error('immediate multi-task read blocked'); }),
@@ -624,9 +368,8 @@ test('multi-task wait exposes settled and pending tasks, validates ids, and shar
   } finally { a.resolve(ok().result); b.resolve(ok().result); await h.close(); }
 });
 
-
 test('multi-task wait shares its text budget for Bash and MCP, reports omission, and preserves single retrieval', async () => {
-  for (const tool of ['bash', 'mcp__t__text_mt']) {
+  for (const tool of ['bash', 'mcp__t__text']) {
     const work = deferred<Result>();
     const h = await setup([basicTool('mcp__t__text', () => work.promise)]);
     try {
@@ -659,30 +402,23 @@ test('multi-task wait shares its text budget for Bash and MCP, reports omission,
   }
 });
 
-// Public-contract double only; actual SDK approval/startup races live in pi-smoke.
-test('early manual detach is call-scoped, not sticky for a later sibling', async () => {
-  const approval = deferred<void>(), entered = deferred<void>();
-  const work = deferred<Result>(); let bodies = 0, first = true;
-  const h = await setup([basicTool('mcp__t__held', () => { bodies++; return work.promise; })]);
-  h.pi.on('tool_call', async event => {
-    if (event.toolName === 'mcp__t__held_mt' && first) {
-      first = false; entered.resolve(); await approval.promise;
-    }
-  });
+test('real shell fixture runs, can detach without a second spawn, and result is retained', async () => {
+  const h = await setup();
   try {
-    const original = h.pi.call('mcp__t__held_mt', {});
-    await entered.promise;
-    assert.equal((h.instance.inspect() as { tasks: unknown[] }).tasks.length, 0);
-    await h.pi.commands.get('meantime')!('detach', h.pi.ctx);
-    const sibling = h.pi.call('mcp__t__held_mt', {});
-    await until(() => bodies === 1);
-    approval.resolve();
-    assert.equal(snapshot(await original).detachReason, 'shortcut');
-    const tasks = (h.instance.inspect() as { tasks: Snapshot[] }).tasks;
-    assert.equal(tasks.filter(task => task.delivery === 'foreground').length, 1);
-    work.resolve(ok('complete').result);
-    assert.equal(((await sibling).result.structuredContent as { task?: unknown }).task, undefined);
-  } finally { approval.resolve(); work.resolve(ok().result); await h.close(); }
+    const command = `node -e 'setTimeout(()=>console.log("SHELL_DONE"),80)'\n# ${'long comment '.repeat(20)}`;
+    const out = await h.pi.call('bash', { command, __background__: 'yes' });
+    const task = snapshot(out); assert.equal(task.state, 'running');
+    assert.equal(task.command, command);
+    const list = await h.pi.call('meantime', { action: 'list' });
+    const preview = (list.result.details as { tasks: Snapshot[] }).tasks[0]!.command!;
+    assert.ok(preview.endsWith('…')); assert.ok(!preview.includes('\n'));
+    await until(() => h.pi.notifications.length === 1);
+    assert.match(h.pi.notifications[0]!.content, new RegExp(`Meantime ${task.id} completed`));
+    assert.match(h.pi.notifications[0]!.content, /<untrusted-output-tail>\nSHELL_DONE/);
+    const result = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: task.id });
+    assert.equal((result.result.details as { task: Snapshot }).task.command, command);
+    assert.match(JSON.stringify(result.result), /SHELL_DONE/);
+  } finally { await h.close(); }
 });
 
 test('a detached producer cannot pass old steer to descendants in a later model turn', async () => {
@@ -691,13 +427,13 @@ test('a detached producer cannot pass old steer to descendants in a later model 
   const h = await setup([
     basicTool('mcp__t__outer', async (_id, _args, _signal, _update, ctx) => {
       entered.resolve(); await launch.promise;
-      innerResult = (await ctx.executeTool('mcp__t__inner_mt', {})).result;
+      innerResult = (await ctx.executeTool('mcp__t__inner', {})).result;
       return innerResult;
     }),
     basicTool('mcp__t__inner', () => child.promise),
   ]);
   try {
-    const outer = h.pi.call('mcp__t__outer_mt', {}); await entered.promise;
+    const outer = h.pi.call('mcp__t__outer', {}); await entered.promise;
     await h.pi.emit('input', { type: 'input', text: 'next', source: 'rpc', streamingBehavior: 'steer' });
     assert.equal(snapshot(await outer).detachReason, 'steer');
     await h.pi.emit('turn_end', { type: 'turn_end' });
@@ -709,4 +445,32 @@ test('a detached producer cannot pass old steer to descendants in a later model 
     await until(() => innerResult !== undefined);
     assert.equal((innerResult!.structuredContent as { task?: unknown }).task, undefined);
   } finally { launch.resolve(); child.resolve(ok().result); await h.close(); }
+});
+
+test('short management receipts retain structured data and cancellation semantics', async () => {
+  const pending = deferred<Result>();
+  const h = await setup([basicTool('mcp__t__receipt', () => pending.promise)]);
+  const text = (result: Result) => result.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+  try {
+    const handle = await h.pi.call('mcp__t__receipt', { __background__: 'yes' });
+    const task = snapshot(handle);
+    assert.match(text(handle.result), new RegExp(`^Meantime ${task.id} running in background`));
+    assert.match(text(handle.result), /In the TUI use \/meantime or/);
+    assert.ok(text(handle.result).includes(`meantime(action="wait", id="${task.id}", timeout=0)`));
+    assert.ok(!text(handle.result).includes('status/result/cancel'));
+    const page = await h.pi.call('meantime', { action: 'list', limit: 1 });
+    const data = page.result.structuredContent as unknown as { tasks: Snapshot[]; next_offset: null; total: number };
+    assert.equal(data.tasks[0]!.id, task.id);
+    assert.deepEqual(data, JSON.parse(JSON.stringify(page.result.details)));
+    assert.match(text(page.result), new RegExp(`^${task.id} \\| mcp__t__receipt \\| running \\| \\d+s$`));
+    const status = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: task.id });
+    assert.deepEqual(status.result.structuredContent, { task: JSON.parse(JSON.stringify(status.result.details)), result_available: false });
+    assert.ok(!text(status.result).includes('{'));
+    const cancelled = await h.pi.call('meantime', { action: 'cancel', id: task.id });
+    assert.match(text(cancelled.result), /cancel_requested/);
+    assert.deepEqual(cancelled.result.structuredContent, { task: JSON.parse(JSON.stringify(cancelled.result.details)), result_available: false });
+    const missing = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: 'missing' });
+    assert.equal(missing.isError, true);
+    assert.match(text(missing.result), /No task with that id in this session/);
+  } finally { pending.resolve(ok().result); await h.close(); }
 });

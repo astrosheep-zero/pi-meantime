@@ -26,12 +26,12 @@ const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 process.env.PI_CODING_AGENT_DIR = join(root, 'agent');
 const events = []; const checks = []; const errors = []; const calls = new Map();
 const original = 'sdk_fixture_judgment';
-const proxy = `${original}_mt`;
 const mcpOriginal = 'mcp__sdk_permissions__stubborn';
-const mcpProxy = `${mcpOriginal}_mt`;
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 let session; let extension; let pendingChoice; let gate;
+let managed = false;
+const nativeOutcomes = new Map();
 const delay = ms => new Promise(resolveDelay => setTimeout(resolveDelay, ms));
 const turn = () => new Promise(resolveTurn => setImmediate(resolveTurn));
 async function until(predicate, message, timeout = 5000) {
@@ -91,9 +91,18 @@ try {
           return makeResult(args.rawError, args.tag);
         },
       });
-      extension = install(pi, { config: validateConfig({ autoDetachMs: 15,
-        include: ['sdk_fixture_*', 'mcp__sdk_permissions__*'], blockOriginalCalls: false, shutdownGraceMs: 100, maxRunning: 1 }),
-        makeBash: cwd => sdk.createBashToolDefinition(cwd) });
+      pi.registerTool({ name: 'sdk_fixture_parent', label: 'parent', description: 'Real nested permission dispatch',
+        executionMode: 'sequential', parameters: { type: 'object', properties: {
+          tag: { type: 'string' }, marker: { type: 'string' },
+        } },
+        async execute(_id, { tag, marker }, _signal, _update, ctx) {
+          const outcome = marker
+            ? await ctx.executeTool(mcpOriginal, { ms: 1, marker, __background__: 'yes' })
+            : await ctx.executeTool(original, { rawError: false, tag, __background__: 'yes' });
+          return { ...outcome.result, isError: outcome.isError };
+        } });
+      if (managed) extension = install(pi, { config: validateConfig({ autoDetachMs: 15,
+        include: ['sdk_fixture_*', 'mcp__sdk_permissions__*'], shutdownGraceMs: 100, maxRunning: 1 }) });
       pi.on('tool_result', event => {
         events.push({ type: event.type, name: event.toolName, id: event.toolCallId,
           parentId: event.parentToolCallId, isError: event.isError });
@@ -124,19 +133,39 @@ try {
     return new Promise(resolveChoice => { pendingChoice = choice => { pendingChoice = undefined; resolveChoice(choice); }; });
   } };
   await session.bindExtensions({ mode: 'rpc', uiContext, onError: error => errors.push({ event: error.event, error: error.error }) });
-  await until(() => session.getAllTools().some(tool => tool.name === mcpProxy), 'MCP proxy registration timed out', 10000);
-  session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), original, proxy, mcpOriginal, mcpProxy, 'meantime'])]);
+  // Record genuinely uninstalled outcomes, then recreate the same session setup
+  // with meantime. The original name cannot also serve as an unmanaged alias.
+  for (const [rawError, finalError] of [[true, false], [false, true]]) {
+    nativeOutcomes.set(`hook-${rawError}`, await invoke(original, { rawError, finalError, tag: 'hook-native' }));
+  }
+  for (const finalError of [undefined, false]) {
+    const controller = new AbortController(), tag = finalError === false ? 'cancel-hook' : 'cancel';
+    const pending = invoke(original, { rawError: true, tag: `${tag}-native`, waitForAbort: true,
+      ...(finalError === undefined ? {} : { finalError }) }, { signal: controller.signal });
+    await until(() => calls.has(`${tag}-native`), 'baseline body did not start');
+    controller.abort(); nativeOutcomes.set(tag, await pending);
+  }
+  await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
+  session.dispose(); managed = true;
+  await loader.reload();
+  ({ session } = await sdk.createAgentSession({ cwd: root, resourceLoader: loader, settingsManager,
+    sessionManager: sdk.SessionManager.inMemory(root) }));
+  await session.bindExtensions({ mode: 'rpc', uiContext, onError: error => errors.push({ event: error.event, error: error.error }) });
+  await until(() => session.getAllTools().some(tool => tool.name === mcpOriginal), 'MCP original registration timed out', 10000);
+  session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), original, mcpOriginal, 'sdk_fixture_parent', 'meantime'])]);
+  assert.equal(session.getAllTools().filter(t => t.name === original).length, 1);
+  assert.ok(session.getAllTools().every(t => !t.name.endsWith('_mt')));
   await turn();
 
   for (const [rawError, finalError] of [[true, false], [false, true]]) {
     await check(`official_hook_${rawError}_to_${finalError}`, async () => {
       gate = undefined;
-      const native = await invoke(original, { rawError, finalError, tag: 'hook-native' });
+      const native = nativeOutcomes.get(`hook-${rawError}`);
       assert.equal(native.result.isError, rawError, 'SDK preserves pre-hook result flag');
       assert.equal(native.isError, finalError, 'SDK final outcome is authoritative');
       assert.deepEqual(native.result.content, makeResult(rawError, 'hook-native').content);
       assert.deepEqual(native.result.structuredContent, makeResult(rawError, 'hook-native').structuredContent);
-      const wrapped = await invoke(proxy, { rawError, finalError, tag: 'hook-wrapped', __background__: 'no' });
+      const wrapped = await invoke(original, { rawError, finalError, tag: 'hook-wrapped', __background__: 'no' });
       assert.equal(wrapped.isError, finalError);
       assert.equal(wrapped.result.isError, finalError);
       assert.deepEqual(wrapped.result.content, makeResult(rawError, 'hook-wrapped').content);
@@ -152,15 +181,10 @@ try {
   for (const finalError of [undefined, false]) await check(finalError === undefined
     ? 'sdk_native_cancel_error_and_wrapped_failed' : 'sdk_native_cancel_hook_success_and_wrapped_completed', async () => {
     gate = undefined;
-    const nativeController = new AbortController();
     const tag = finalError === false ? 'cancel-hook' : 'cancel';
-    const nativePending = invoke(original, { rawError: true, tag: `${tag}-native`, waitForAbort: true,
-      ...(finalError === undefined ? {} : { finalError }) }, { signal: nativeController.signal });
-    await until(() => calls.has(`${tag}-native`), 'native body did not start');
-    nativeController.abort();
-    const native = await nativePending;
+    const native = nativeOutcomes.get(tag);
     const wrappedController = new AbortController();
-    const wrappedPending = invoke(proxy, { rawError: true, tag: `${tag}-wrapped`, waitForAbort: true, __background__: 'no',
+    const wrappedPending = invoke(original, { rawError: true, tag: `${tag}-wrapped`, waitForAbort: true, __background__: 'no',
       ...(finalError === undefined ? {} : { finalError }) }, { signal: wrappedController.signal });
     await until(() => calls.has(`${tag}-wrapped`), 'wrapped body did not start');
     wrappedController.abort();
@@ -176,10 +200,10 @@ try {
   });
 
   await check('outer_permission_denial_prevents_task_admission', async () => {
-    gate = { name: proxy };
+    gate = { name: original };
     const beforeTasks = tasks().length; const beforeCalls = bodyCount(); const beforeEvents = events.length;
     let settled = false;
-    const pending = invoke(proxy, { rawError: false, tag: 'outer-denied', __background__: 'yes' }).then(value => { settled = true; return value; });
+    const pending = invoke(original, { rawError: false, tag: 'outer-denied', __background__: 'yes' }).then(value => { settled = true; return value; });
     await until(() => pendingChoice, 'outer permission selector did not open');
     await delay(50);
     assert.equal(settled, false); assert.equal(tasks().length, beforeTasks); assert.equal(bodyCount(), beforeCalls);
@@ -191,25 +215,26 @@ try {
     return { newTasks: 0, bodyStarts: 0, promptEvents, liveProducers: TaskRuntime.liveProducerCount() };
   });
 
-  await check('nested_permission_denial_never_starts_business_or_leaks_running_task', async () => {
+  await check('nested_permission_denial_never_admits_task_or_starts_business', async () => {
     gate = { name: original };
-    const beforeCalls = bodyCount(); const beforeEvents = events.length;
+    const beforeCalls = bodyCount(); const beforeEvents = events.length; const beforeTasks = tasks().length;
     let settled = false;
-    const pending = invoke(proxy, { rawError: false, tag: 'inner-denied', __background__: 'yes' }).then(value => { settled = true; return value; });
+    const pending = invoke('sdk_fixture_parent', { tag: 'inner-denied' }).then(value => { settled = true; return value; });
     await until(() => pendingChoice, 'nested permission selector did not open');
     await delay(50);
     assert.equal(settled, false, 'explicit background must not resolve while approval is pending');
     assert.equal(bodyCount(), beforeCalls);
-    const pendingTask = tasks().find(task => task.localRunning);
-    assert.ok(pendingTask); assert.equal(pendingTask.delivery, 'foreground');
+    assert.equal(tasks().length, beforeTasks, 'permission precedes task admission');
     pendingChoice('No'); const outcome = await pending;
-    await until(() => TaskRuntime.liveProducerCount() === 0, 'denial retained a live producer');
     assert.equal(bodyCount(), beforeCalls);
-    assert.equal(tasks().find(item => item.id === pendingTask.id), undefined);
+    assert.equal(tasks().length, beforeTasks);
     assert.match(outcome.result.content[0].text, /FIXTURE_PERMISSION_DENIED/);
     const promptEvents = events.slice(beforeEvents).filter(event => event.type.startsWith('ui_prompt_'));
     assert.deepEqual(promptEvents.map(event => event.type), ['ui_prompt_start', 'ui_prompt_end']);
     assertReleased();
+    const nestedCall = events.slice(beforeEvents).find(event => event.type === 'tool_call' && event.name === original);
+    assert.ok(nestedCall.parentId, 'permission check belongs to a genuine ctx.executeTool child');
+    assert.equal(events.slice(beforeEvents).filter(event => event.type === 'tool_call' && event.name === original).length, 1);
     // A denial must be returned directly, not transformed into a successful
     // background handle by the ui_prompt_end / detach microtask race.
     assert.equal(outcome.isError, true, 'denial must be surfaced as the finalized error');
@@ -222,9 +247,10 @@ try {
     const marker = join(root, 'mcp-forbidden-side-effect');
     const beforeMcpCalls = mcpCallCount();
     let settled = false;
-    const pending = invoke(mcpProxy, { ms: 1, marker, __background__: 'yes' }).then(value => { settled = true; return value; });
+    const pending = invoke('sdk_fixture_parent', { marker }).then(value => { settled = true; return value; });
     await until(() => pendingChoice, 'MCP permission selector did not open');
     await delay(50); assert.equal(settled, false); assert.equal(existsSync(marker), false);
+    assert.equal(tasks().filter(t => t.localRunning).length, 0, 'MCP approval must precede admission');
     pendingChoice('No'); const outcome = await pending;
     await until(() => TaskRuntime.liveProducerCount() === 0, 'MCP denial retained producer');
     await delay(30); assert.equal(existsSync(marker), false); assert.equal(mcpCallCount(), beforeMcpCalls); assertReleased();
@@ -238,7 +264,7 @@ try {
   await check('approved_mcp_request_reuses_capacity_and_runs_once', async () => {
     gate = { name: mcpOriginal };
     const marker = join(root, 'mcp-approved-side-effect'); const beforeMcpCalls = mcpCallCount();
-    const pending = invoke(mcpProxy, { ms: 60, marker, __background__: 'yes' });
+    const pending = invoke(mcpOriginal, { ms: 60, marker, __background__: 'yes' });
     await until(() => pendingChoice, 'MCP approval selector did not open');
     assert.equal(mcpCallCount(), beforeMcpCalls);
     pendingChoice('Yes'); const outcome = await pending;
@@ -255,7 +281,7 @@ try {
     gate = { name: original }; const beforeCalls = bodyCount(); const beforeEvents = events.length;
     session.extensionRunner.setUIContext(undefined, 'print');
     try {
-      const outcome = await invoke(proxy, { rawError: false, tag: 'no-ui-denied', __background__: 'no' });
+      const outcome = await invoke(original, { rawError: false, tag: 'no-ui-denied', __background__: 'no' });
       await turn();
       assert.equal(outcome.isError, true); assert.equal(bodyCount(), beforeCalls); assertReleased();
       assert.ok(outcome.result.content.some(block => block.text?.includes('FIXTURE_NO_UI_DENY')));
@@ -267,7 +293,7 @@ try {
   await check('plain_tool_call_block_is_not_claimed_as_permission_ui', async () => {
     gate = { name: original, plainBlock: true };
     const beforeEvents = events.length; const beforeCalls = bodyCount();
-    const outcome = await invoke(proxy, { rawError: false, tag: 'hook-block', __background__: 'no' });
+    const outcome = await invoke(original, { rawError: false, tag: 'hook-block', __background__: 'no' });
     await turn();
     assert.equal(outcome.isError, true); assert.equal(bodyCount(), beforeCalls); assertReleased();
     assert.equal(events.slice(beforeEvents).filter(event => event.type.startsWith('ui_prompt_')).length, 0);

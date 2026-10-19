@@ -2,15 +2,15 @@ import { keyHint } from '@earendil-works/pi-coding-agent';
 import { Text, getCapabilities, getImageDimensions, imageFallback, stripTerminalSequences,
   matchesKey, SelectList, truncateToWidth, visibleWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
 import type { Config } from './config.ts';
-import type { BashTool, Context, EventHandler, EventMap, Json, Loadout, PiHost, Result, Tool, ToolContext, ToolInfo } from './protocol.ts';
-import { CONTROL, MARKER, decorateSchema, fingerprint, isRecord, matches, proxyName, splitControl } from './schema.ts';
+import type { Context, EventHandler, EventMap, Json, PiHost, Result } from './protocol.ts';
+import { captureSession, manageTools } from './host.ts';
+import type { HostSession, ManagedCall } from './host.ts';
+import { CONTROL, isRecord } from './schema.ts';
 import { TaskRuntime } from './runtime.ts';
 import type { Snapshot, View, TaskRecord, IndexChange } from './runtime.ts';
 import { truncateUtf8 } from './store.ts';
 
-export interface InstallOptions { config: Config; baseBash?: BashTool; makeBash(cwd: string): BashTool }
-interface Pair { original: string; name: string; signature: string; definition: Tool; enabled: boolean }
-interface Ticket { original: string; started: boolean; runtime: TaskRuntime }
+export interface InstallOptions { config: Config; connect?: (pi: PiHost) => HostSession }
 const RESULT_SCHEMA = {
   type: 'object', properties: { task: { type: 'object' }, result: {}, tasks: { type: 'array', items: { type: 'object' } }, pending: { type: 'array', items: { type: 'object' } }, result_available: { type: 'boolean' } },
 };
@@ -23,18 +23,14 @@ function owner(ctx: Context): string {
   return `${ctx.sessionManager.getSessionId()}\0${ctx.sessionManager.getSessionFile() ?? ''}`;
 }
 function json(value: unknown): Json { return JSON.parse(JSON.stringify(value)) as Json; }
-function foregroundOrHandle(view: View, nested: boolean): Result {
+function foregroundOrHandle(view: View): Result {
   if (view.kind === 'handle') return {
     content: [{ type: 'text', text: `Meantime ${view.task.id} running in background; execution continues independently. Do not restart or poll in a loop. Completion will be announced. In the TUI use /meantime or /meantime cancel ${view.task.id}; the model can use meantime list, meantime(action="wait", id="${view.task.id}", timeout=0) for current state/result, or meantime cancel.` }],
     details: view.task,
     structuredContent: { task: json(view.task), result_available: false },
   };
   if (view.thrown) throw view.thrown.error;
-  if (!nested) return view.result;
-  // Pi already aggregates nested usage. Preserve the hook's authoritative flag
-  // without double-counting usage or exposing our task bookkeeping.
-  const { usage: _usage, ...result } = view.result;
-  return { ...result, isError: view.isError ?? result.isError ?? false };
+  return { ...view.result, isError: view.isError ?? view.result.isError ?? false };
 }
 function commandPreview(command: string): string {
   const line = stripTerminalSequences(command).replace(/\s+/g, ' ').trim();
@@ -87,13 +83,11 @@ function storedResult(task: Snapshot, source: Result, budget?: { remaining: numb
   };
 }
 
-/** Pure extension composition. No private host fields, prototype patches or
- * direct invocation of another extension's execute implementation. */
+/** Runtime/UI composition. Pi-specific interception is isolated in host.ts. */
 export function install(pi: PiHost, options: InstallOptions): { dispose(): Promise<void>; inspect(): unknown } {
   const { config } = options;
   const executionControl = `Optional ${CONTROL} (interactive sessions): "auto" (default) starts in the foreground and ${config.autoDetachMs > 0 ? `the timer detaches after ${config.autoDetachMs / 1000}s if still running` : 'never detaches on a timer'}; it may detach sooner on Ctrl+Shift+B, /meantime detach or steer (if enabled). "yes" requests background execution; "no" disables automatic backgrounding. Detaching does not cancel the operation.`;
-  const pairs = new Map<string, Pair>();
-  const tickets = new Map<string, Ticket>();
+  let host: ReturnType<typeof manageTools> | undefined;
   // Only live public call identities may donate intent to later nested calls.
   const calls = new Map<string, { parent?: string; intent?: 'steer' | 'shortcut' }>();
   function userDetach(reason: 'steer' | 'shortcut'): number {
@@ -110,15 +104,10 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     return undefined;
   }
   const diagnostics = new Map<string, string>();
-  const capabilities = new Map<string, 'parallel' | 'sequential' | undefined>();
   const disposers: (() => void)[] = [];
   let runtime: TaskRuntime | undefined;
   let currentCtx: Context | undefined;
   let currentOwner: string | undefined;
-  let scanner: ReturnType<typeof setInterval> | undefined;
-  let reconcilerQueued = false;
-  let reconciling = false;
-  let installed = true;
   let live = false;
   let refreshPanel: (() => void) | undefined;
   let closePanel: (() => void) | undefined;
@@ -219,124 +208,18 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   function on<K extends keyof EventMap>(event: K, handler: EventHandler<K>): void {
     disposers.push(pi.on(event, handler));
   }
-  function capture(loadout: Loadout): void {
-    capabilities.clear();
-    for (const tool of loadout.registered) capabilities.set(tool.name, tool.executionMode);
-    queueReconcile();
-  }
-  function queueReconcile(): void {
-    if (reconcilerQueued || !live || reconciling) return;
-    reconcilerQueued = true;
-    queueMicrotask(() => { reconcilerQueued = false; if (live && installed) reconcile(); });
-  }
-  function hideDeclarations(loadout: Loadout): { hiddenDeclarations: string[] } {
-    capture(loadout);
-    const active = new Set(loadout.declared.map(t => t.name));
-    const callable = new Set(loadout.callable.map(t => t.name));
-    return { hiddenDeclarations: [...pairs.values()].filter(p => p.enabled && active.has(p.name) && callable.has(p.original)).map(p => p.original) };
-  }
-  function registerProxy(info: ToolInfo, name: string, signature: string): Tool {
-    const original = info.name;
-    return {
-      name, label: name,
-      description: `${MARKER} ${info.description}\nProxy for ${original}; optional ${CONTROL}.`,
-      // Discovery metadata lacks outputSchema; native output or a handle is
-      // unknown, not the old task envelope promised for every invocation.
-      parameters: decorateSchema(info.parameters), outputSchema: {},
-      exposure: info.exposure ?? 'direct', defaultActive: (info.exposure ?? 'direct') === 'direct',
-      // Preserve Pi's exposure policy: indirect MCP proxies stay indirect.
-      // Sequential tools are not accepted by discovery. Never silently override
-      // the original tool's sequential contract just to enable detachment.
-      executionMode: 'parallel',
-      namespace: info.namespace, annotations: info.annotations,
-      promptGuidelines: info.promptGuidelines ? [...info.promptGuidelines] : undefined,
-      reachesTools: () => [original],
-      async execute(callId, params, signal, update, ctx) {
-        const r = assertRuntime(ctx);
-        const source = pi.getAllTools().find(t => t.name === original);
-        const actual = ctx.tools.find(t => t.name === original);
-        if (!source || !actual || source.exposure === 'hidden' || actual.executionMode === 'sequential') throw new Error(`Original tool ${original} is unavailable or sequential; the proxy will be reconciled`);
-        if (sourceSignature(source) !== signature) { queueReconcile(); throw new Error('Original tool schema/metadata changed; use its refreshed proxy definition before retrying'); }
-        const split = splitControl(params);
-        const ticket: Ticket = { original, started: false, runtime: r };
-        tickets.set(callId, ticket);
-        let producerStarted = false;
-        try {
-          const view = await r.run({
-            tool: original, kind: 'tool', callId, mode: split.mode,
-            canDetach: interactive(ctx), parentSignal: signal, onUpdate: update,
-            userDetach: inheritedDetach(callId),
-            readyToDetach: () => ticket.started,
-            execute: async (jobSignal, onUpdate) => {
-              producerStarted = true;
-              try {
-                // Resolve the live original BY NAME through Pi. The target differs
-                // from the proxy name, so this cannot recurse into this wrapper.
-                return await ctx.executeTool(original, split.args, { signal: jobSignal, onUpdate });
-              } finally { tickets.delete(callId); }
-            },
-          });
-          if (!producerStarted) tickets.delete(callId);
-          return foregroundOrHandle(view, true);
-        } catch (error) { if (!producerStarted) tickets.delete(callId); throw error; }
-      },
-    };
-  }
-  function sourceSignature(info: ToolInfo): string {
-    return fingerprint({ name: info.name, description: info.description, parameters: info.parameters,
-      exposure: info.exposure, annotations: info.annotations, namespace: info.namespace,
-      guidelines: info.promptGuidelines, source: info.sourceInfo?.path });
-  }
-  function reconcile(): void {
-    if (!installed || !live || reconciling) return;
-    reconciling = true;
-    try {
-      const all = pi.getAllTools();
-      const active = new Set(pi.getActiveTools());
-      const byName = new Map(all.map(t => [t.name, t]));
-      const eligible = new Set<string>();
-      for (const info of all) {
-        if (info.name === 'bash' || info.name === 'meantime' || info.description.startsWith(MARKER)) continue;
-        if (!matches(info.name, config.include) || matches(info.name, config.exclude)) continue;
-        // Mirror the original's exposure. A codemode/deferred proxy stays
-        // indirectly callable instead of being promoted to a direct model tool.
-        // Non-direct tools are callable even when not in the active tool set.
-        const exposure = info.exposure ?? 'direct';
-        if (exposure !== 'direct' && exposure !== 'codemode' && exposure !== 'deferred') continue;
-        if (exposure === 'direct' && !active.has(info.name)) continue;
-        if (capabilities.get(info.name) === 'sequential') { diagnostic(info.name, 'Sequential tool left unwrapped'); continue; }
-        const name = proxyName(info.name);
-        const existing = byName.get(name);
-        const old = pairs.get(info.name);
-        if (existing && (!old || !existing.description.startsWith(MARKER))) { diagnostic(info.name, `Proxy name collision: ${name}; original retained`); continue; }
-        try {
-          const signature = sourceSignature(info);
-          // Validate BEFORE hiding anything.
-          decorateSchema(info.parameters);
-          eligible.add(info.name);
-          if (old?.enabled && old.signature === signature) continue;
-          const definition = registerProxy(info, name, signature);
-          const pair: Pair = { original: info.name, name, signature, definition, enabled: true };
-          pairs.set(info.name, pair);
-          try { pi.registerTool(definition); }
-          catch (error) { if (old) pairs.set(info.name, old); else pairs.delete(info.name); throw error; }
-          diagnostics.delete(info.name);
-        } catch (error) { diagnostic(info.name, String(error)); }
-      }
-      for (const pair of pairs.values()) {
-        if (!pair.enabled || eligible.has(pair.original)) continue;
-        pair.enabled = false;
-        // A later extension may have taken this name. Never hide/overwrite its tool.
-        if (byName.get(pair.name)?.description.startsWith(MARKER)) {
-          pi.registerTool({ ...pair.definition, exposure: 'hidden', defaultActive: false });
-        }
-      }
-    } finally { reconciling = false; }
+  function run(call: ManagedCall): Promise<Result> {
+    const r = assertRuntime(call.ctx);
+    return r.run({ tool: call.name, kind: call.name === 'bash' ? 'bash' : 'tool', callId: call.id,
+      mode: call.mode, command: call.name === 'bash' && typeof call.args.command === 'string' ? call.args.command : undefined,
+      canDetach: interactive(call.ctx) && call.canDetach, parentSignal: call.signal, onUpdate: call.update,
+      userDetach: inheritedDetach(call.id), execute: call.execute,
+    }).then(foregroundOrHandle);
   }
 
   pi.registerToolRenderer((name, next) => {
     const native = next();
-    if (name !== 'meantime' && name !== 'bash' && !name.endsWith('_mt')) return native;
+    if (name !== 'meantime' && !host?.names().includes(name)) return native;
     return {
       ...native,
       renderResult(result, renderOptions, theme, context) {
@@ -383,37 +266,6 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     };
   });
 
-  const base = options.baseBash ?? options.makeBash(process.cwd());
-  if (base.name !== 'bash') throw new Error('makeBash must return Pi\'s built-in bash definition');
-  pi.registerTool({
-    name: 'bash', label: 'bash', parameters: decorateSchema(base.parameters),
-    promptSnippet: base.promptSnippet, promptGuidelines: base.promptGuidelines,
-    annotations: base.annotations, executionMode: base.executionMode,
-    constrainedSampling: base.constrainedSampling,
-    outputSchema: base.outputSchema ? { anyOf: [base.outputSchema, {
-      type: 'object', properties: { task: { type: 'object' }, result_available: { const: false } },
-      required: ['task', 'result_available'],
-    }] } : {},
-    description: `${base.description}\nManaged by pi-meantime; optional ${CONTROL}.`,
-    // Preserve direct access from codemode. A built-in factory, not executeTool('bash'),
-    // is used below, so the same-name override has no recursive dispatch.
-    exposure: 'direct',
-    async execute(callId, params, signal, update, ctx) {
-      const r = assertRuntime(ctx);
-      const split = splitControl(params);
-      const native = options.makeBash(ctx.cwd);
-      const view = await r.run({ tool: 'bash', kind: 'bash', callId, mode: split.mode,
-        command: typeof split.args.command === 'string' ? split.args.command : undefined,
-        canDetach: interactive(ctx), parentSignal: signal, onUpdate: update,
-        userDetach: inheritedDetach(callId),
-        execute: async (jobSignal, onUpdate) => {
-          const result = await native.execute(callId, split.args, jobSignal, onUpdate, ctx);
-          return { result, isError: result.isError === true };
-        },
-      });
-      return foregroundOrHandle(view, false);
-    },
-  });
   pi.registerTool({
     name: 'meantime', label: 'Background tasks', exposure: 'direct',
     description: 'Background tasks: list, wait, cancel. wait blocks until settled, user detach or timeout seconds (default 30, no upper limit); timeout: 0 returns current state/result immediately. For multiple tasks use ids and mode any|all (default all). Never poll in a loop. Unique ID prefixes accepted. Cancellation does not prove rollback.',
@@ -426,7 +278,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       offset: { type: 'integer', minimum: 0 },
       limit: { type: 'integer', minimum: 1, maximum: 32 },
     }, required: ['action'], additionalProperties: false },
-    outputSchema: RESULT_SCHEMA, prepareLoadout: hideDeclarations,
+    outputSchema: RESULT_SCHEMA,
     async execute(_id, params, signal, _update, ctx): Promise<Result> {
       const r = assertRuntime(ctx);
       if (params.action === 'list') {
@@ -501,32 +353,31 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       },
     }, [...records.values()]);
     runtime = created;
-    reconcile(); updateStatus();
-    scanner = setInterval(() => { try { reconcile(); } catch (error) { diagnostic('registry', String(error)); } }, config.reconcileMs);
-    scanner.unref();
+    host = manageTools((options.connect ?? captureSession)(pi), config, run, diagnostic);
+    updateStatus();
   }
   async function stop(): Promise<void> {
     closePanel?.();
-    clearInterval(scanner); scanner = undefined;
+    host?.retire();
     // Shutdown may release an unfinished foreground call. Record that handle
     // while Pi still points to its creating session, then retire every callback.
     await runtime?.close();
+    host?.dispose(); host = undefined;
     live = false; runtime = undefined;
     try { currentCtx?.ui.setStatus('meantime', undefined); currentCtx?.ui.setWidget('bg-control', undefined); } catch {}
     currentCtx = undefined; currentOwner = undefined;
-    tickets.clear(); calls.clear();
+    calls.clear();
   }
   on('session_start', (_event, ctx) => start(ctx));
   on('session_shutdown', () => stop());
 
   on('before_agent_start', (event, ctx) => {
     if (live) {
-      currentCtx = ctx; reconcile();
-      event.systemPromptOptions.sections.meantime = `Tools ending in _mt perform the same operation and accept the same business arguments as their original tools, with one extra optional parameter: ${CONTROL}. Use the _mt version when available. ${executionControl} Managed bash accepts the same control; timeout remains a hard command timeout. A task handle means the work is already running; do not repeat the call. Await completion notification or explicitly inspect meantime.`;
+      currentCtx = ctx; host?.refresh();
+      event.systemPromptOptions.sections.meantime = `Managed tools keep their original names and business arguments, with one extra optional parameter: ${CONTROL}. ${executionControl} Managed bash accepts the same control; timeout remains a hard command timeout. A task handle means the work is already running; do not repeat the call. Await completion notification or explicitly inspect meantime.`;
     }
   });
-  on('mcp_servers_change', () => queueReconcile());
-  on('agent_settled', () => { calls.clear(); runtime?.flushNotifications(); queueReconcile(); });
+  on('agent_settled', () => { calls.clear(); runtime?.flushNotifications(); });
   on('turn_end', () => { calls.clear(); });
   on('session_compact_failed', () => runtime?.flushNotifications());
   for (const event of ['session_compact', 'session_tree'] as const) on(event, () => {
@@ -542,6 +393,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   on('tool_execution_end', (event, ctx) => {
     if (!live || owner(ctx) !== currentOwner) return;
     calls.delete(event.toolCallId);
+    host?.end(event.toolCallId);
     const data = event.result.structuredContent;
     const details = event.result.details;
     const task = isRecord(data) && isRecord(data.task) ? data.task
@@ -549,23 +401,6 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     // Task UUID prevents a late event from an old session with a reused call ID
     // from publishing a new session's task. Redacted metadata fails closed.
     if (isRecord(task) && typeof task.id === 'string') runtime?.published(event.toolCallId, task.id);
-  });
-  on('tool_call', event => {
-    const ticket = event.parentToolCallId ? tickets.get(event.parentToolCallId) : undefined;
-    if (ticket && ticket.original === event.toolName) {
-      ticket.started = true;
-      // At this point Pi has bound the nested call to its parent assistant
-      // message. Do not detach while it is merely waiting in a sequential queue.
-      setImmediate(() => ticket.runtime.ready(event.parentToolCallId!));
-      return;
-    }
-    const pair = pairs.get(event.toolName);
-    if (config.blockOriginalCalls && pair?.enabled &&
-        (pair.definition.exposure === 'codemode' || pair.definition.exposure === 'deferred' || pi.getActiveTools().includes(pair.name))) {
-      // This includes calls from codemode scripts. Only the managed proxy's
-      // nested dispatch (ticket branch above) may reach the original.
-      return { block: true, reason: `Use ${pair.name}; ${event.toolName} is managed by the background proxy. Its ${CONTROL} control is optional.` };
-    }
   });
   on('input', event => {
     if (config.detachOnSteer && event.streamingBehavior === 'steer') userDetach('steer');
@@ -597,20 +432,20 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       }
     } else if (!command) {
       if (ctx.mode === 'tui') { await taskPanel(ctx); return; }
-      controlFeedback(ctx, `${taskList(assertRuntime(ctx).list())}\nCancel: /meantime cancel <id>; output: ask meantime(action="wait", id=..., timeout=0).\nActive proxies: ${[...pairs.values()].filter(p => p.enabled).length}; warnings: ${diagnostics.size}.`);
+      controlFeedback(ctx, `${taskList(assertRuntime(ctx).list())}\nCancel: /meantime cancel <id>; output: ask meantime(action="wait", id=..., timeout=0).\nManaged tools: ${host?.names().length ?? 0}; warnings: ${diagnostics.size}.`);
     } else if (rest.length) controlFeedback(ctx, 'Use /meantime [detach|rescan|cancel <id>]');
     else if (command === 'detach') {
       assertRuntime(ctx);
       const count = userDetach('shortcut');
       controlFeedback(ctx, `Detached ${count} managed call(s).\nPending approvals and unwrapped calls stay in the foreground.`);
     }
-    else if (command === 'rescan') { reconcile(); controlFeedback(ctx, 'Background proxy registry rescanned. Use /meantime.'); }
+    else if (command === 'rescan') { host?.refresh(); controlFeedback(ctx, 'Managed tool registry refreshed. Use /meantime.'); }
     else controlFeedback(ctx, 'Use /meantime [detach|rescan|cancel <id>]');
   } };
   pi.registerCommand('meantime', meantimeCommand);
   pi.registerCommand('bg', { ...meantimeCommand, description: 'Alias for /meantime' });
   return {
-    async dispose() { installed = false; await stop(); for (const dispose of disposers) dispose(); },
-    inspect() { return { tasks: runtime?.list() ?? [], proxies: [...pairs.values()].map(p => ({ original: p.original, name: p.name, enabled: p.enabled })), diagnostics: Object.fromEntries(diagnostics) }; },
+    async dispose() { await stop(); for (const dispose of disposers) dispose(); },
+    inspect() { return { tasks: runtime?.list() ?? [], managed: host?.names() ?? [], diagnostics: Object.fromEntries(diagnostics) }; },
   };
 }

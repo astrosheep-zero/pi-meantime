@@ -4,8 +4,6 @@
   "autoDetachMs": 1000,
   "maxRunning": 4,
   "maxRetained": 128,
-  "reconcileMs": 500,
   "shutdownGraceMs": 1000,
-  "notifyDebounceMs": 50,
-  "blockOriginalCalls": true
+  "notifyDebounceMs": 50
 }

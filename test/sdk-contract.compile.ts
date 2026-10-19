@@ -25,11 +25,7 @@ declare const session: AgentSession;
 // The shipped entry and installation both accept a real, unadapted SDK host.
 const entry: ExtensionFactory = backgroundPoc;
 const host: PiHost = pi;
-const options: InstallOptions = {
-  config: DEFAULT_CONFIG,
-  baseBash: createBashToolDefinition(process.cwd()),
-  makeBash: cwd => createBashToolDefinition(cwd),
-};
+const options: InstallOptions = { config: DEFAULT_CONFIG };
 install(pi, options);
 
 // Outgoing definitions are accepted by the SDK's real generic registerTool.
@@ -48,8 +44,8 @@ const prepareLoadout: NonNullable<ToolDefinition['prepareLoadout']> = current =>
 // Public TSchema does not promise a string index signature. The schema boundary
 // validates it before transformation, including native TypeBox Bash schemas.
 const bash = createBashToolDefinition(process.cwd());
-const proxyParameters = decorateSchema(bash.parameters);
-pi.registerTool({ ...tool, parameters: proxyParameters, prepareLoadout });
+const managedParameters = decorateSchema(bash.parameters);
+pi.registerTool({ ...tool, parameters: managedParameters, prepareLoadout });
 
 // Read-only metadata can be observed; registration receives its own mutable copy.
 const readonlyGuidelines: readonly string[] = ['Keep the original execution policy.'];
@@ -74,7 +70,7 @@ session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
 
 // Event returns, commands and shortcuts stay within actual host contracts.
 host.on('input', () => ({ action: 'continue' }));
-host.on('tool_call', () => ({ block: true, reason: 'Use the managed proxy.' }));
+host.on('tool_call', () => ({ block: true, reason: 'Permission denied.' }));
 // @ts-expect-error Unknown input actions cannot be registered.
 host.on('input', () => ({ action: 'retry' }));
 // @ts-expect-error SDK command handlers are asynchronous.

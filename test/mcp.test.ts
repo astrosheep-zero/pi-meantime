@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { install } from '../src/extension.ts';
 import { validateConfig } from '../src/config.ts';
 import type { Snapshot } from '../src/runtime.ts';
-import { FakePi, basicTool, fixtureBash } from './host.ts';
+import { FakePi, basicTool } from './host.ts';
 import { FixtureMcpClient } from './mcp-client.ts';
 import { sleep, until } from './helpers.ts';
 
@@ -15,14 +15,14 @@ async function harness() {
   const tools = await client.connect();
   for (const tool of tools) pi.registerTool(basicTool(`mcp__fixture__${tool.name}`,
     (_id, args, signal) => client.call(tool.name, args, signal), { parameters: tool.inputSchema }));
-  const extension = install(pi, { config: validateConfig({ autoDetachMs: 0, notifyDebounceMs: 2, shutdownGraceMs: 30 }), makeBash: fixtureBash });
+  const extension = install(pi, { config: validateConfig({ autoDetachMs: 0, notifyDebounceMs: 2, shutdownGraceMs: 30 }), connect: () => pi });
   await pi.emit('session_start', { type: 'session_start' });
   return { root, client, pi, async close() { await extension.dispose(); await client.close(); rmSync(root, { recursive: true, force: true }); } };
 }
 test('real JSON-RPC stdio MCP call is dispatched once, detached, and collected with clean business args', async () => {
   const h = await harness();
   try {
-    const outcome = await h.pi.call('mcp__fixture__slow_mt', { ms: 70, text: 'WIRE_DONE', __background__: 'yes' });
+    const outcome = await h.pi.call('mcp__fixture__slow', { ms: 70, text: 'WIRE_DONE', __background__: 'yes' });
     assert.equal(outcome.isError, false);
     const task = (outcome.result.structuredContent as { task: unknown }).task as Snapshot;
     assert.equal(task.state, 'running');
@@ -36,7 +36,7 @@ test('real JSON-RPC stdio MCP call is dispatched once, detached, and collected w
 test('cancelled MCP request keeps its native error without classifying remote execution', async () => {
   const h = await harness(); const marker = join(h.root, 'side-effect.txt');
   try {
-    const outcome = await h.pi.call('mcp__fixture__stubborn_mt', { ms: 150, marker, __background__: 'yes' });
+    const outcome = await h.pi.call('mcp__fixture__stubborn', { ms: 150, marker, __background__: 'yes' });
     const task = (outcome.result.structuredContent as { task: unknown }).task as Snapshot;
     const cancelled = await h.pi.call('meantime', { action: 'cancel', id: task.id });
     assert.equal(cancelled.isError, true);
@@ -54,7 +54,7 @@ test('cancelled MCP request keeps its native error without classifying remote ex
 test('foreground server failure preserves its native error without a retained task', async () => {
   const h = await harness();
   try {
-    const outcome = await h.pi.call('mcp__fixture__fail_mt', { ms: 1 });
+    const outcome = await h.pi.call('mcp__fixture__fail', { ms: 1 });
     assert.equal(outcome.isError, true);
     assert.ok(!(outcome.result.structuredContent as { task?: unknown } | undefined)?.task);
     const list = await h.pi.call('meantime', { action: 'list' });

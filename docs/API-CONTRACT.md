@@ -1,56 +1,45 @@
-# 已核对的 Pi API
+# Pi 宿主接口边界
 
-固定基线：Pi v1.3.0。以下来源是官方仓库，不依赖社区插件的描述。
+目标版本：**Pi 1.3.0**。同名管理复用官方执行 helper，但不是仅靠公开 ExtensionAPI 实现的插件；升级宿主需要重新核对 adapter。
 
-- [Extension 文档](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/docs/extensions.md)
-- [类型声明](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/src/core/extensions/types.ts)
-- [嵌套调用实现](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/src/core/nested-tool-calls.ts)
-- [AgentSession 分派与 loadout](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/src/core/agent-session.ts)
-- [原生 Bash factory](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/src/core/tools/bash.ts)
-- [MCP readiness 和注册](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/src/extensions/mcp/index.ts)
-- [官方 SDK 示例](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/examples/sdk/14-codemode-mcp.ts)
+## Pi 1.3.0 接口与本扩展用法
 
-| API | 本扩展 的使用方式 |
+| 接口 | 用途 |
 |---|---|
-| `pi.registerTool` | Bash 同名包装、其他工具不同名代理、meantime |
-| `pi.getAllTools` | Schema、元数据、exposure、来源签名 |
-| `pi.getSettings` | 执行时读取有效 Shell 设置；加载期不访问 |
-| `prepareLoadout(loadout)` | 观察 callable/registered 定义和 executionMode |
-| `hiddenDeclarations` | 不对模型声明原工具，仍保留内部可调用性 |
-| `reachesTools` | 让原生 MCP 等待相关服务器就绪 |
-| `ctx.tools` | 执行期确认原工具可调用及顺序属性 |
-| `ctx.executeTool(name,args,{signal,onUpdate})` | 复用原工具验证、权限和结果钩子 |
-| `input.streamingBehavior` | 原生 steer 来时 detach；返回 continue |
-| `registerShortcut` | Ctrl+Shift+B |
-| `tool_execution_end` | 等最终 wrapper 结果确认后再入队完成通知 |
-| `ui_prompt_start/end` | 审批期间暂缓 detach |
-| `sendMessage` | followUp + triggerTurn，完成唤醒 |
-| `appendEntry` | 非模型上下文的审计事件 |
-| `session_shutdown/session_tree` | 撤销旧 runtime、隔离通知 |
-| `registerMcpServer` | 仅开发示例注册真实本地 MCP 服务器 |
+| `pi.getAllTools()` / `AgentSession.getAllTools()` | 读取元数据；同步捕获 session 时经过被临时拦截的方法 |
+| `session.getToolDefinition()` | 取得真实工具定义，而非从元数据接口虚构 execute |
+| `session.extensionRunner.createToolContext()` | 构造原生工具上下文 |
+| loader runtime `refreshTools()` | 同步包装：原生 refresh → reconcile 实际获胜定义 → 仅定义被修改时再次原生 refresh |
+| `pi-agent-core.runToolCall` | carrier 执行、原生错误转换及最终结果处理 |
+| `ctx.executeTool()` / `ctx.tools` | job 上下文保留原生嵌套分派和可调用性 |
+| `input` / `registerShortcut` | steer 返回 continue；快捷键请求 detach |
+| `tool_execution_start/end` | 存活调用/父链、frame 清理及句柄发布确认 |
+| `session.subscribe()` | 不随 runner 换代失效的 execution-end 清理，覆盖没有 after 阶段的原生 immediate result |
+| `ui_prompt_start/end` | 审批期间暂停 detach 和通知 |
+| `sendMessage()` / `appendEntry()` | followUp 完成通知；非模型上下文的任务索引 |
+| session、settled、compact、tree 事件 | 生命周期隔离及通知重试 |
 
-## 没有使用的能力
+`registerTool` 仅添加 meantime 控制工具，不替代 Bash 或注册受管工具别名。原 prepareLoadout、exposure、来源与描述保留；builtin Codemode 和 tool_search 不替换。不存在 blockOriginalCalls 路由守卫、注册表轮询配置或旧代理兼容层。
 
-没有虚构 `decorateTool`、`detachTool`、`tools_changed`、全局 `pi.executeTool`。没有访问 `_toolRegistry`、`_extensionRunner` 或修改 prototype。也没有通过改 provider payload 偷改模型看到的 Schema。
+## 非官方接缝
 
-`src/protocol.ts` 保留可用于 FakePi 的最小结构，但通过 type-only import 引用官方 SDK 1.3.0 的结果、Usage、Schema、loadout/AgentTool 元数据、事件返回值和快捷键类型。注册定义的 promptGuidelines 必须为 mutable string[]；只读注册表观察仍可接受 readonly string[]。运行态 AgentTool 与扩展 ToolDefinition 分开，TSchema 先在 schema 边界验证再装饰。
+普通 ExtensionAPI 没有“当前 AgentSession”或围绕原生 producer 的 middleware。因此 adapter 同步临时替换导出的 `AgentSession.prototype.getAllTools`，调用 `pi.getAllTools()`，在 finally 按归属立即恢复；随后按 session 拦截私有 `_beforeToolCall` / `_afterToolCall`。包装公开 loader runtime `refreshTools()`、修改真实 ToolDefinition 和挂接私有回调均是 monkeypatch，**不是官方支持的扩展协议**。refresh 包装先让宿主选择获胜定义，再装饰，必要时第二次原生刷新；动作全程同步，无注册表轮询、不修改 runner 方法、不解析私有工具优先级。
 
-`test/sdk-contract.compile.ts` 随 `npm run check` 编译：直接将真实 ExtensionAPI 传给 install，将生成工具交给正式 registerTool，将真实 ExtensionToolContext/ToolLoadout 赋给消费接口，并检查原生 Bash factory、入口 ExtensionFactory。负向断言确认非法 readonly 注册 guidelines、半截 Usage、非法事件返回/快捷键、同步 command handler 被拒绝。没有 as any、@ts-ignore 或修改 SDK。`index.mjs` 同时启用 @ts-check。
+所有修改只在属性仍为本扩展所有时恢复。入口通过 Pi Jiti `require` 加载宿主及内部模块，并将宿主 AgentSession 传给 captureSession，避免原生 ESM 取得本地开发 SDK 副本。每个 session 复用一个 after fence，不串联退休 adapter；换代只换 token，弱调用标记不持有退休 runner。prehook 阻断/抛错直接清理，公开 session execution-end 订阅清理没有 execute/after 的 immediate result；旧调用排空且无当前 owner 时，按归属恢复 after 并取消订阅。旧执行中子调用仍受 fence 保护；runner / loader runtime 身份及代次检查隔离旧 finalizer、嵌套调用。内部 session 连接端口仅用于确定性测试，不增加用户配置。
 
-类型编译、无模型 SDK smoke、真实 TUI 行为测试分层报告；任何一层单独通过都不代表所有宿主行为通过。
+## 一次准备，一次执行，一次最终处理
 
-实现没有依赖 `pi.getAllTools()` 取得原 execute，因为该接口没有这个字段。Bash 使用公开原生 factory，第三方工具使用 `ctx.executeTool`。
+控制字段在原参数 preparer 前移除；原生准备、校验和完整权限链各一次。admission 在同名 execute 内发生，之后以已准备业务参数执行，不重新校验权限钩子修改后的参数。
 
-## 语义限制
+官方 runToolCall 使用未注册的同名空参数 carrier，无 before hook / repair。carrier 调用保存的原 execute 和捕获的真实 session after 管线各一次，保留原 name / call ID / parentId；结果完全 finalized 后才交 runtime 保存。成功 admission 时仅跳过外层重复 after；失败 admission、拒绝及无效调用保留外层原生处理。原工具钩子不处理后台句柄。
 
-`hiddenDeclarations` 只影响请求声明；原工具可能仍被其他编排器发现。路由守卫与代理配合，但不作为插件权限安全边界。
+最终 `Outcome.result` 原样交 runtime 保存，`Outcome.isError` 独立保留为权威裁决，即使它不同于 payload 的 isError 也不改写保留结果。前台外部返回由 `foregroundOrHandle` 投影权威错误位；wait 回执、状态与 completion 索引采用该独立裁决。partial updates 不是最终结果钩子脱敏后的输出；finish 清除暂存 progress，结束任务预览与通知尾部只取最终结果。job 上下文保留不可枚举属性及原生嵌套分派，并将实际执行、ctx.signal、嵌套默认 signal 绑定到 job。
 
-嵌套调用的 `nestedCalls` 和 usage 归父工具结果记录。父工具提前返回后，后台结果由本扩展 自己保存；不会假设原父记录会被 Pi 自动补齐。
+## 兼容性边界
 
-原工具的 timeout、HTTP/stdio 连接、MCP cancellation/elicitation 语义继续由 Pi 原生实现决定。后台化不延长 MCP request timeout，也不表示服务器支持 MCP Tasks。
+- 顺序执行、hidden / model-only exposure、不支持的输入 Schema 和保留字段冲突不改变原语义。没有 outputSchema 的原工具用 `{}` 描述原生输出或句柄，以保留 Codemode 结构化句柄。
+- 晚到嵌套记录及 usage 不保证补齐已完成父消息或全局统计；不生成额外晚到 transcript 结果。
+- 原工具 timeout、MCP cancellation / elicitation 仍受宿主和远端约束；后台化不是 MCP Tasks 服务。
+- 树导航取消/失败缺少宿主结束事件，通知只能等待后续可用事件重试。真实终端、远端交互和协作取消的验证边界见 [VALIDATION.md](VALIDATION.md)。
 
-## 最终结果与取消
-
-ctx.executeTool 的 Outcome.isError 是最终裁决，可能由 afterToolCall 修改而与 result.isError 不同。v0.1.4 将其单独持久化；meantime result 按最终裁决返回，保留原结果文件。cancelRequestedAt 不参与错误分类。父前台取消传原 signal.reason，手动后台取消发独立 controller.abort()；底层都使用原生 executeTool/MCP 通路。
-
-ui_prompt_end 后使用 setImmediate 延后恢复 detach/通知，给原生权限 Promise 的拒绝裁决结算机会。实际 select 菜单与无 UI fallback 分层验证，不把代理模拟选择等同真实用户授权。
+参考：[Extensions](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/docs/extensions.md)、[SDK](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/docs/sdk.md)、[AgentSession](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/src/core/agent-session.ts)、[runner](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/src/core/extensions/runner.ts)。以安装版本声明和实现为准。

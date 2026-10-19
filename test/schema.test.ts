@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CONTROL, decorateSchema, splitControl, proxyName, matches } from '../src/schema.ts';
+import { CONTROL, decorateSchema, splitControl, matches } from '../src/schema.ts';
 import { validateConfig } from '../src/config.ts';
 
 test('closed object schema remains closed and business properties are unchanged', () => {
@@ -30,12 +30,6 @@ for (const key of ['allOf', 'anyOf', 'oneOf', 'not', 'patternProperties', 'prope
 test('nested refs and constraints survive without flattening', () => {
   const schema = { type: 'object', properties: { input: { anyOf: [{ type: 'string' }, { $ref: '#/$defs/x' }] } }, $defs: { x: { type: 'number' } } };
   const decorated = decorateSchema(schema); assert.deepEqual(decorated.$defs, schema.$defs);
-});
-test('names are deterministic, safe and within 64 ASCII characters', () => {
-  assert.equal(proxyName('mcp__docs__search'), 'mcp__docs__search_mt');
-  const n = proxyName('mcp__' + 'a'.repeat(90)); assert.ok(n.length <= 64);
-  assert.match(n, /^[\w-]+$/); assert.equal(n, proxyName('mcp__' + 'a'.repeat(90)));
-  assert.notEqual(n, proxyName('mcp__' + 'a'.repeat(89) + 'b'));
 });
 test('patterns are globs, never arbitrary regex', () => {
   assert.equal(matches('mcp__docs__search', ['mcp__*']), true);

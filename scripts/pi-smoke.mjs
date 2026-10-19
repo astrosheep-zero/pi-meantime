@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAssistantMessageEventStream } from '@earendil-works/pi-ai/compat';
+import { runToolCall } from '@earendil-works/pi-agent-core';
 import { install } from '../src/extension.ts';
 import { validateConfig } from '../src/config.ts';
 let sdk;
@@ -47,9 +48,11 @@ if (sdk) {
           args: [fileURLToPath(new URL('../test/fixtures/mcp-server.mjs', import.meta.url))],
           exposure: 'direct', timeout: 10,
         });
-        pi.on('tool_execution_end', event => {
-          if (event.toolName.startsWith('mcp__meantime_fixture__') && !event.toolName.endsWith('_mt')) {
-            nativeMcpResults.set(event.toolName, event.result);
+        pi.on('tool_result', event => {
+          if (event.toolName.startsWith('mcp__meantime_fixture__')) {
+            nativeMcpResults.set(event.toolName, {
+              content: event.content, details: event.details, structuredContent: event.structuredContent,
+            });
           }
         });
         pi.registerTool({
@@ -68,7 +71,7 @@ if (sdk) {
             assert.doesNotMatch(collected.result.content.map(b => b.text).join('\n'), /Output:/);
             for (const [tool, args] of [
               ['bash', { command: `sleep 0.1; node -e 'process.stdout.write("B".repeat(60000))'` }],
-              ['mcp__meantime_fixture__slow_mt', { ms: 100, text: largeMcpText }],
+              ['mcp__meantime_fixture__slow', { ms: 100, text: largeMcpText }],
             ]) {
               const handle = await ctx.executeTool(tool, { ...args, __background__: 'yes' });
               const id = handle.result.structuredContent.task.id;
@@ -101,7 +104,7 @@ if (sdk) {
             }
             assert.equal(outputs[1].path.includes('pi-bash-'), true);
             assert.equal(outputs[2].path.includes('pi-mcp-'), true);
-            const failed = await ctx.executeTool('mcp__meantime_fixture__fail_mt', { ms: 100, __background__: 'yes' });
+            const failed = await ctx.executeTool('mcp__meantime_fixture__fail', { ms: 100, __background__: 'yes' });
             const failure = await ctx.executeTool('meantime', { action: 'wait', id: failed.result.structuredContent.task.id });
             const nativeFailure = nativeMcpResults.get('mcp__meantime_fixture__fail');
             assert.equal(failure.isError, true);
@@ -114,7 +117,6 @@ if (sdk) {
         });
         extension = install(pi, {
           config: validateConfig({ autoDetachMs: 0 }),
-          makeBash: cwd => sdk.createBashToolDefinition(cwd),
         });
       }],
     });
@@ -123,7 +125,7 @@ if (sdk) {
     // This is a synthetic recorded assistant call, not a model invocation.
     const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-    manager.appendMessage({ role: 'assistant', content: [{ type: 'toolCall', id: 'smoke', name: 'mcp__meantime_fixture__slow_mt', arguments: { ms: 1 } }],
+    manager.appendMessage({ role: 'assistant', content: [{ type: 'toolCall', id: 'smoke', name: 'mcp__meantime_fixture__slow', arguments: { ms: 1 } }],
       api: 'openai-completions', provider: 'fixture', model: 'fixture', usage, stopReason: 'toolUse', timestamp: Date.now() });
     ({ session } = await sdk.createAgentSession({ cwd: root, resourceLoader: loader, settingsManager, sessionManager: manager }));
     await session.bindExtensions({ mode: 'rpc' });
@@ -131,32 +133,28 @@ if (sdk) {
       cwd: root, sections: { existing: 'Keep other prompt sections.' },
     });
     assert.equal(prompt.systemPromptOptions.sections.existing, 'Keep other prompt sections.');
-    assert.match(prompt.systemPromptOptions.sections.meantime, /_mt/);
+    assert.doesNotMatch(prompt.systemPromptOptions.sections.meantime, /_mt\b/);
     assert.match(prompt.systemPromptOptions.sections.meantime, /__background__/);
     const nextPrompt = await session.extensionRunner.emitBeforeAgentStart({ messageType: 'user', prompt: 'again' }, prompt.systemPromptOptions);
     assert.equal(nextPrompt.systemPromptOptions.sections.meantime, prompt.systemPromptOptions.sections.meantime);
     const deadline = Date.now() + 8000;
-    const target = 'mcp__meantime_fixture__slow_mt';
+    const target = 'mcp__meantime_fixture__slow';
     while (!session.getAllTools().some(t => t.name === target)) {
-      if (Date.now() > deadline) throw new Error('MCP proxy registration timed out');
+      if (Date.now() > deadline) throw new Error('MCP original registration timed out');
       await new Promise(resolve => setTimeout(resolve, 25));
     }
     // SDK may keep added MCP tools outside its initial active set. Explicit activation
     // here is part of the test setup, not the extension's production policy.
-    session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), target, 'mcp__meantime_fixture__slow', 'mcp__meantime_fixture__fail', 'mcp__meantime_fixture__fail_mt', 'meantime', 'bash', 'background_probe'])]);
-    const wrapped = session.agent.state.tools.find(t => t.name === target);
-    assert.ok(wrapped, 'proxy must be activated in the test session');
-    const result = await wrapped.execute('smoke', { ms: 1, text: 'REAL_PI_MCP_OK', __background__: 'no' }, new AbortController().signal);
+    session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), target, 'mcp__meantime_fixture__fail', 'meantime', 'bash', 'background_probe'])]);
+    const result = await invoke(session, target, 'smoke', { ms: 1, text: 'REAL_PI_MCP_OK', __background__: 'no' });
     assert.ok(result.content.some(b => b.type === 'text' && b.text.includes('REAL_PI_MCP_OK')));
     assert.equal(result.structuredContent?.task, undefined);
-    const bash = session.agent.state.tools.find(t => t.name === 'bash');
-    const shell = await bash.execute('smoke-bash', { command: 'printf REAL_PI_BASH_OK', __background__: 'no' }, new AbortController().signal);
+    const shell = await invoke(session, 'bash', 'smoke-bash', { command: 'printf REAL_PI_BASH_OK', __background__: 'no' });
     assert.deepEqual(shell.content, [{ type: 'text', text: 'REAL_PI_BASH_OK' }]);
     assert.equal(shell.structuredContent.exit_code, 0);
     assert.equal(shell.structuredContent.task, undefined);
     assert.equal(manager.getEntries().filter(e => e.customType === 'meantime-index').length, 0);
-    const probe = session.agent.state.tools.find(t => t.name === 'background_probe');
-    const completed = await probe.execute('background-probe', {}, new AbortController().signal);
+    const completed = await invoke(session, 'background_probe', 'background-probe', {});
     const id = completed.structuredContent.task.id;
     const sessionFile = manager.getSessionFile();
     const completions = manager.getEntries().filter(e => e.customType === 'meantime-index' && e.data.change.completion);
@@ -178,14 +176,12 @@ if (sdk) {
     ({ session } = await sdk.createAgentSession({ cwd: root, resourceLoader: loader, settingsManager, sessionManager: reopened }));
     await session.bindExtensions({ mode: 'rpc' });
     session.setActiveToolsByName(['meantime']);
-    const restored = await session.agent.state.tools.find(t => t.name === 'meantime')
-      .execute('restored-result', { action: 'wait', timeout: 0, id }, new AbortController().signal);
+    const restored = await invoke(session, 'meantime', 'restored-result', { action: 'wait', timeout: 0, id });
     assert.equal(restored.structuredContent.task.recovered, true);
     assert.equal(restored.structuredContent.result, 'REAL_BACKGROUND_OK');
     assert.match(restored.content.map(b => b.text).join('\n'), /contains text only/);
     for (const { id, path, text } of outputs.filter(o => o.id)) {
-      const result = await session.agent.state.tools.find(t => t.name === 'meantime')
-        .execute('restored-output', { action: 'wait', timeout: 0, id }, new AbortController().signal);
+      const result = await invoke(session, 'meantime', `restored-output-${id}`, { action: 'wait', timeout: 0, id });
       assert.equal(result.structuredContent.task.outputPath, path);
       assert.match(result.content[0].text, /\nOutput: /);
       assert.equal(result.content[1].text, text);
@@ -211,6 +207,24 @@ if (sdk) {
   console.log('REAL_PI_SMOKE_PASS: official SDK registration, nested MCP and native Bash; shutdown cleanup completed. No external model call; scripted provider completion-ordering regression passed. SDK RPC-mode detach and nested result retrieval passed; no actual TUI/CLI transport exercised.');
 }
 
+/** Dispatch a recorded assistant call through Pi's native preparation and hooks. */
+async function invoke(session, name, id, args) {
+  const toolCall = { type: 'toolCall', id, name, arguments: args };
+  const assistantMessage = { role: 'assistant', content: [toolCall], api: 'openai-completions',
+    provider: 'fixture', model: 'fixture', stopReason: 'toolUse', timestamp: Date.now(),
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+  session.sessionManager.appendMessage(assistantMessage);
+  session.refreshContext();
+  const outcome = await runToolCall(toolCall, {
+    tools: session.agent.state.tools, assistantMessage,
+    context: { messages: session.agent.state.messages, tools: session.agent.state.tools },
+    beforeToolCall: session.agent.beforeToolCall, afterToolCall: session.agent.afterToolCall,
+    signal: new AbortController().signal,
+  });
+  return { ...outcome.result, isError: outcome.isError };
+}
+
 /** Real QuickJS scripts, compared with the identical tools without meantime. */
 async function batchCodemodeParity(sdk, root) {
   const observed = [];
@@ -232,8 +246,7 @@ async function batchCodemodeParity(sdk, root) {
               ...(structured ? { structuredContent: { value: 'DATA' } } : {}) };
           },
         });
-        if (managed) extension = install(pi, { config: validateConfig({ include: ['fixture_*'], autoDetachMs: 0 }),
-          makeBash: cwd => sdk.createBashToolDefinition(cwd) });
+        if (managed) extension = install(pi, { config: validateConfig({ include: ['fixture_*'], autoDetachMs: 0 }) });
       }] });
     try {
       await loader.reload();
@@ -245,15 +258,20 @@ async function batchCodemodeParity(sdk, root) {
       ({ session } = await sdk.createAgentSession({ cwd: root, resourceLoader: loader, settingsManager,
         sessionManager: manager }));
       await session.bindExtensions({ mode: 'rpc' });
+      if (managed) {
+        assert.deepEqual(session.getToolDefinition('fixture_text').outputSchema, {}, 'unknown output permits structured handles without changing native text fallback');
+        assert.equal(session.getToolDefinition('fixture_data').outputSchema.anyOf.length, 2, 'declared output accepts native data or handle');
+      }
       const code = managed ? `
-        const handles = await Promise.all([tools.fixture_data_mt({__background__: 'yes'}), tools.fixture_text_mt({__background__: 'yes'})]);
+        const foreground = await Promise.all([tools.fixture_data({__background__: 'no'}), tools.fixture_text({__background__: 'no'})]);
+        const handles = await Promise.all([tools.fixture_data({__background__: 'yes'}), tools.fixture_text({__background__: 'yes'})]);
+        if (handles.some(h => typeof h !== 'object' || h.result_available !== false || !h.task.id)) throw new Error('structured handles required, including text-only native tools');
         const ids = handles.map(h => h.task.id);
         const singles = await Promise.all(ids.map(id => tools.meantime({action: 'wait', id})));
         const batch = await tools.meantime({action: 'wait', ids, timeout: 0});
-        return {singles: singles.map(s => s.result), batch};`
+        return {foreground, singles: singles.map(s => s.result), batch};`
         : 'return [await tools.fixture_data({}), await tools.fixture_text({})];';
-      const result = await session.agent.state.tools.find(t => t.name === 'codemode')
-        .execute(`batch-${managed}`, { code }, new AbortController().signal);
+      const result = await invoke(session, 'codemode', `batch-${managed}`, { code });
       assert.equal(result.isError ?? false, false, JSON.stringify(result));
       const text = result.content.filter(b => b.type === 'text').map(b => b.text).join('');
       observed.push(JSON.parse(text.slice(text.indexOf('Output:\n') + 'Output:\n'.length)));
@@ -265,6 +283,7 @@ async function batchCodemodeParity(sdk, root) {
   const [native, managed] = observed;
   console.log(`BATCH_CODEMODE: ${JSON.stringify({ native, singles: managed.singles,
     batch: managed.batch.tasks.map(t => ({ id: t.id, result_available: t.result_available, result: t.result })), pending: managed.batch.pending })}`);
+  assert.deepEqual(managed.foreground, native, 'foreground preserves native structured/text programmatic values');
   assert.deepEqual(managed.singles, native, 'single wait matches tools without meantime');
   assert.deepEqual(managed.batch.tasks.map(t => t.result), native, 'batch wait must expose the same native structured/text results to scripts');
   assert.ok(managed.batch.tasks.every(t => t.result_available));
@@ -390,7 +409,6 @@ async function completionRace(sdk, root, scenario) {
       });
       extension = install(pi, {
         config: validateConfig({ autoDetachMs: 10, notifyDebounceMs: 5 }),
-        makeBash: cwd => sdk.createBashToolDefinition(cwd),
       });
       if (compact) pi.on('session_before_compact', async event => {
         trace.push('manual compact start');
@@ -489,7 +507,7 @@ async function completionRace(sdk, root, scenario) {
   }
 }
 
-/** Real provider prompt and QuickJS discovery for direct, codemode and deferred proxies. */
+/** Real provider prompt and unmodified QuickJS/standalone discovery of original names. */
 async function controlGuidance(sdk, root) {
   const originalDescription = 'Return the supplied fixture value.';
   const fixtures = ['direct', 'codemode', 'deferred'].map(exposure => ({ exposure, name: `mcp__fixture__${exposure}` }));
@@ -498,10 +516,10 @@ async function controlGuidance(sdk, root) {
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
   let session, extension, requests = 0;
   try {
-    const settingsManager = sdk.SettingsManager.inMemory({ defaultTools: ['codemode', 'meantime'] });
+    const settingsManager = sdk.SettingsManager.inMemory({ defaultTools: ['codemode', 'tool_search', 'meantime'] });
     const loader = new sdk.DefaultResourceLoader({ cwd: root, agentDir: join(root, 'control-agent'), settingsManager,
       noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true,
-      extensionFactories: [sdk.createCodemodeExtension({ mode: 'only' }), pi => {
+      extensionFactories: [sdk.createCodemodeExtension({ mode: 'only' }), sdk.createToolSearchExtension(), pi => {
         for (const { name, exposure } of fixtures) pi.registerTool({ name, exposure,
           label: name, description: originalDescription, executionMode: 'parallel',
           parameters: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'], additionalProperties: false },
@@ -517,11 +535,11 @@ async function controlGuidance(sdk, root) {
             providerContexts.push(structuredClone(context));
             const first = ++requests === 1, stream = createAssistantMessageEventStream();
             const code = `
-              const names = ${JSON.stringify(fixtures.map(f => f.name + '_mt'))};
-              const found = await searchTools('mcp__fixture__deferred_mt', {limit: 8});
+              const names = ${JSON.stringify(fixtures.map(f => f.name))};
+              const found = await searchTools('mcp__fixture', {limit: 20});
               const descriptions = await Promise.all(names.map(name => describeTool(name)));
               const results = await Promise.all(names.map(name => tools[name]({value: name, __background__: 'no'})));
-              return {found, descriptions, results};`;
+              return {all: ALL_TOOLS, found, descriptions, results};`;
             const message = { role: 'assistant', api: model.api, provider: model.provider, model: model.id, usage,
               content: first ? [{ type: 'toolCall', id: 'discover', name: 'codemode', arguments: { code } }] : [{ type: 'text', text: 'done' }],
               stopReason: first ? 'toolUse' : 'stop', timestamp: Date.now() };
@@ -534,7 +552,7 @@ async function controlGuidance(sdk, root) {
           },
         });
         pi.on('tool_execution_end', event => { if (event.toolName === 'codemode') scriptResults.push(event.result); });
-        extension = install(pi, { config: validateConfig({ autoDetachMs: 1750 }), makeBash: cwd => sdk.createBashToolDefinition(cwd) });
+        extension = install(pi, { config: validateConfig({ autoDetachMs: 1750 }) });
       }] });
     await loader.reload();
     const modelRuntime = await sdk.ModelRuntime.create({ authPath: join(root, 'auth.json'), modelsPath: join(root, 'models.json') });
@@ -548,23 +566,40 @@ async function controlGuidance(sdk, root) {
     assert.equal(scriptResults[0].isError ?? false, false, JSON.stringify(scriptResults));
     const output = scriptResults[0].content.filter(b => b.type === 'text').map(b => b.text).join('');
     const discovered = JSON.parse(output.slice(output.indexOf('Output:\n') + 'Output:\n'.length));
-    assert.ok(discovered.found.some(t => t.name === 'mcp__fixture__deferred_mt'), 'QuickJS search discovers deferred proxy');
-    assert.deepEqual(discovered.results, fixtures.map(f => ({ value: f.name + '_mt' })));
-    assert.deepEqual(calls.map(c => c.args), fixtures.map(f => ({ value: f.name + '_mt' })), 'control never reaches business tool');
+    assert.doesNotMatch(JSON.stringify(discovered), /_mt\b/);
+    for (const { name } of fixtures) {
+      assert.equal(discovered.all.filter(t => t.name === name).length, 1, 'ALL_TOOLS has one original candidate');
+      assert.equal(discovered.found.filter(t => t.name === name).length, 1, 'searchTools has one original candidate');
+    }
+    assert.deepEqual(discovered.results, fixtures.map(f => ({ value: f.name })));
+    assert.deepEqual(calls.map(c => c.args), fixtures.map(f => ({ value: f.name })), 'control never reaches business tool');
+    const standalone = await invoke(session, 'tool_search', 'standalone-discover', { query: 'mcp__fixture', limit: 20 });
+    assert.equal(standalone.isError, false);
+    assert.doesNotMatch(JSON.stringify(standalone), /_mt\b/);
+    assert.deepEqual([...standalone.details.loaded].sort(), fixtures.filter(f => f.exposure !== 'direct').map(f => f.name).sort());
     const all = session.getAllTools();
-    const sizes = fixtures.map(({ name, exposure }, i) => {
-      const proxy = all.find(t => t.name === name + '_mt');
-      assert.equal(proxy.exposure, exposure, 'indirect tools must not be promoted');
+    assert.doesNotMatch(JSON.stringify(all), /_mt\b/);
+    for (const { name, exposure } of fixtures) {
+      assert.equal(all.filter(t => t.name === name).length, 1, 'one registered candidate per original name');
+      const tool = all.find(t => t.name === name);
+      assert.equal(tool.exposure, exposure, 'indirect tools must not be promoted');
+      assert.equal(tool.description, originalDescription, 'native description is untouched');
+      const i = fixtures.findIndex(f => f.name === name);
       assert.ok(discovered.descriptions[i].includes(name));
       assert.ok(discovered.descriptions[i].includes(originalDescription));
       assert.match(discovered.descriptions[i], /__background__\?/);
       for (const mode of ['auto', 'yes', 'no']) assert.ok(discovered.descriptions[i].includes(`"${mode}"`));
-      assert.deepEqual(proxy.parameters.properties.__background__.enum, ['auto', 'yes', 'no']);
-      assert.ok(!proxy.parameters.required.includes('__background__'));
-      return { name: proxy.name, description: proxy.description.length,
-        controlSchema: JSON.stringify(proxy.parameters.properties.__background__).length,
-        discovery: discovered.descriptions[i].length };
-    });
+      assert.deepEqual(tool.parameters.properties.__background__.enum, ['auto', 'yes', 'no']);
+      assert.ok(!tool.parameters.required.includes('__background__'));
+    }
+    const codemode = providerContexts[0].messages.filter(m => m.role === 'system')
+      .flatMap(m => m.toolsAdded ?? []).find(t => t.name === 'codemode');
+    assert.ok(codemode);
+    assert.doesNotMatch(codemode.description, /_mt\b/);
+    for (const { name, exposure } of fixtures.filter(f => f.exposure !== 'deferred')) {
+      assert.equal(codemode.description.split(`${name}(args:`).length - 1, 1, `${exposure}: one inline candidate`);
+    }
+
     const system = providerContexts[0].messages.filter(m => m.role === 'system');
     const section = system.map(m => m.sections?.meantime).find(Boolean);
     assert.ok(section, 'meantime instructions reach the actual provider even in codemode-only mode');
@@ -572,20 +607,9 @@ async function controlGuidance(sdk, root) {
       assert.ok(section.includes(phrase), phrase);
     }
     const meaningsInRequest = JSON.stringify(system).split('Detaching does not cancel the operation.').length - 1;
-    const proxyChars = sizes.reduce((sum, s) => sum + s.description + s.controlSchema, 0);
-    const discoveryChars = sizes.reduce((sum, s) => sum + s.discovery, 0);
-    const bash = all.find(t => t.name === 'bash');
-    console.log(`CONTROL_GUIDANCE: ${JSON.stringify({ sizes, proxyChars, discoveryChars, bashDescriptionChars: bash.description.length,
-      sectionChars: section.length, meaningsInRequest, exposures: fixtures.map(f => f.exposure), calls: calls.length })}`);
-    assert.equal(meaningsInRequest, 1, 'full control meaning must appear once, not per listed proxy');
-    for (const { name } of fixtures) {
-      const proxy = all.find(t => t.name === name + '_mt');
-      assert.ok(proxy.description.length < originalDescription.length + 100, 'proxy adds only original name/control pointer');
-    }
-    // Measured with the same real SDK fixtures at main 9bb40ce; counts are characters, not tokens.
-    assert.ok(proxyChars < 2449, 'registered description/control schemas must shrink from the measured baseline');
-    assert.ok(discoveryChars < 3248, 'actual QuickJS discovery text must shrink too');
-    console.log('CONTROL_GUIDANCE_PASS: real provider prompt, codemode-only discovery and deferred calls retain control meaning.');
+    assert.doesNotMatch(section, /_mt\b/);
+    assert.equal(meaningsInRequest, 1, 'full control meaning appears only in the shared prompt');
+    console.log('CONTROL_GUIDANCE_PASS: original names unique in codemode description, ALL_TOOLS, searchTools and standalone tool_search; native descriptions unchanged.');
   } finally {
     if (session) await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
     await extension?.dispose(); session?.dispose();
@@ -612,7 +636,7 @@ async function earlySteerRace(sdk, root, scenario) {
   let extension, session, requests = 0, earlyInput;
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-  const settingsManager = sdk.SettingsManager.inMemory({ defaultTools: ['fixture', 'fixture_mt', 'meantime', 'codemode'], compaction: { enabled: false } });
+  const settingsManager = sdk.SettingsManager.inMemory({ defaultTools: ['fixture', 'meantime', 'codemode'], compaction: { enabled: false } });
   const loader = new sdk.DefaultResourceLoader({ cwd: root, agentDir: join(root, 'early-' + scenario), settingsManager,
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true,
     extensionFactories: [sdk.createCodemodeExtension(), pi => {
@@ -632,11 +656,11 @@ async function earlySteerRace(sdk, root, scenario) {
           const n = ++requests, stream = createAssistantMessageEventStream();
           trace.push(`request ${n}`);
           if (n === 2) assert.ok(JSON.stringify(context.messages).includes('early-redirect-marker'), 'Pi must preserve steer input');
-          const call = n === 1 ? { id: 'outer', name: nested ? 'codemode' : 'fixture_mt',
-            arguments: nested ? { code: "return await tools.fixture_mt({tag: 'first'});" }
+          const call = n === 1 ? { id: 'outer', name: nested ? 'codemode' : 'fixture',
+            arguments: nested ? { code: "return await tools.fixture({tag: 'first'});" }
               : { tag: 'first', ...(scenario === 'outer-approval' ? { __background__: 'no' } : {}) } }
-            : n === 2 ? { id: 'unrelated', name: 'fixture_mt', arguments: { tag: 'next' } }
-            : n === 4 ? { id: 'outer', name: 'fixture_mt', arguments: { tag: 'fresh' } } : undefined;
+            : n === 2 ? { id: 'unrelated', name: 'fixture', arguments: { tag: 'next' } }
+            : n === 4 ? { id: 'outer', name: 'fixture', arguments: { tag: 'fresh' } } : undefined;
           const message = { role: 'assistant', api: model.api, provider: model.provider, model: model.id,
             content: call ? [{ type: 'toolCall', ...call }] : [{ type: 'text', text: 'done' }], usage,
             stopReason: call ? 'toolUse' : 'stop', timestamp: Date.now() };
@@ -648,7 +672,7 @@ async function earlySteerRace(sdk, root, scenario) {
           stream.push({ type: 'done', reason: message.stopReason, message }); stream.end(); return stream;
         } });
       extension = install(pi, { config: validateConfig({ include: ['fixture'],
-        autoDetachMs: 0, detachOnSteer: !disabled, notifyDebounceMs: 5000 }), makeBash: cwd => sdk.createBashToolDefinition(cwd) });
+        autoDetachMs: 0, detachOnSteer: !disabled, notifyDebounceMs: 5000 }) });
       pi.on('tool_execution_start', async event => {
         trace.push(`start ${event.toolCallId} parent=${event.parentToolCallId ?? '-'} tasks=${extension.inspect().tasks.length}`);
         if ((scenario === 'execution-start' || disabled) && event.toolCallId === 'outer') {
@@ -682,7 +706,7 @@ async function earlySteerRace(sdk, root, scenario) {
     await session.bindExtensions({ mode: 'rpc', uiContext: { ...session.extensionRunner.getUIContext(),
       confirm: async () => { approval.resolve(); return choice.promise; } } });
     await session.setModel(modelRuntime.getModel('early-fixture', 'fixture'));
-    session.setActiveToolsByName(['fixture', 'fixture_mt', 'codemode', 'meantime']);
+    session.setActiveToolsByName(['fixture', 'codemode', 'meantime']);
     const run = session.prompt('start early steer race');
     if (approvalCase) await bounded(approval.promise);
     else if (nested || scenario === 'execution-start' || disabled) await bounded(outerCall.promise);
@@ -727,8 +751,7 @@ async function earlySteerRace(sdk, root, scenario) {
     // Wait via public meantime, not a polling loop, and acknowledge the detached result.
     const task = extension.inspect().tasks.find(t => t.delivery === 'background');
     if (task) {
-      const tool = session.agent.state.tools.find(t => t.name === 'meantime');
-      const result = await tool.execute('collect', { action: 'wait', id: task.id, timeout: 2 }, new AbortController().signal);
+      const result = await invoke(session, 'meantime', 'collect', { action: 'wait', id: task.id, timeout: 2 });
       assert.equal(result.structuredContent.result_available, true); assert.equal(result.isError, false);
     }
     assert.equal(requests, 3);
@@ -744,7 +767,7 @@ async function earlySteerRace(sdk, root, scenario) {
         sessionManager: sdk.SessionManager.inMemory(root) }));
       await session.bindExtensions({ mode: 'rpc' });
       await session.setModel(modelRuntime.getModel('early-fixture', 'fixture'));
-      session.setActiveToolsByName(['fixture', 'fixture_mt', 'meantime']);
+      session.setActiveToolsByName(['fixture', 'meantime']);
       const freshRun = session.prompt('unrelated new session');
       await bounded(freshBody.promise); await tick(); await tick();
       assert.equal(requests, 4);

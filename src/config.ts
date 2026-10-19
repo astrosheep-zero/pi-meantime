@@ -9,10 +9,8 @@ export interface Config {
   autoDetachMs: number;
   maxRunning: number;
   maxRetained: number;
-  reconcileMs: number;
   shutdownGraceMs: number;
   notifyDebounceMs: number;
-  blockOriginalCalls: boolean;
   detachOnSteer: boolean;
 }
 export const DEFAULT_CONFIG: Config = {
@@ -21,10 +19,8 @@ export const DEFAULT_CONFIG: Config = {
   autoDetachMs: 120_000,
   maxRunning: 4,
   maxRetained: 128,
-  reconcileMs: 500,
   shutdownGraceMs: 1000,
   notifyDebounceMs: 50,
-  blockOriginalCalls: true,
   detachOnSteer: true,
 };
 export function validateConfig(raw: unknown): Config {
@@ -36,16 +32,13 @@ export function validateConfig(raw: unknown): Config {
   }
   const bounds: [keyof Config, number, number][] = [
     ['autoDetachMs', 0, 2_147_483_647], ['maxRunning', 1, 32], ['maxRetained', 1, 512],
-    ['reconcileMs', 100, 60_000],
     ['shutdownGraceMs', 0, 10_000], ['notifyDebounceMs', 0, 5000],
   ];
   for (const [key, min, max] of bounds) {
     const n = config[key];
     if (typeof n !== 'number' || !Number.isInteger(n) || n < min || n > max) throw new Error(`Invalid ${key}: expected integer ${min}..${max}`);
   }
-  for (const key of ['blockOriginalCalls', 'detachOnSteer'] as const) {
-    if (typeof config[key] !== 'boolean') throw new Error(`${key} must be boolean`);
-  }
+  if (typeof config.detachOnSteer !== 'boolean') throw new Error('detachOnSteer must be boolean');
   return config;
 }
 /** Only explicit/global configuration, never automatically consume untrusted project config. */

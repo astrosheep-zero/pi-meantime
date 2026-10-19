@@ -9,7 +9,7 @@ import { validateConfig } from '../src/config.ts';
 import { TaskRuntime } from '../src/runtime.ts';
 import type { Outcome, Result } from '../src/protocol.ts';
 import type { Snapshot } from '../src/runtime.ts';
-import { FakePi, basicTool, fixtureBash } from './host.ts';
+import { FakePi, basicTool } from './host.ts';
 import { deferred, ok, runtimeHarness, sleep, until } from './helpers.ts';
 
 test('final native Outcome flag wins in both directions without rewriting its payload', async () => {
@@ -138,10 +138,10 @@ test('model cancel returns the single-wait stored result with native payload and
   pi.registerTool(basicTool('mcp__test__cancel', async (_id, _args, signal) => new Promise(resolve => {
     signal?.addEventListener('abort', () => resolve(native));
   })));
-  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, shutdownGraceMs: 100, notifyDebounceMs: 0 }), makeBash: fixtureBash });
+  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, shutdownGraceMs: 100, notifyDebounceMs: 0 }), connect: () => pi });
   try {
     await pi.emit('session_start', { type: 'session_start' });
-    const handle = await pi.call('mcp__test__cancel_mt', { __background__: 'yes' });
+    const handle = await pi.call('mcp__test__cancel', { __background__: 'yes' });
     const id = (handle.result.details as Snapshot).id;
     const cancelled = await pi.call('meantime', { action: 'cancel', id });
     const wait = await pi.call('meantime', { action: 'wait', id, timeout: 0 });
@@ -158,7 +158,7 @@ test('model cancel returns the single-wait stored result with native payload and
 
 test('real SDK codemode cancel receives the settled structured result without a completion message', async () => {
   const root = mkdtempSync(join(tmpdir(), 'meantime-codemode-cancel-'));
-  const settingsManager = sdk.SettingsManager.inMemory({ defaultTools: ['codemode', 'fixture', 'fixture_mt', 'meantime'] });
+  const settingsManager = sdk.SettingsManager.inMemory({ defaultTools: ['codemode', 'fixture', 'meantime'] });
   let instance: ReturnType<typeof install> | undefined;
   let session: sdk.AgentSession | undefined;
   const loader = new sdk.DefaultResourceLoader({ cwd: root, agentDir: join(root, 'agent'), settingsManager,
@@ -173,12 +173,12 @@ test('real SDK codemode cancel receives the settled structured result without a 
           })));
         } });
       instance = install(pi, { config: validateConfig({ include: ['fixture'], autoDetachMs: 0,
-        shutdownGraceMs: 100, notifyDebounceMs: 0 }), makeBash: cwd => sdk.createBashToolDefinition(cwd) });
+        shutdownGraceMs: 100, notifyDebounceMs: 0 }) });
     }] });
   try {
     await loader.reload(); assert.deepEqual(loader.getExtensions().errors, []);
     const modelRuntime = await sdk.ModelRuntime.create({ authPath: join(root, 'auth.json'), modelsPath: join(root, 'models.json') });
-    const code = `const handle = await tools.fixture_mt({__background__: 'yes'});
+    const code = `const handle = await tools.fixture({__background__: 'yes'});
       return await tools.meantime({action: 'cancel', id: handle.task.id});`;
     const manager = sdk.SessionManager.inMemory(root);
     // SDK nested dispatch requires a recorded assistant call as its parent.
@@ -190,7 +190,7 @@ test('real SDK codemode cancel receives the settled structured result without a 
     ({ session } = await sdk.createAgentSession({ cwd: root, resourceLoader: loader, settingsManager, modelRuntime,
       sessionManager: manager }));
     await session.bindExtensions({ mode: 'rpc' });
-    session.setActiveToolsByName(['codemode', 'fixture', 'fixture_mt', 'meantime']);
+    session.setActiveToolsByName(['codemode', 'fixture', 'meantime']);
     const codemode = session.agent.state.tools.find(tool => tool.name === 'codemode')!;
     const result = await codemode.execute('cancel-script', { code }, new AbortController().signal);
     assert.notEqual(result.isError, true, JSON.stringify(result));
@@ -212,7 +212,7 @@ async function commandHarness() {
   pi.registerTool(basicTool('mcp__test__one', async (_id, _args, signal) => {
     signal?.addEventListener('abort', () => { aborts++; }); return (await work.promise).result;
   }));
-  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, shutdownGraceMs: 10 }), makeBash: fixtureBash });
+  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, shutdownGraceMs: 10 }), connect: () => pi });
   await pi.emit('session_start', { type: 'session_start' }); await sleep(1); pi.refresh();
   assert.equal(pi.commands.get('bg'), pi.commands.get('meantime'));
   const command = (args: string) => pi.commands.get('meantime')!(args, pi.ctx);
@@ -222,8 +222,8 @@ async function commandHarness() {
 test('/bg cancel requires one explicit id and never guesses among current session tasks', async () => {
   const h = await commandHarness();
   try {
-    const a = await h.pi.call('mcp__test__one_mt', { __background__: 'yes' });
-    const b = await h.pi.call('mcp__test__one_mt', { __background__: 'yes' });
+    const a = await h.pi.call('mcp__test__one', { __background__: 'yes' });
+    const b = await h.pi.call('mcp__test__one', { __background__: 'yes' });
     const idA = (a.result.details as Snapshot).id, idB = (b.result.details as Snapshot).id;
     const handleText = a.result.content[0]; assert.ok(handleText?.type === 'text');
     assert.match(handleText.text, /In the TUI use \/meantime or \/meantime cancel/);
@@ -247,7 +247,7 @@ test('/bg cancel requires one explicit id and never guesses among current sessio
 test('TUI command cancellation leaves one cancelled completion for the model', async () => {
   const h = await commandHarness();
   try {
-    const handle = await h.pi.call('mcp__test__one_mt', { __background__: 'yes' });
+    const handle = await h.pi.call('mcp__test__one', { __background__: 'yes' });
     const id = (handle.result.details as Snapshot).id;
     await h.command(`cancel ${id}`);
     h.work.resolve(ok('native success after cancellation'));
@@ -262,13 +262,13 @@ test('TUI command cancellation leaves one cancelled completion for the model', a
 test('/bg cancel rejects an old session id and does not cancel a different task', async () => {
   const h = await commandHarness();
   try {
-    const a = await h.pi.call('mcp__test__one_mt', { __background__: 'yes' }); const id = (a.result.details as Snapshot).id;
+    const a = await h.pi.call('mcp__test__one', { __background__: 'yes' }); const id = (a.result.details as Snapshot).id;
     await h.command(''); assert.equal(h.pi.uiWidgets.size, 1);
     await h.pi.emit('session_shutdown', { type: 'session_shutdown' });
     assert.equal(h.pi.uiWidgets.size, 0);
     h.pi.ctx = { ...h.pi.ctx, sessionManager: { getSessionId: () => 'B', getSessionFile: () => '/sessions/B.jsonl', getEntries: () => [] } };
     await h.pi.emit('session_start', { type: 'session_start' });
-    const b = await h.pi.call('mcp__test__one_mt', { __background__: 'yes' }); const idB = (b.result.details as Snapshot).id; const before = h.aborts();
+    const b = await h.pi.call('mcp__test__one', { __background__: 'yes' }); const idB = (b.result.details as Snapshot).id; const before = h.aborts();
     await h.command(`cancel ${id}`); assert.equal(h.aborts(), before);
     const statusB = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: idB });
     assert.equal((statusB.result.details as Snapshot).state, 'running');
@@ -317,7 +317,7 @@ test('recovery retains the authoritative outcome flag with text-only results', a
 test('/bg cancel of an already completed task is visibly idempotent', async () => {
   const h = await commandHarness();
   try {
-    const outcome = await h.pi.call('mcp__test__one_mt', { __background__: 'yes' }); const id = (outcome.result.details as Snapshot).id;
+    const outcome = await h.pi.call('mcp__test__one', { __background__: 'yes' }); const id = (outcome.result.details as Snapshot).id;
     h.work.resolve(ok()); await until(() => TaskRuntime.liveProducerCount() === 0);
     await h.command(`cancel ${id}`); await h.command(`cancel ${id}`);
     assert.equal(h.aborts(), 0); assert.match(h.pi.uiMessages.at(-1)!, /completed.*No running local call was cancelled/);

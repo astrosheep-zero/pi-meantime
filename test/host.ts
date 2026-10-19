@@ -3,7 +3,10 @@
 import { spawn } from 'node:child_process';
 import type { Context, EventMap, Loadout, Outcome, PiHost, Result, Schema, Tool, ToolContext, ToolInfo, Update } from '../src/protocol.ts';
 import { isRecord } from '../src/schema.ts';
-import { ok, errorResult } from './helpers.ts';
+import { runToolCall } from '@earendil-works/pi-agent-core';
+import type { AfterToolCallContext, AgentToolCall, BeforeToolCallContext } from '@earendil-works/pi-agent-core';
+import type { HostSession } from '../src/host.ts';
+import { ok } from './helpers.ts';
 
 type Handler = (event: unknown, ctx: Context) => unknown | Promise<unknown>;
 export function validate(schema: Schema, value: unknown): void {
@@ -21,7 +24,7 @@ export function validate(schema: Schema, value: unknown): void {
   if (Array.isArray(schema.enum) && !schema.enum.includes(value)) throw new Error('Value is outside enum');
 }
 
-export class FakePi implements PiHost {
+export class FakePi implements PiHost, HostSession {
   readonly renderers: Parameters<PiHost['registerToolRenderer']>[0][] = [];
   registerToolRenderer(resolver: Parameters<PiHost['registerToolRenderer']>[0]): void { this.renderers.push(resolver); }
   readonly definitions = new Map<string, Tool>();
@@ -42,7 +45,6 @@ export class FakePi implements PiHost {
   abortCalls = 0;
   sequence = 0;
   sequentialNested = false;
-  private queue: Promise<void> = Promise.resolve();
   ctx: Context;
   constructor(session = 'A', mode: Context['mode'] = 'tui') {
     this.ctx = { cwd: process.cwd(), mode, hasUI: mode === 'tui' || mode === 'rpc',
@@ -50,6 +52,7 @@ export class FakePi implements PiHost {
       sessionManager: { getSessionId: () => session, getSessionFile: () => `/sessions/${session}.jsonl`, getEntries: () => [...this.entries] },
       ui: { custom: async () => { throw new Error('Custom UI must be stubbed by the test'); }, notify: text => { this.uiMessages.push(text); }, setStatus: () => {}, setWidget: (key, lines) => { if (lines) { this.uiWidgets.set(key, [...lines]); this.uiMessages.push(lines.join('\n')); } else this.uiWidgets.delete(key); } },
     };
+    this.registerTool(fixtureBash(process.cwd()));
   }
   registerTool(tool: Tool): void {
     const old = this.definitions.get(tool.name);
@@ -59,7 +62,20 @@ export class FakePi implements PiHost {
       && (!old || !['direct', 'model-only'].includes(old.exposure ?? 'direct'))) this.active.add(tool.name);
     this.refresh();
   }
-  refresh(): void {
+  get agent() { return { toolExecution: this.sequentialNested ? 'sequential' as const : 'parallel' as const }; }
+  readonly extensionRunner = { createToolContext: (id: string, signal?: AbortSignal): ToolContext => {
+    let child = 0;
+    return Object.defineProperties({ ...this.ctx, signal }, {
+      tools: { get: () => this.callable() },
+      executeTool: { value: (name: string, args: unknown, options?: { signal?: AbortSignal; onUpdate?: Update }) =>
+        this.dispatch(name, args as Record<string, unknown>, `${id}/${++child}`, id, options?.signal ?? signal, options?.onUpdate) },
+    }) as ToolContext;
+  } };
+  readonly runtime = { refreshTools: () => this.buildLoadout() };
+  readonly resourceLoader = { getExtensions: () => ({ runtime: this.runtime }) };
+  getToolDefinition(name: string): Tool | undefined { return this.definitions.get(name); }
+  refresh(): void { this.runtime.refreshTools(); }
+  private buildLoadout(): void {
     this.hidden = new Set();
     const declared = [...this.definitions.values()].filter(t => this.active.has(t.name));
     const loadout: Loadout = { declared, registered: [...this.definitions.values()], callable: this.callable(),
@@ -91,9 +107,14 @@ export class FakePi implements PiHost {
     const fn = handler as Handler; const list = this.handlers.get(name) ?? []; list.push(fn); this.handlers.set(name, list);
     return () => { const index = list.indexOf(fn); if (index >= 0) list.splice(index, 1); };
   }
+  private listeners = new Set<(event: { type: string; toolCallId?: string }) => void>();
+  subscribe(listener: (event: { type: string; toolCallId?: string }) => void): () => void {
+    this.listeners.add(listener); return () => { this.listeners.delete(listener); };
+  }
   async emit<K extends keyof EventMap>(name: K, event: EventMap[K], ctx = this.ctx): Promise<unknown[]> {
     const output: unknown[] = [];
     for (const handler of [...(this.handlers.get(name) ?? [])]) output.push(await handler(event, ctx));
+    for (const listener of this.listeners) listener(event);
     return output;
   }
   registerShortcut(name: string, options: { handler: (ctx: Context) => void | Promise<void> }): void { this.shortcuts.set(name, options.handler); }
@@ -106,40 +127,40 @@ export class FakePi implements PiHost {
     const id = `call_${++this.sequence}`;
     return this.dispatch(name, args, id, undefined, signal);
   }
+  async _beforeToolCall(context: BeforeToolCallContext, parentId?: string) {
+    const decisions = await this.emit('tool_call', { type: 'tool_call', toolName: context.toolCall.name,
+      toolCallId: context.toolCall.id, parentToolCallId: parentId, input: context.args as Record<string, unknown> });
+    return decisions.find(d => isRecord(d) && d.block === true) as { block: boolean; reason: string } | undefined;
+  }
+  async _afterToolCall(context: AfterToolCallContext, _parentId?: string) {
+    let result: Result = context.result;
+    for (const after of this.after) result = after(context.toolCall.name, result);
+    return this.after.length ? { ...result, isError: result.isError === true } : undefined;
+  }
   private async dispatch(name: string, args: Record<string, unknown>, id: string, parent: string | undefined,
     signal?: AbortSignal, onUpdate?: Update): Promise<Outcome> {
     this.trace.push({ type: 'start', name, id });
     await this.emit('tool_execution_start', { type: 'tool_execution_start', toolCallId: id, parentToolCallId: parent });
     const definition = this.definitions.get(name);
-    let result: Result;
-    let release: (() => void) | undefined;
-    try {
-      if (!definition || definition.exposure === 'hidden') throw new Error('Unknown tool');
-      if (parent && !this.callable().some(t => t.name === name)) throw new Error('Tool is not callable');
-      if (parent && (this.sequentialNested || definition.executionMode === 'sequential')) {
-        const before = this.queue; this.queue = new Promise(resolve => { release = resolve; }); await before;
-      }
-      if (signal?.aborted) throw new Error('aborted');
-      validate(definition.parameters, args);
-      const decisions = await this.emit('tool_call', { type: 'tool_call', toolName: name, toolCallId: id, parentToolCallId: parent, input: args });
-      const block = decisions.find(d => isRecord(d) && d.block === true) as Record<string, unknown> | undefined;
-      if (block) throw new Error(String(block.reason));
-      if (signal?.aborted) throw new Error('aborted');
-      let childIndex = 0;
-      const baseCtx = this.ctx;
-      const host = this;
-      const ctx: ToolContext = { ...baseCtx, signal, get tools() { return host.callable(); },
-        executeTool: (target, input, opts) => this.dispatch(target, input as Record<string, unknown>, `${id}/${++childIndex}`, id, opts?.signal ?? signal, opts?.onUpdate),
-      };
-      this.trace.push({ type: 'execute', name, id, args: structuredClone(args) });
-      result = await definition.execute(id, args, signal, partial => { this.updates.push(partial); onUpdate?.(partial); }, ctx);
-    } catch (error) { result = errorResult(String(error)); }
-    finally { release?.(); }
-    for (const after of this.after) result = after(name, result);
-    const isError = result.isError === true;
+    const toolCall: AgentToolCall = { type: 'toolCall', id, name, arguments: args as AgentToolCall['arguments'] };
+    const assistantMessage = { role: 'assistant' as const, content: [toolCall], api: 'openai-completions' as const, provider: 'fake', model: 'fake',
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: 'toolUse' as const, timestamp: Date.now() };
+    const ctx = this.extensionRunner.createToolContext(id, signal);
+    const tools = definition && definition.exposure !== 'hidden' && (!parent || this.callable().some(t => t.name === name)) ? [{ ...definition,
+      execute: async (_id: string, input: unknown, s?: AbortSignal, update?: Update) => {
+        this.trace.push({ type: 'execute', name, id, args: structuredClone(input) });
+        return definition.execute(id, input as Record<string, unknown>, s, update, ctx);
+      } }] : [];
+    const outcome = await runToolCall(toolCall, { tools, assistantMessage, context: { messages: [assistantMessage], tools }, signal,
+      beforeToolCall: context => this._beforeToolCall(context, parent),
+      afterToolCall: context => this._afterToolCall(context, parent),
+      onUpdate: partial => { this.updates.push(partial); onUpdate?.(partial); },
+    });
     this.trace.push({ type: 'end', name, id });
-    await this.emit('tool_execution_end', { type: 'tool_execution_end', toolCallId: id, parentToolCallId: parent, toolName: name, result, isError });
-    return { result, isError, toolCall: { id, name, arguments: args } };
+    await this.emit('tool_execution_end', { type: 'tool_execution_end', toolCallId: id, parentToolCallId: parent,
+      toolName: name, result: outcome.result, isError: outcome.isError });
+    return outcome;
   }
 }
 

@@ -1,7 +1,7 @@
 {
   "name": "pi-meantime",
   "version": "0.5.1",
-  "description": "Pure Pi 1.3 extension: managed bash and typed tool proxies with cooperative background execution",
+  "description": "Pi 1.3 original-name tools with transparent cooperative background execution",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -31,9 +31,13 @@
     "test:pi": "node --experimental-strip-types scripts/pi-smoke.mjs"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
   },
   "peerDependenciesMeta": {
+    "@earendil-works/pi-agent-core": { "optional": true },
+    "@earendil-works/pi-tui": { "optional": true },
     "@earendil-works/pi-coding-agent": {
       "optional": true
     }
@@ -41,6 +45,8 @@
   "devDependencies": {
     "@types/node": "25.1.0",
     "typescript": "5.8.3",
-    "@earendil-works/pi-coding-agent": "1.3.0"
+    "@earendil-works/pi-agent-core": "1.3.0",
+    "@earendil-works/pi-coding-agent": "1.3.0",
+    "@earendil-works/pi-tui": "1.3.0"
   }
 }

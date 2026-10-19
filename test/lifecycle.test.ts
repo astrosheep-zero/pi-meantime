@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { TaskRuntime } from '../src/runtime.ts';
 import type { Snapshot } from '../src/runtime.ts';
 import { install } from '../src/extension.ts';
-import { FakePi, basicTool, fixtureBash } from './host.ts';
+import { FakePi, basicTool } from './host.ts';
 import { deferred, ok, runtimeHarness, sleep, until } from './helpers.ts';
 import type { Outcome } from '../src/protocol.ts';
 
@@ -102,10 +102,10 @@ test('retention protects pending notifications and removes both the result and i
 test('Pi session index survives tree navigation and resume, but a fork cannot adopt its tasks', async () => {
   const h = runtimeHarness(); const pi = new FakePi('A'); const work = deferred<Outcome>(); let executions = 0;
   pi.registerTool(basicTool('mcp__test__late', async () => { executions++; return (await work.promise).result; }));
-  const instance = install(pi, { config: h.config, makeBash: fixtureBash });
+  const instance = install(pi, { config: h.config, connect: () => pi });
   try {
     await pi.emit('session_start', { type: 'session_start' });
-    const handle = await pi.call('mcp__test__late_mt', { __background__: 'yes' });
+    const handle = await pi.call('mcp__test__late', { __background__: 'yes' });
     const id = (handle.result.details as Snapshot).id, originalCtx = pi.ctx;
     assert.equal(pi.entries.length, 1);
     await pi.emit('session_tree', { type: 'session_tree' });

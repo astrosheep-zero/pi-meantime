@@ -18,13 +18,12 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
   const pi = new FakePi();
   const work = deferred<Outcome>();
   let aborts = 0, update: ((text: string) => void) | undefined;
-  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, shutdownGraceMs: 1 }),
-    makeBash: () => ({ ...fixtureBash(root), async execute(_id, _args, signal, onUpdate) {
-      signal?.addEventListener('abort', () => { aborts++; });
-      update = text => onUpdate?.(ok(text).result);
-      return (await work.promise).result;
-    } }),
-  });
+  pi.registerTool({ ...fixtureBash(root), async execute(_id, _args, signal, onUpdate) {
+    signal?.addEventListener('abort', () => { aborts++; });
+    update = text => onUpdate?.(ok(text).result);
+    return (await work.promise).result;
+  } });
+  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, shutdownGraceMs: 1 }), connect: () => pi });
   type Factory = Parameters<Context['ui']['custom']>[0];
   type Component = Awaited<ReturnType<Factory>>;
   let panel: Component | undefined, renders = 0, closed = 0;
@@ -116,13 +115,12 @@ for (const mode of ['print', 'json'] as const) test(`${mode} bare command lists 
   const root = mkdtempSync(join(tmpdir(), 'meantime-text-'));
   const pi = new FakePi('A', mode);
   const work = deferred<Outcome>();
-  const instance = install(pi, { config: validateConfig({}),
-    makeBash: () => ({ ...fixtureBash(root), async execute() { return (await work.promise).result; } }),
-  });
+  pi.registerTool({ ...fixtureBash(root), async execute() { return (await work.promise).result; } });
+  const instance = install(pi, { config: validateConfig({}), connect: () => pi });
   try {
     await pi.emit('session_start', { type: 'session_start' });
     await pi.commands.get('meantime')!('', pi.ctx);
-    assert.equal(pi.uiMessages.at(-1), 'Latest background control:\nCurrent session tasks (none):\n\nCancel: /meantime cancel <id>; output: ask meantime(action="wait", id=..., timeout=0).\nActive proxies: 0; warnings: 0.');
+    assert.equal(pi.uiMessages.at(-1), 'Latest background control:\nCurrent session tasks (none):\n\nCancel: /meantime cancel <id>; output: ask meantime(action="wait", id=..., timeout=0).\nManaged tools: 1; warnings: 0.');
     pi.ctx = { ...pi.ctx, mode: 'rpc' };
     const ids: string[] = [];
     for (let i = 0; i < 4; i++) {

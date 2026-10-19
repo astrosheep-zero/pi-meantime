@@ -26,14 +26,13 @@ export type View = { kind: 'result'; task: Snapshot; result: Result; isError?: b
 export interface RunRequest {
   tool: string; kind: 'bash' | 'tool'; callId: string; mode: Mode; command?: string;
   canDetach: boolean; parentSignal?: AbortSignal; onUpdate?: Update;
-  readyToDetach?: () => boolean;
   userDetach?: 'steer' | 'shortcut';
   execute(signal: AbortSignal, update: Update): Promise<Outcome>;
 }
 interface Task {
   meta: Snapshot; callId: string; controller?: AbortController;
   result?: Result; outputTail?: string; published: boolean; observed: boolean; viewSettled: boolean;
-  requestedDetach?: DetachReason; canDetach: boolean; readyToDetach?: () => boolean;
+  requestedDetach?: DetachReason; canDetach: boolean;
   resolveView?: (view: View) => void;
   cleanupParent?: () => void; autoTimer?: ReturnType<typeof setTimeout>;
   cancelTimer?: ReturnType<typeof setTimeout>;
@@ -45,9 +44,8 @@ export interface RuntimeSink {
   changed?(): void;
   index(change: IndexChange): void;
 }
-// Reloaded modules share admission only, not stale Pi contexts. Non-cooperative
-// old producers continue to occupy a slot until they actually settle.
-// Keep the original key so producers from v0.1.x still count after hot reload.
+// Reloaded modules share only admission; old non-cooperative producers retain
+// their slot until they settle, without retaining a successor's Pi context.
 const LEASES = Symbol.for('pi-bg-poc.live-producer-leases.v1');
 const globalState = globalThis as unknown as Record<symbol, Set<string> | undefined>;
 function leases(): Set<string> { return globalState[LEASES] ??= new Set<string>(); }
@@ -94,7 +92,7 @@ export class TaskRuntime {
       ...(request.command !== undefined ? { command: request.command } : {}),
       state: 'running', delivery: 'foreground', createdAt: Date.now(), localRunning: true, notification: 'none' };
     const task: Task = { meta, callId: request.callId, controller: new AbortController(), published: false,
-      observed: false, viewSettled: false, canDetach: request.canDetach, readyToDetach: request.readyToDetach, notifyAttempts: 0, waiters: 0 };
+      observed: false, viewSettled: false, canDetach: request.canDetach, notifyAttempts: 0, waiters: 0 };
     const view = new Promise<View>(resolve => { task.resolveView = resolve; });
     this.tasks.set(id, task); leases().add(id);
     const onParentAbort = () => {
@@ -127,14 +125,11 @@ export class TaskRuntime {
       task.autoTimer = setTimeout(() => this.detach(task, 'timeout'), this.config.autoDetachMs);
     }
     if (request.mode === 'yes') {
-      // Let synchronous validation/hooks enter a UI prompt before deciding
-      // whether it is safe to release the observer. Later remote elicitation
-      // remains an upstream limitation, documented in DESIGN.md.
+      // A producer may open a prompt after admission; let it enter the gate.
       setImmediate(() => { if (this.open) this.detach(task, 'explicit'); });
     }
     if (request.userDetach) {
-      // Inherited pre-admission intent still passes the normal prompt/readiness
-      // gates, after the producer has entered its native dispatch pipeline.
+      // Inherited pre-admission intent still passes prompt and index gates.
       setImmediate(() => this.detach(task, request.userDetach!));
     }
     this.changed();
@@ -151,7 +146,7 @@ export class TaskRuntime {
   }
   private detach(task: Task, reason: DetachReason): boolean {
     if (!this.open || task.viewSettled || !task.canDetach || (task.meta.mode === 'no' && reason === 'timeout') || task.meta.state !== 'running') return false;
-    if (this.promptDepth > 0 || this.promptResume || (task.readyToDetach && !task.readyToDetach())) { task.requestedDetach = reason; return false; }
+    if (this.promptDepth > 0 || this.promptResume) { task.requestedDetach = reason; return false; }
     task.meta.detachReason = reason;
     return this.releaseToBackground(task);
   }
@@ -169,11 +164,6 @@ export class TaskRuntime {
     clearTimeout(task.autoTimer);
     this.resolveView(task, { kind: 'handle', task: snap(task) });
     return true;
-  }
-  ready(callId: string): void {
-    for (const task of this.tasks.values()) {
-      if (task.callId === callId && task.requestedDetach) this.detach(task, task.requestedDetach);
-    }
   }
   prompt(started: boolean): void {
     this.promptDepth = Math.max(0, this.promptDepth + (started ? 1 : -1));
@@ -200,6 +190,7 @@ export class TaskRuntime {
   }
   private finish(task: Task, result: Result, isError: boolean, thrown?: { error: unknown }): void {
     task.meta.localRunning = false; task.meta.endedAt = Date.now(); task.finishSequence = ++this.completionSequence;
+    delete task.meta.progress; // Terminal previews must use finalized output, not a pre-hook partial.
     clearTimeout(task.autoTimer); clearTimeout(task.cancelTimer); task.cleanupParent?.();
     // Cancellation is a lifecycle fact, not a claim of remote rollback.
     task.meta.isError = isError;
@@ -329,8 +320,8 @@ export class TaskRuntime {
   }
   cancel(id: string): Snapshot {
     const task = this.lookup(id);
-    // A retained terminal result has nothing left to cancel, including legacy
-    // outcome_unknown records with endedAt. Only unfinished recovery lacks control.
+    // Terminal results have nothing left to cancel. Only unfinished recovery
+    // lacks a local controller.
     if (!task.meta.localRunning && task.meta.endedAt !== undefined) return snap(task);
     if (task.meta.recovered && !task.controller && task.meta.state === 'outcome_unknown') throw new Error('Recovered task has no live local controller; verify its external state. It will not be replayed.');
     this.requestCancel(task); return snap(task);

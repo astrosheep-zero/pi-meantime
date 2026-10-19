@@ -53,16 +53,15 @@ test('no mode disables timed detachment but remains cancellable', async () => {
     assert.equal(aborted, true); assert.equal(view.task.state, 'cancelled'); assert.equal(view.task.isError, true);
   } finally { await h.close(); }
 });
-test('no-mode user detachment waits for approval and nested-call readiness', async () => {
-  const h = runtimeHarness(); const work = deferred<Outcome>(); let ready = false;
+test('no-mode user detachment waits for an active prompt to close', async () => {
+  const h = runtimeHarness(); const work = deferred<Outcome>();
   try {
     h.runtime.prompt(true);
-    const wait = h.runtime.run({ tool: 'guarded', kind: 'tool', callId: 'c1', mode: 'no', canDetach: true,
-      readyToDetach: () => ready, execute: () => work.promise });
+    const wait = h.runtime.run({ tool: 'guarded', kind: 'tool', callId: 'c1', mode: 'no', canDetach: true, execute: () => work.promise });
     assert.equal(h.runtime.detachAll('steer'), 0);
-    h.runtime.prompt(false); await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(h.runtime.list()[0]!.delivery, 'foreground'); assert.equal(h.records.size, 0);
-    ready = true; h.runtime.ready('c1'); const view = await wait;
+    h.runtime.prompt(false);
+    const view = await wait;
     assert.equal(view.kind, 'handle'); assert.equal(view.task.detachReason, 'steer'); assert.equal(h.records.size, 1);
   } finally { work.resolve(ok()); await h.close(); }
 });
@@ -75,14 +74,7 @@ test('approval gate defers detach until prompt closes', async () => {
     h.runtime.prompt(false); assert.equal((await waiting).kind, 'handle');
   } finally { work.resolve(ok()); await h.close(); }
 });
-test('queued nested call does not detach before host attributes the original invocation', async () => {
-  const h = runtimeHarness(); const work = deferred<Outcome>(); let ready = false;
-  try {
-    const wait = h.runtime.run({ tool: 'one', kind: 'tool', callId: 'c1', mode: 'yes', canDetach: true, readyToDetach: () => ready, execute: () => work.promise });
-    await sleep(10); assert.equal(h.runtime.list()[0]!.delivery, 'foreground');
-    ready = true; h.runtime.ready('c1'); assert.equal((await wait).kind, 'handle');
-  } finally { work.resolve(ok()); await h.close(); }
-});
+
 test('reading result acknowledges completion and prevents duplicate notification', async () => {
   const h = runtimeHarness(); const work = deferred<Outcome>();
   try {

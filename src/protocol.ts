@@ -1,8 +1,5 @@
-/** Minimal public Pi v1.3 contract consumed by this extension.
- * SDK references are type-only: the runtime and FakePi do not import the SDK.
- * test/sdk-contract.compile.ts checks both host and tool assignability against
- * the pinned official SDK as part of npm run check.
- */
+/** Narrow Pi 1.3 shapes shared by runtime/UI and the deterministic host double.
+ * test/sdk-contract.compile.ts checks assignability against the official SDK. */
 import type {
   AgentToolResult, BeforeAgentStartEventResult, ExtensionAPI, ExtensionContext, InputEventResult, ToolCallEventResult,
   ToolDefinition, ToolLoadout,
@@ -55,9 +52,7 @@ export interface ToolInfo {
   namespace?: { name: string; aliases?: readonly string[]; description?: string; instructions?: string };
   sourceInfo?: { path?: string };
 }
-/** A registry/loadout entry is a runtime AgentTool, not an extension definition.
- * Only metadata is consumed here; never call another tool's execute directly.
- */
+/** Copied AgentTool metadata, distinct from the raw extension definition. */
 export type ToolView = Pick<ToolLoadout['registered'][number],
   'name' | 'label' | 'description' | 'parameters' | 'outputSchema' | 'executionMode'>;
 export interface Loadout {
@@ -83,15 +78,10 @@ export interface Tool extends ToolInfo {
     hiddenDeclarations?: readonly string[];
     descriptions?: Readonly<Record<string, string>>;
   } | undefined;
+  prepareArguments?: (args: unknown) => unknown;
   execute(id: string, args: Record<string, unknown>, signal: AbortSignal | undefined,
     onUpdate: Update | undefined, ctx: ToolContext): Promise<Result>;
 }
-/** Built-in Bash input: preserve its native TypeBox schema, but consume only
- * the metadata and executor that the background wrapper actually uses.
- */
-export type BashTool = Pick<Tool,
-  'name' | 'description' | 'promptSnippet' | 'promptGuidelines' | 'annotations' | 'executionMode' | 'outputSchema' | 'constrainedSampling' | 'execute'>
-  & Pick<ToolInfo, 'parameters'>;
 export interface InputEvent {
   type: 'input'; text: string; source: 'interactive' | 'rpc' | 'extension';
   streamingBehavior?: 'steer' | 'followUp'; images?: Content[];
@@ -114,7 +104,6 @@ export interface EventMap {
   tool_execution_start: { type: 'tool_execution_start'; toolCallId: string; parentToolCallId?: string };
   before_agent_start: { type: 'before_agent_start'; systemPromptOptions: { sections: Record<string, string> } };
   agent_settled: { type: 'agent_settled'; aborted?: boolean };
-  mcp_servers_change: { type: 'mcp_servers_change' };
   input: InputEvent;
   tool_call: ToolCallEvent;
   tool_execution_end: ToolEndEvent;
@@ -131,7 +120,6 @@ export interface EventResultMap {
   tool_execution_start: void;
   before_agent_start: BeforeAgentStartEventResult;
   agent_settled: void;
-  mcp_servers_change: void;
   input: InputEventResult;
   tool_call: ToolCallEventResult;
   tool_execution_end: void;
@@ -144,8 +132,6 @@ export interface PiHost {
   registerToolRenderer: ExtensionAPI['registerToolRenderer'];
   registerTool(tool: Tool): void;
   getAllTools(): ToolInfo[];
-  getActiveTools(): string[];
-  getSettings(): { shellPath?: string; shellCommandPrefix?: string };
   on<K extends keyof EventMap>(event: K,
     handler: EventHandler<K>): () => void;
   registerShortcut(key: Parameters<ExtensionAPI['registerShortcut']>[0], options: {
