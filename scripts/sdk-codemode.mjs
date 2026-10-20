@@ -295,6 +295,7 @@ try {
 
   gate('reload');
   await prompt('codemode', { code: 'await tools.hold({key:"reload"}); store("afterReload",true);' }, 'reload-root');
+  await bounded(starts.get('reload').promise, 'reload child started');
   const oldGeneration = generation;
   await bounded(session.reload(), 'reload'); bindStream();
   assert.equal(signals.get('reload').aborted, true); assert(generation > oldGeneration);
