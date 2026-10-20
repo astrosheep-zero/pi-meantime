@@ -1,8 +1,52 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { TaskRuntime } from '../src/runtime.ts';
+import { projectResult } from '../src/schema.ts';
 import { deferred, ok, runtimeHarness, sleep, until } from './helpers.ts';
 import type { Outcome } from '../src/protocol.ts';
+
+test('persistent projection omits non-JSON details without mutating the live result or losing usage', () => {
+  for (const details of [{ value: 1n }, (() => { const cycle: { self?: unknown } = {}; cycle.self = cycle; return cycle; })()]) {
+    const result = { ...ok('safe content').result, details,
+      usage: { input: 3, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 3,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      nestedCalls: { calls: [], complete: true },
+    };
+    const projected = projectResult(result);
+    assert.equal(result.details, details);
+    assert.throws(() => JSON.stringify(result));
+    assert.doesNotThrow(() => JSON.stringify(projected));
+    assert.deepEqual(projected.persistenceOmissions, ['details']);
+    assert.deepEqual(projected.content, result.content);
+    assert.deepEqual(projected.usage, result.usage);
+    assert.deepEqual(projected.nestedCalls, result.nestedCalls);
+  }
+});
+
+test('foreground CodeMode observer releases admission while its separate scope still drains on close', async () => {
+  const h = runtimeHarness({ maxRunning: 1, shutdownGraceMs: 1 });
+  const scope = deferred<import('../src/protocol.ts').ScopeResult | undefined>();
+  const indexed: unknown[] = [];
+  const runtime = new TaskRuntime(h.config, { notify() {}, index(change) { indexed.push(change); } });
+  let signal: AbortSignal | undefined;
+  try {
+    const result = ok('child handle');
+    const view = await runtime.run({ tool: 'codemode', kind: 'tool', callId: 'root', codemodeRootId: 'root',
+      mode: 'auto', canDetach: true, scope: scope.promise,
+      execute(s) { signal = s; return Promise.resolve(result); } });
+    assert.equal(view.kind, 'result');
+    assert.equal(runtime.list().length, 0, 'no observer task blocks the frontend');
+    await until(() => TaskRuntime.liveProducerCount() === 0);
+    assert.equal((await runtime.run({ tool: 'other', kind: 'tool', callId: 'other', mode: 'auto', canDetach: true, execute: async () => ok() })).kind, 'result');
+    const closing = runtime.close(); let closed = false; void closing.then(() => { closed = true; });
+    await sleep(5);
+    assert.equal(signal!.aborted, true); assert.equal(closed, false, 'shutdown still owns the late scope');
+    scope.resolve({ result: { ...result.result, nestedCalls: { calls: [], complete: true } } });
+    await closing;
+    assert.equal((indexed[0] as any).completion.lateScope, true);
+    assert.equal((indexed[0] as any).completion.toolCallId, 'root');
+  } finally { scope.resolve(undefined); await runtime.close(); await h.close(); }
+});
 
 // Every async test owns and drains its producers, making leak assertions meaningful.
 test('fast foreground result completes without a completion notification', async () => {
@@ -249,5 +293,30 @@ test('wait handles timeouts, cancellation and long waits without cancelling the 
     work.resolve(ok('waited'));
     const done = await pending;
     assert.equal(done.task.state, 'completed'); assert.match(JSON.stringify(done.result), /waited/);
+  } finally { work.resolve(ok()); await h.close(); }
+});
+
+test('CodeMode close coalesces, really drains late pipelines and persists completion before retiring the sink', async () => {
+  const h = runtimeHarness({ shutdownGraceMs: 1 });
+  const work = deferred<Outcome>(); let signal: AbortSignal | undefined, released = 0;
+  try {
+    const view = await h.runtime.run({ tool: 'codemode', kind: 'tool', callId: 'root', codemodeRootId: 'root',
+      mode: 'yes', canDetach: true, onSettled() { released++; }, execute(s) { signal = s; return work.promise; } });
+    h.runtime.published('root');
+    const closing = h.runtime.close();
+    assert.equal(h.runtime.close(), closing, 'concurrent shutdown joins the same drain');
+    let closed = false; void closing.then(() => { closed = true; });
+    await sleep(5);
+    assert.equal(signal!.aborted, true); assert.equal(closed, false);
+    const native = { ...ok('late').result, details: { original: true }, nestedCalls: { calls: [], complete: true } };
+    work.resolve({ result: native, isError: false });
+    await closing;
+    assert.equal(released, 1); assert.equal(h.notifications.length, 0);
+    const record = h.records.get(view.task.id)!;
+    assert.equal(record.completion!.toolCallId, 'root');
+    assert.deepEqual(record.completion!.result, native);
+    const reopened = new TaskRuntime(h.config, h.sink, [record]);
+    try { assert.deepEqual(reopened.result(view.task.id).result, native); }
+    finally { await reopened.close(); }
   } finally { work.resolve(ok()); await h.close(); }
 });

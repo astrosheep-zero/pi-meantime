@@ -4,12 +4,18 @@ import type {
   AgentToolResult, BeforeAgentStartEventResult, ExtensionAPI, ExtensionContext, InputEventResult, ToolCallEventResult,
   ToolDefinition, ToolLoadout,
 } from '@earendil-works/pi-coding-agent';
+import type { ToolResultMessage } from '@earendil-works/pi-ai';
 export type Json = Exclude<AgentToolResult<unknown>['structuredContent'], undefined>;
 // A checked object-shaped schema, after narrowing the SDK's general TSchema.
 export type Schema = Record<string, unknown>;
 export type Mode = 'auto' | 'yes' | 'no';
 export type Exposure = 'direct' | 'model-only' | 'codemode' | 'deferred' | 'hidden';
-export type Result = AgentToolResult<unknown>;
+/** nestedCalls is retained completion metadata, not a rewritten transcript message. */
+export type Result = AgentToolResult<unknown> & {
+  nestedCalls?: ToolResultMessage['nestedCalls']; persistenceOmissions?: string[];
+};
+/** Late scope metadata, separate from the already-returned script observation. */
+export interface ScopeResult { result: Result; usage?: Result['usage'] }
 export type Content = Result['content'][number];
 export interface Outcome {
   result: Result;
@@ -97,6 +103,7 @@ export interface ToolEndEvent {
 export interface EventMap {
   session_start: { type: 'session_start' };
   session_shutdown: { type: 'session_shutdown'; reason?: string };
+  session_before_tree: { type: 'session_before_tree' };
   session_tree: { type: 'session_tree' };
   session_compact: { type: 'session_compact' };
   session_compact_failed: { type: 'session_compact_failed' };
@@ -113,6 +120,7 @@ export interface EventMap {
 export interface EventResultMap {
   session_start: void;
   session_shutdown: void;
+  session_before_tree: void;
   session_tree: void;
   session_compact: void;
   session_compact_failed: void;

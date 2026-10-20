@@ -1,5 +1,5 @@
 import type { Config } from './config.ts';
-import type { Mode, Outcome, Result, Update } from './protocol.ts';
+import type { Mode, Outcome, Result, ScopeResult, Update } from './protocol.ts';
 import { isRecord } from './schema.ts';
 import { TASK_ID, newTaskId, truncateUtf8 } from './store.ts';
 
@@ -13,12 +13,16 @@ export interface Snapshot {
   indexError?: string;
   /** Final native Outcome error flag, independent of stale result.isError. */
   isError?: boolean;
-  recovered?: boolean; notification: 'none' | 'pending' | 'queued' | 'observed' | 'failed' | 'suppressed';
+  recovered?: boolean; textOnly?: boolean; notification: 'none' | 'pending' | 'queued' | 'observed' | 'failed' | 'suppressed';
 }
 export type TaskIndex = Pick<Snapshot, 'id' | 'tool' | 'kind' | 'command' | 'mode' | 'createdAt' | 'detachReason'>;
 export interface Completion {
   id: string; endedAt: number; isError: boolean; cancelRequestedAt?: number;
   exitCode?: number; text: string; outputPath?: string;
+  /** Linked completion, not a mutation of the already-persisted handle message. */
+  toolCallId?: string; codemodeRootId?: string; result?: Result;
+  /** Late linked update; only this nested delta is new accounting. */
+  lateScope?: boolean; nestedUsage?: Result['usage'];
 }
 export type TaskRecord = TaskIndex & { completion?: Completion };
 export type IndexChange = { task: TaskIndex } | { completion: Completion } | { removed: string[] };
@@ -27,6 +31,8 @@ export interface RunRequest {
   tool: string; kind: 'bash' | 'tool'; callId: string; mode: Mode; command?: string;
   canDetach: boolean; parentSignal?: AbortSignal; onUpdate?: Update;
   userDetach?: 'steer' | 'shortcut';
+  codemodeRootId?: string; onDetach?(): void; onSettled?(): void;
+  scope?: Promise<ScopeResult | undefined>; finalize?(outcome: Outcome): Outcome;
   execute(signal: AbortSignal, update: Update): Promise<Outcome>;
 }
 interface Task {
@@ -36,7 +42,7 @@ interface Task {
   resolveView?: (view: View) => void;
   cleanupParent?: () => void; autoTimer?: ReturnType<typeof setTimeout>;
   cancelTimer?: ReturnType<typeof setTimeout>;
-  done?: Promise<void>; notifyAttempts: number; finishSequence?: number; waiters: number;
+  done?: Promise<void>; codemodeRootId?: string; onDetach?(): void; notifyAttempts: number; finishSequence?: number; waiters: number;
 }
 export interface RuntimeSink {
   /** false defers handoff until the host can accept messages. */
@@ -59,6 +65,8 @@ export class TaskRuntime {
   readonly config: Config;
   readonly tasks = new Map<string, Task>();
   private open = true;
+  private closing?: Promise<void>;
+  private scopes = new Map<string, { controller: AbortController; done: Promise<void> }>();
   private promptDepth = 0;
   private promptResume?: ReturnType<typeof setImmediate>;
   private completionSequence = 0;
@@ -71,12 +79,12 @@ export class TaskRuntime {
     for (const { completion, ...record } of records) {
       if (!TASK_ID.test(record.id)) continue;
       const meta: Snapshot = { ...record, delivery: 'background', state: 'outcome_unknown',
-        recovered: true, localRunning: false, notification: 'suppressed' };
+        recovered: true, textOnly: !completion?.result, localRunning: false, notification: 'suppressed' };
       if (completion) Object.assign(meta, { endedAt: completion.endedAt, isError: completion.isError,
         cancelRequestedAt: completion.cancelRequestedAt, exitCode: completion.exitCode,
         outputPath: completion.outputPath,
         state: completion.cancelRequestedAt !== undefined ? 'cancelled' : completion.isError ? 'failed' : 'completed' });
-      this.tasks.set(meta.id, { meta, outputTail: completion?.text.slice(-1026), result: completion ? { content: [{ type: 'text', text: completion.text }], details: undefined } : undefined,
+      this.tasks.set(meta.id, { meta, outputTail: completion?.text.slice(-1026), result: completion?.result ?? (completion ? { content: [{ type: 'text', text: completion.text }], details: undefined } : undefined),
         callId: '', published: true, observed: false, viewSettled: true, canDetach: false, notifyAttempts: 0, waiters: 0 });
     }
   }
@@ -92,9 +100,25 @@ export class TaskRuntime {
       ...(request.command !== undefined ? { command: request.command } : {}),
       state: 'running', delivery: 'foreground', createdAt: Date.now(), localRunning: true, notification: 'none' };
     const task: Task = { meta, callId: request.callId, controller: new AbortController(), published: false,
-      observed: false, viewSettled: false, canDetach: request.canDetach, notifyAttempts: 0, waiters: 0 };
+      observed: false, viewSettled: false, canDetach: request.canDetach, notifyAttempts: 0, waiters: 0,
+      codemodeRootId: request.codemodeRootId, onDetach: request.onDetach };
     const view = new Promise<View>(resolve => { task.resolveView = resolve; });
     this.tasks.set(id, task); leases().add(id);
+    if (request.scope) {
+      const done = request.scope.then(scope => {
+        if (!scope) return;
+        // The observer may already be gone (including a foreground result).
+        // Its immutable result is not rewritten; append linked late metadata.
+        if (task.result) task.result = scope.result;
+        try { this.sink.index({ completion: { id, toolCallId: task.callId, codemodeRootId: task.codemodeRootId,
+          endedAt: task.meta.endedAt!, isError: task.meta.isError!, cancelRequestedAt: task.meta.cancelRequestedAt,
+          text: scope.result.content.filter(block => block.type === 'text').map(block => block.text).join('\n'),
+          result: scope.result, lateScope: true, nestedUsage: scope.usage,
+        } }); }
+        catch (error) { task.meta.indexError = `Scope index could not be saved: ${String(error)}`; }
+      }).finally(() => { this.scopes.delete(id); this.prune(); });
+      this.scopes.set(id, { controller: task.controller!, done });
+    }
     const onParentAbort = () => {
       if (task.meta.delivery === 'foreground' && !task.viewSettled) this.requestCancel(task, request.parentSignal?.reason);
     };
@@ -119,7 +143,11 @@ export class TaskRuntime {
     }).catch(error => {
       thrown = { error };
       return { result: failure(error), isError: true };
-    }).then(outcome => this.finish(task, outcome.result, outcome.isError, thrown))
+    }).then(outcome => {
+      outcome = request.finalize?.(outcome) ?? outcome;
+      request.onSettled?.();
+      this.finish(task, outcome.result, outcome.isError, thrown);
+    })
       .finally(() => { leases().delete(id); this.prune(); this.changed(); });
     if (request.mode === 'auto' && request.canDetach && this.config.autoDetachMs > 0) {
       task.autoTimer = setTimeout(() => this.detach(task, 'timeout'), this.config.autoDetachMs);
@@ -159,6 +187,7 @@ export class TaskRuntime {
         if (!force) { task.canDetach = false; return false; }
       }
       task.meta.delivery = 'background';
+      task.onDetach?.(); task.onDetach = undefined;
     }
     task.cleanupParent?.(); task.cleanupParent = undefined;
     clearTimeout(task.autoTimer);
@@ -213,8 +242,10 @@ export class TaskRuntime {
     const exitCode = typeof data.exit_code === 'number' ? data.exit_code : undefined;
     Object.assign(task.meta, { outputPath, exitCode });
     try {
-      if (this.open) this.sink.index({ completion: { id: task.meta.id, endedAt: task.meta.endedAt,
-        isError, cancelRequestedAt: task.meta.cancelRequestedAt, exitCode, text, outputPath } });
+      if (this.open || task.codemodeRootId) this.sink.index({ completion: { id: task.meta.id, endedAt: task.meta.endedAt,
+        isError, cancelRequestedAt: task.meta.cancelRequestedAt, exitCode, text, outputPath,
+        ...(task.codemodeRootId ? { toolCallId: task.callId, codemodeRootId: task.codemodeRootId, result } : {}),
+      } });
     } catch (error) {
       task.meta.indexError = `Completion index could not be saved: ${String(error)}`;
     }
@@ -368,7 +399,16 @@ export class TaskRuntime {
     // retries) releases that protection even if no further task event occurs.
     this.prune(); this.changed();
   }
-  async close(): Promise<void> {
+  /** Before branch movement, cancel and truly drain script-owned pipelines.
+   * Non-cooperative host tools can delay this boundary; grace is not proof of drain. */
+  async drainCodemode(): Promise<void> {
+    const tasks = [...this.tasks.values()].filter(task => task.codemodeRootId);
+    for (const task of tasks) this.requestCancel(task);
+    for (const scope of this.scopes.values()) scope.controller.abort();
+    await Promise.allSettled([...tasks.map(task => task.done), ...[...this.scopes.values()].map(scope => scope.done)]);
+  }
+  close(): Promise<void> { return this.closing ??= this.closeRuntime(); }
+  private async closeRuntime(): Promise<void> {
     if (!this.open) return;
     this.open = false; clearTimeout(this.notifyTimer); clearImmediate(this.promptResume); this.promptResume = undefined;
     for (const task of this.tasks.values()) {
@@ -381,6 +421,7 @@ export class TaskRuntime {
       timer = setTimeout(resolve, this.config.shutdownGraceMs);
     })]);
     clearTimeout(timer);
+    await this.drainCodemode();
     for (const task of this.tasks.values()) {
       clearTimeout(task.cancelTimer);
       if (task.meta.localRunning) task.meta.state = 'outcome_unknown';
@@ -396,7 +437,7 @@ export class TaskRuntime {
       .sort((a, b) => Number(b.meta.id === retainId) - Number(a.meta.id === retainId)
         || (b.meta.endedAt ?? 0) - (a.meta.endedAt ?? 0) || (b.finishSequence ?? 0) - (a.finishSequence ?? 0));
     for (const task of ended.slice(this.config.maxRetained)) {
-      if (!task.published || task.waiters || task.meta.notification === 'pending' || leases().has(task.meta.id)) continue;
+      if (!task.published || task.waiters || task.meta.notification === 'pending' || leases().has(task.meta.id) || this.scopes.has(task.meta.id)) continue;
       try {
         this.sink.index({ removed: [task.meta.id] }); this.tasks.delete(task.meta.id);
       } catch (error) { task.meta.indexError = String(error); }

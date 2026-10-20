@@ -1,13 +1,16 @@
 import { AgentSession } from '@earendil-works/pi-coding-agent';
+import type { SessionManager } from '@earendil-works/pi-coding-agent';
+import { codemodeScopes, isNativeCodemode, withStoreOwner } from './codemode.ts';
 import { runToolCall } from '@earendil-works/pi-agent-core';
 import type { AfterToolCallContext, AfterToolCallResult, BeforeToolCallContext, BeforeToolCallResult } from '@earendil-works/pi-agent-core';
 import type { Config } from './config.ts';
-import type { Mode, Outcome, PiHost, Result, Tool, ToolContext, Update } from './protocol.ts';
+import type { Mode, Outcome, PiHost, Result, ScopeResult, Tool, ToolContext, Update } from './protocol.ts';
 import { decorateSchema, isRecord, matches, splitControl } from './schema.ts';
 
-/** Pi 1.3 port: only the shared before/after methods are private seams. */
+/** Pi 1.3 port. Native CodeMode additionally retains the session's nested scopes. */
 export interface HostSession {
   readonly isStreaming: boolean;
+  readonly sessionManager?: Pick<SessionManager, 'appendUsage' | 'getEntries'>;
   getAllTools: PiHost['getAllTools'];
   getToolDefinition(name: string): Tool | undefined;
   readonly agent: { toolExecution?: 'parallel' | 'sequential' };
@@ -31,6 +34,8 @@ export function captureSession(pi: PiHost, Session = AgentSession): HostSession 
 export interface ManagedCall {
   name: string; id: string; args: Record<string, unknown>; mode: Mode;
   signal?: AbortSignal; update?: Update; ctx: ToolContext; canDetach: boolean;
+  codemodeRootId?: string; onDetach?(): void; onSettled?(): void;
+  scope?: Promise<ScopeResult | undefined>; finalize?(outcome: Outcome): Outcome;
   execute(signal: AbortSignal, update: Update): Promise<Outcome>;
 }
 const FIELDS = ['parameters', 'prepareArguments', 'execute', 'outputSchema'] as const;
@@ -75,6 +80,8 @@ export function manageTools(session: HostSession, config: Config, run: (call: Ma
   const fence = resultFence(session), token = {}; fence.owner = token;
   const patches = new Map<Tool, Patch>(), frames = new Map<string, { context: BeforeToolCallContext; parentId?: string; mode: Mode }>();
   const modes = new WeakMap<object, Mode>();
+  let scopes: ReturnType<typeof codemodeScopes> | undefined;
+  let closing = false;
   // Copied definitions may contain our wrappers; unwrap exact identities only.
   const origins = new WeakMap<object, unknown>();
   const active = () => fence.owner === token && session.extensionRunner === runner && session.resourceLoader.getExtensions().runtime === loaderRuntime;
@@ -92,14 +99,16 @@ export function manageTools(session: HostSession, config: Config, run: (call: Ma
         Object.defineProperty(definition, key, { ...Object.getOwnPropertyDescriptor(definition, key), value: origins.get(value) });
       }
     }
+    const nativeCodemode = isNativeCodemode(definition);
+    const fields = nativeCodemode ? ['execute'] as const : FIELDS;
     const exposure = definition.exposure ?? 'direct';
     if (definition.name === 'meantime' || (definition.name !== 'bash' && (!matches(definition.name, config.include) || matches(definition.name, config.exclude)))
-      || !['direct', 'codemode', 'deferred'].includes(exposure) || definition.executionMode === 'sequential') return;
-    for (const key of FIELDS) {
+      || (!nativeCodemode && !['direct', 'codemode', 'deferred'].includes(exposure)) || definition.executionMode === 'sequential') return;
+    for (const key of fields) {
       const descriptor = Object.getOwnPropertyDescriptor(definition, key);
       if (descriptor?.configurable === false || (!descriptor && !Object.isExtensible(definition))) throw new Error(`Cannot decorate readonly tool property: ${key}`);
     }
-    const parameters = decorateSchema(definition.parameters);
+    const parameters = nativeCodemode ? definition.parameters : decorateSchema(definition.parameters);
     const nativeExecute = definition.execute, prepare = definition.prepareArguments;
     const patch: Patch = new Map();
     const values = {
@@ -113,12 +122,24 @@ export function manageTools(session: HostSession, config: Config, run: (call: Ma
       outputSchema: definition.outputSchema ? { anyOf: [definition.outputSchema, HANDLE_SCHEMA] } : {},
       async execute(id: string, args: Record<string, unknown>, signal: AbortSignal | undefined, update: Update | undefined, ctx: ToolContext): Promise<Result> {
         assertActive();
+        if (closing) throw new Error('Managed tool session is closing');
         const frame = frames.get(id); frames.delete(id);
         if (!frame) throw new Error('Managed tool execution requires the native permission pipeline');
-        const view = run({ name: definition.name, id, args, signal, update, ctx, mode: frame.mode,
+        // Ordinary descendants belong to the whole script, not to a second
+        // observer. In particular mode:no alone would still detach on steer.
+        const nestedRoot = frame.parentId && scopes?.rootId(frame.parentId);
+        if (nestedRoot && frame.mode !== 'yes') return nativeExecute.call(definition, id, args, signal, update, ctx);
+        if (nativeCodemode) scopes ??= codemodeScopes(session);
+        const lease = nativeCodemode || nestedRoot ? scopes!.begin(id, nativeCodemode) : undefined;
+        let view: Promise<Result>;
+        try { view = run({ name: definition.name, id, args, signal, update, ctx, mode: frame.mode,
+          codemodeRootId: lease?.rootId, onDetach: lease ? () => lease.detached() : undefined,
+          onSettled: lease ? () => lease.end() : undefined,
+          scope: lease?.scope, finalize: lease ? outcome => lease.finish(outcome) : undefined,
           canDetach: session.agent.toolExecution !== 'sequential',
           async execute(jobSignal, onUpdate) {
             assertActive();
+            jobSignal = lease?.signal(jobSignal) ?? jobSignal;
             const base = runner.createToolContext(id, jobSignal);
             const descriptors: Record<string, PropertyDescriptor> = Object.getOwnPropertyDescriptors(base);
             descriptors.signal = { value: jobSignal, enumerable: true };
@@ -129,17 +150,20 @@ export function manageTools(session: HostSession, config: Config, run: (call: Ma
             return runToolCall({ ...frame.context.toolCall, arguments: {}, argumentsError: undefined }, {
               tools: [{ name: definition.name, label: definition.label, description: '',
                 parameters: { type: 'object', properties: {}, additionalProperties: false },
-                execute: (_id, _empty, signal, update) => nativeExecute.call(definition, id, args, signal, update, jobCtx) }],
+                execute: (_id, _empty, signal, update) => withStoreOwner(() => {
+                  assertActive();
+                  if (closing || signal?.aborted) throw new Error('Codemode store owner has been cancelled');
+                }, () => nativeExecute.call(definition, id, args, signal, update, jobCtx)) }],
               assistantMessage: frame.context.assistantMessage, context: frame.context.context, signal: jobSignal, onUpdate,
               afterToolCall: inner => { assertActive(); return fence.native.call(session, { ...inner, toolCall: frame.context.toolCall, args }, frame.parentId); },
             });
           },
-        }); // Synchronous admission may throw: retain native outer finalization.
+        }); } catch (error) { lease?.end(); throw error; } // Failed admission retains native finalization.
         fence.calls.set(frame.context.toolCall, fence); // admitted: skip outer finalization
         return view;
       },
     };
-    for (const key of FIELDS) {
+    for (const key of fields) {
       const value = values[key]; patch.set(key, { saved: Object.getOwnPropertyDescriptor(definition, key), value });
       origins.set(value, definition[key]);
       Object.defineProperty(definition, key, { configurable: true, enumerable: true, writable: true, value });
@@ -155,7 +179,7 @@ export function manageTools(session: HostSession, config: Config, run: (call: Ma
     let changed = false;
     for (const [definition, patch] of patches) {
       if (definitions.has(definition) && [...patch].every(([key, { value }]) => definition[key] === value)
-        && ['direct', 'codemode', 'deferred'].includes(definition.exposure ?? 'direct') && definition.executionMode !== 'sequential') continue;
+        && (isNativeCodemode(definition) || ['direct', 'codemode', 'deferred'].includes(definition.exposure ?? 'direct')) && definition.executionMode !== 'sequential') continue;
       restore(definition, patch); patches.delete(definition); changed = true;
     }
     for (const definition of definitions) if (!patches.has(definition)) {
@@ -188,8 +212,10 @@ export function manageTools(session: HostSession, config: Config, run: (call: Ma
     refresh: refreshHook,
     end(id: string) { frames.delete(id); },
     names: () => [...patches.keys()].map(t => t.name),
+    closeAdmission() { closing = true; },
     retire() { frames.clear(); if (fence.owner === token) fence.owner = undefined; },
     dispose() {
+      scopes?.dispose();
       frames.clear(); if (fence.owner === token) fence.owner = undefined;
       if (session._beforeToolCall === beforeHook) session._beforeToolCall = before;
       if (loaderRuntime.refreshTools === refreshHook) loaderRuntime.refreshTools = refresh;

@@ -75,7 +75,26 @@ ID 用实际返回值替换；支持唯一前缀，可省略 `mt_`，有歧义�
 
 `wait` 必须在 `id` 与 `ids` 中二选一。`ids` 接受 1–32 项，`mode: "all"`（默认）等全部结束，`"any"` 等任意一项结束；超时也会返回。批量回执含已结束结果及 `pending`，正文共享 32KiB 预算，被省略的结果可单独读取。
 
-原生工具只管理 Bash；非原生工具默认全部管理，包括 Square、普通扩展和 MCP（含 IDE MCP）。依据当前工具来源区分原生与扩展，同名扩展覆盖也属于非原生工具；include/exclude 可进一步筛选。原生名称、description、来源与 `direct` / `codemode` / `deferred` 可见性不变；从 Codemode 或 tool_search 发现后仍调用原名，不增加第二个候选。顺序工具、hidden / model-only 工具、不兼容的根 Schema 及保留字段冲突保持原样；宿主全局顺序执行时不转后台。
+原生工具管理 Bash 与通过公开工厂组合的 CodeMode；非原生工具默认全部管理，包括 Square、普通扩展和 MCP（含 IDE MCP）。依据当前工具来源区分原生与扩展，同名扩展覆盖也属于非原生工具；include/exclude 可进一步筛选。原生名称、description、来源与 `direct` / `codemode` / `deferred` 可见性不变；从 Codemode 或 tool_search 发现后仍调用原名，不增加第二个候选。除本扩展组合的原生 CodeMode 外，顺序工具、hidden / model-only 工具、不兼容的根 Schema 及保留字段冲突保持原样；宿主全局顺序执行时不转后台。
+
+## 原生 CodeMode 整段后台执行
+
+`codemode` 保留原名、raw JavaScript grammar、discovery、models、store 和原生 executor。没有第二套 sandbox，也不重写脚本。公开工厂通过注册 facade 组合；宿主桥只在当前实例保留 `_executeNestedToolCall`、原生 runner 的 `takeRecord`/`clear` 及 scope Map 的删除生命周期，drain 后按原 descriptor 归还，不替换全局 registry。它不增加 `__background__` 参数：使用现有计时、Ctrl+Shift+B、steer 或 `/meantime detach` 分离**整段脚本的观察者**。后续 await、局部变量、正常完成时的 `finally` 在同一次执行中继续，不重放脚本。
+
+- 普通子调用及其后代等待原生最终结果，不因计时、steer 或快捷键独立变成句柄；显式 `tools.someTool({...args, __background__: "yes"})` 仍可独立转后台。**脚本结束立即返回自己的结果**（包括 child handle），不等待独立子 producer，即使 `autoDetachMs: 0`。后代的 scope/记录有独立 drain 生命周期，晚到孙调用仍保留原 ID 和 usage；它们不继续占用已完成根脚本的前台观察者或 runtime admission。
+- 原生限制不变：整个 Pi 进程**最多两个存活或正在退出的 CodeMode worker**。第三次执行立即返回原生容量错误；不排队、不自动重试，也不取消现有任务。`meantime` 在 `codemode.mode: "only"` 中仍直接声明，list/wait/cancel 不需要第三个 worker。
+- 中止 wait 不取消 producer；显式 cancel 中止作业所属 signal 链。原生硬取消可能终止 VM，**不保证执行 JavaScript `finally`**，也不保证远端副作用回滚。
+- 树导航前、会话替换及 reload/shutdown 会请求取消并 drain 原生脚本及其 nested pipeline，再放行生命周期变化。非合作宿主子工具会延迟这个边界；grace timeout 不是已 drain 的证明。不承诺运行中的脚本跨 reload 存活。
+
+### 完成记录与计费
+
+前台完成通常由 Pi 的原生 toolResult 保存 nestedCalls/usage。后台已返回的句柄是 append-only 历史：**不会回写原 toolResult**。最终结果（包括图片、原生 details、结构化数据、nestedCalls 与 usage）关联原 `toolCallId`、`codemodeRootId` 和任务 ID，存进现有 `meantime-index` 的 completion 条目；重开会话可以恢复这些已完成结果。若脚本已结束但独立子 producer 尚未 drain，原观察者先返回；scope drain 后追加 `lateScope` completion，保留完整的最终嵌套 metadata，不回写原消息。
+
+后台根任务完成时另追加一次公开 `SessionManager.appendUsage()` usage entry；仍有晚到后代时，仅在之后的 `lateScope` 条目追加尚未计费的 nested delta（根自身 usage 已由前台消息或后台完成计入）。显式子任务的晚到 usage 只归这条根 scope 记账，不在子记录重复计费。通知、单次/重复 wait 和重新打开后的 wait 都不再追加费用。wait 的 `details.usage`/`details.nestedCalls` 是保留元数据，不是新的执行 usage。
+
+内存保留原生 Result 原对象；**落盘与 wait 回执使用提前完成 JSON 序列化校验的副本**。`details` 等字段若含 BigInt／循环引用等不可 JSON 序列化数据，该字段明确省略并列于 `persistenceOmissions`，可序列化 content、nestedCalls 和 usage 仍独立保存/计费。未知 details 不能推进一个写不进 JSONL 的会话 leaf；不把降级副本冒充原始完整数据。
+
+这是一条**关联完成记录**，不是伪造的补充 toolResult；Pi 原生 HTML/compaction 不会自动把它识别成旧句柄的最终 nestedCalls。费用计入会话统计（`tools/codemode` usage 分类）；不要把关联记录误称为原生 transcript 已被补写。
 
 ## 完成通知、保存与边界
 
@@ -85,8 +104,8 @@ ID 用实际返回值替换；支持唯一前缀，可省略 `mt_`，有歧义�
 - 任务索引及完成文本保存在 **Pi 会话自定义条目**中。同一会话的树导航共享任务；fork/clone 不接管原任务。恢复时已有完成记录可读，缺少最终记录的任务显示 `outcome_unknown`，绝不自动重放；重启不补发历史通知。
 - **不是跨进程作业服务**：`/reload`、切换会话和退出会请求取消，停止旧通知。取消是协作式的，失去本地控制不能证明远端操作已结束。
 - 后台任务原样保存完成完整原生结果钩子的 `Outcome.result`，另存权威 `Outcome.isError`，不改写保留结果。前台走同一完成路径，仅外部返回时投影权威错误位。后台句柄不进入原工具结果钩子，晚结果不补造 transcript 条目。partial updates 仍是原生进度更新，不能视为已被最终结果钩子脱敏；结束时清除暂存进度，结束任务预览和完成尾部只取最终结果。
-- 扩展不二次清洗、截断或创建/删除原生输出文件。Pi 的 Bash / MCP 继续使用各自原生文本与输出路径，普通扩展工具遵循自身结果策略。索引保存最终文本及路径，不另设文本上限；单任务 `wait` 返回保留文本、结构化结果和原生 details（如 `truncation`、`fullOutputPath`），details 同时附带 task 回执。图片、details 与结构化数据仅在原进程内存保留，恢复后只有文本与任务元数据；读取回执不内联图片。
-- 默认最多 4 个真实本地执行，保留最近 128 个已结束后台任务（待通知等记录暂受保护）。后台晚到嵌套记录和 usage 不保证补进已完成父消息或 Pi 全局费用统计。
+- 扩展不二次清洗、截断或创建/删除原生输出文件。Pi 的 Bash / MCP 继续使用各自原生文本与输出路径，普通扩展工具遵循自身结果策略。索引保存最终文本及路径，不另设文本上限；单任务 `wait` 返回保留文本、结构化结果和原生 details（如 `truncation`、`fullOutputPath`），details 同时附带 task 回执。图片、details 与结构化数据对普通任务仍仅在原进程内存保留，恢复后只有文本与任务元数据；CodeMode 所属任务的完整完成记录例外，见上节。读取回执不内联图片。
+- 默认最多 4 个受管真实本地执行，保留最近 128 个已结束后台任务（待通知等记录暂受保护）；原生 CodeMode worker 另有不变的进程级上限 2。普通任务的后台晚到嵌套记录和 usage 不保证补进已完成父消息或 Pi 全局费用统计；CodeMode 所属任务按上节的关联记录/独立计费规则处理。
 - `print/json` 模式下 `auto` 保持前台，`yes` 明确报错。已转后台后才出现的 MCP 交互仍是兼容边界；这类工具建议排除；`"no"` 只关闭计时转后台，不能防止用户主动转后台。
 
 ## 配置
@@ -113,6 +132,9 @@ ID 用实际返回值替换；支持唯一前缀，可省略 `mt_`，有歧义�
 npm ci --ignore-scripts
 npm run check       # 类型检查 + 测试
 npm run test:pi     # 真实 Pi SDK 冒烟，脚本化 provider，无外部模型调用
+node --experimental-strip-types scripts/sdk-codemode.mjs # CodeMode 离线 SDK 集成（也含在 npm test）
+# 可选：验证已安装的 bundled Pi 宿主与 index.mjs 的 Jiti 模块身份
+PI_TEST_SDK_MODULES=/path/to/pi/node_modules node --experimental-strip-types scripts/sdk-codemode.mjs
 ```
 
 更多边界见 [设计说明](docs/DESIGN.md)，验证范围见 [验证说明](docs/VALIDATION.md)。[MIT License](LICENSE)。

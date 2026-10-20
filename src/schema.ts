@@ -1,4 +1,4 @@
-import type { Mode, Schema } from './protocol.ts';
+import type { Mode, Result, Schema } from './protocol.ts';
 
 export const CONTROL = '__background__';
 const UNSUPPORTED = ['$ref', '$dynamicRef', '$recursiveRef', 'allOf', 'anyOf', 'oneOf',
@@ -37,6 +37,23 @@ export function splitControl(args: Record<string, unknown>): { mode: Mode; args:
   delete business[CONTROL];
   return { mode: value, args: business };
 }
+/** Serialize before entering Pi's append path (which advances its memory leaf
+ * before writing JSONL). Keep the live Result untouched; optional unknown data
+ * must not strand the session tree or discard serializable usage/records. */
+export function projectResult(source: Result): Result {
+  const result: Result = { content: JSON.parse(JSON.stringify(source.content)), details: undefined,
+    ...(source.isError !== undefined ? { isError: source.isError } : {}), ...(source.terminate ? { terminate: true } : {}),
+  };
+  const omitted = new Set(source.persistenceOmissions);
+  for (const key of ['details', 'structuredContent', 'nestedCalls', 'usage'] as const) {
+    if (source[key] === undefined) continue;
+    try { Object.assign(result, { [key]: JSON.parse(JSON.stringify(source[key])) }); }
+    catch { omitted.add(key); }
+  }
+  if (omitted.size) result.persistenceOmissions = [...omitted];
+  return result;
+}
+
 export function matches(name: string, patterns: readonly string[]): boolean {
   return patterns.some(pattern => new RegExp(`^${pattern.split('*').map(s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`).test(name));
 }

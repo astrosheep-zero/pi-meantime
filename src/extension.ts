@@ -5,7 +5,7 @@ import type { Config } from './config.ts';
 import type { Context, EventHandler, EventMap, Json, PiHost, Result } from './protocol.ts';
 import { captureSession, manageTools } from './host.ts';
 import type { HostSession, ManagedCall } from './host.ts';
-import { CONTROL, isRecord } from './schema.ts';
+import { CONTROL, isRecord, projectResult } from './schema.ts';
 import { TaskRuntime } from './runtime.ts';
 import type { Snapshot, View, TaskRecord, IndexChange } from './runtime.ts';
 import { truncateUtf8 } from './store.ts';
@@ -61,6 +61,9 @@ function receipt(task: Snapshot): string {
   return `Meantime ${task.id} ${task.state}${task.exitCode !== undefined ? ` (exit ${task.exitCode})` : ''}${task.outputPath ? `\nOutput: ${task.outputPath}` : ''}`;
 }
 function storedResult(task: Snapshot, source: Result, budget?: { remaining: number }): Result {
+  // A receipt will itself enter Pi's persisted toolResult pipeline. Never pass
+  // unknown live details back into that append path either.
+  source = projectResult(source);
   let inlineOmitted = false;
   const content = source.content.filter(b => b.type === 'text').map(block => {
     if (!budget) return block;
@@ -69,13 +72,20 @@ function storedResult(task: Snapshot, source: Result, budget?: { remaining: numb
     budget.remaining -= Buffer.byteLength(text);
     return { type: 'text' as const, text };
   });
-  const omitted = task.recovered ? 'Recovered result contains text only; images and structured data were kept only in the original process.'
-    : source.content.some(b => b.type === 'image') ? 'Image blocks omitted from this receipt; available only in memory for this process.' : '';
+  const omitted = task.recovered && task.textOnly ? 'Recovered result contains text only; images and structured data were kept only in the original process.'
+    : source.content.some(b => b.type === 'image') ? 'Image blocks omitted from this receipt; retained in the task result.' : '';
   return {
     content: [{ type: 'text', text: receipt(task) }, ...content,
       ...(inlineOmitted ? [{ type: 'text' as const, text: `Inline text omitted by the shared wait budget. Retrieve this task singly with meantime(action="wait", id="${task.id}", timeout=0); retained output is unchanged.` }] : []),
-      ...(omitted ? [{ type: 'text' as const, text: omitted }] : [])],
-    details: { ...(isRecord(source.details) ? source.details : {}), task },
+      ...(omitted ? [{ type: 'text' as const, text: omitted }] : []),
+      ...(source.persistenceOmissions?.length ? [{ type: 'text' as const, text: `Non-JSON fields omitted from persistence/receipt: ${source.persistenceOmissions.join(', ')}. The original live result is retained in memory.` }] : []),
+    ],
+    // Retrieval is not another execution: expose retained usage as metadata,
+    // never as top-level usage that Pi would charge on every wait.
+    details: { ...(isRecord(source.details) ? source.details : {}), task,
+      ...(source.usage ? { usage: source.usage } : {}), ...(source.nestedCalls ? { nestedCalls: source.nestedCalls } : {}),
+      ...(source.persistenceOmissions ? { persistenceOmissions: source.persistenceOmissions } : {}),
+    },
     structuredContent: { task: json(task), result_available: true,
       result: source.structuredContent ?? content.map(b => b.text).join('\n') },
     isError: task.isError ?? source.isError ?? false,
@@ -214,6 +224,8 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       mode: call.mode, command: call.name === 'bash' && typeof call.args.command === 'string' ? call.args.command : undefined,
       canDetach: interactive(call.ctx) && call.canDetach, parentSignal: call.signal, onUpdate: call.update,
       userDetach: inheritedDetach(call.id), execute: call.execute,
+      codemodeRootId: call.codemodeRootId, onDetach: call.onDetach, onSettled: call.onSettled,
+      scope: call.scope, finalize: call.finalize,
     }).then(foregroundOrHandle);
   }
 
@@ -350,7 +362,21 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       changed() { updateStatus(); refreshPanel?.(); },
       index(change) {
         if (!live || runtime !== created || currentOwner !== boundOwner) throw new Error('Stale task index target');
-        pi.appendEntry('meantime-index', { owner: boundOwner, change });
+        if ('completion' in change && change.completion.result) {
+          change = { completion: { ...change.completion, result: projectResult(change.completion.result) } };
+        }
+        // Preflight the WHOLE payload before Pi can advance its in-memory leaf.
+        pi.appendEntry('meantime-index', json({ owner: boundOwner, change }));
+        const c = 'completion' in change && change.completion.codemodeRootId
+          && change.completion.toolCallId === change.completion.codemodeRootId ? change.completion : undefined;
+        const usage = c?.lateScope ? c.nestedUsage : c?.result?.usage;
+        if (c && usage) {
+          const manager = session.sessionManager!;
+          const note = `meantime:${c.id}:${c.toolCallId}${c.lateScope ? ':scope' : ''}`;
+          if (!manager.getEntries().some(entry => entry.type === 'usage' && entry.note === note)) {
+            manager.appendUsage('meantime', 'tools', 'codemode', usage, note);
+          }
+        }
       },
     }, [...records.values()]);
     runtime = created;
@@ -359,10 +385,11 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   }
   async function stop(): Promise<void> {
     closePanel?.();
-    host?.retire();
-    // Shutdown may release an unfinished foreground call. Record that handle
-    // while Pi still points to its creating session, then retire every callback.
+    host?.closeAdmission();
+    // Keep this generation's finishing hooks/index alive through cancellation
+    // and drain. Only then retire it, before Pi can select another session.
     await runtime?.close();
+    host?.retire();
     host?.dispose(); host = undefined;
     live = false; runtime = undefined;
     try { currentCtx?.ui.setStatus('meantime', undefined); currentCtx?.ui.setWidget('bg-control', undefined); } catch {}
@@ -371,6 +398,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   }
   on('session_start', (_event, ctx) => start(ctx));
   on('session_shutdown', () => stop());
+  on('session_before_tree', () => runtime?.drainCodemode());
 
   on('before_agent_start', (event, ctx) => {
     if (live) {
