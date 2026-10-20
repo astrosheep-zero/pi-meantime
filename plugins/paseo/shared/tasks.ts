@@ -114,6 +114,18 @@ export function recognizeToolCall(item: ToolCallItemLike): Omit<MeantimeCardData
   if (!isRecord(detail)) return undefined;
 
   if (name === "meantime") {
+    const input = isRecord(detail.input) ? detail.input : undefined;
+    const action = input ? text(input.action) : undefined;
+    // A running wait has no output yet. Recognize it from its input so the
+    // timeline can show what is being awaited; the card resolves the id to
+    // the originating command from earlier handle/_mt snapshots.
+    if (item.status === "running") {
+      const id = input ? text(input.id) : undefined;
+      if (action === "wait" && id && TASK_ID.test(id)) {
+        return { source: "meantime", action, tasks: [{ id, state: "waiting" }] };
+      }
+      return undefined;
+    }
     const details = unknownDetails(detail);
     if (!details) return undefined;
     const raws = Array.isArray(details.tasks) ? details.tasks
@@ -121,9 +133,9 @@ export function recognizeToolCall(item: ToolCallItemLike): Omit<MeantimeCardData
       : typeof details.id === "string" ? [details]
       : undefined;
     if (!raws) return undefined;
-    const tasks = raws.map(simplifySnapshot).filter((task): task is TaskSummary => task !== undefined);
+    const pending = Array.isArray(details.pending) ? details.pending : [];
+    const tasks = [...raws, ...pending].map(simplifySnapshot).filter((task): task is TaskSummary => task !== undefined);
     if (tasks.length === 0) return undefined;
-    const action = isRecord(detail.input) ? text(detail.input.action) : undefined;
     const moreOffset = typeof details.next_offset === "number" ? details.next_offset : undefined;
     return { source: "meantime", ...(action ? { action } : {}), tasks, ...(moreOffset !== undefined ? { moreOffset } : {}) };
   }
@@ -180,7 +192,7 @@ export function recognizeTimelineToolCall(item: ToolCallItemLike): Omit<Meantime
   return data?.source === "completion" || data?.source === "meantime" ? data : undefined;
 }
 
-const ACTIVE_STATES = new Set(["running", "cancel_requested", "started"]);
+const ACTIVE_STATES = new Set(["running", "cancel_requested", "started", "waiting"]);
 
 export function isActiveTask(task: TaskSummary): boolean {
   return ACTIVE_STATES.has(task.state);
@@ -202,7 +214,10 @@ export function foldItem(byId: Map<string, TaskSummary>, item: unknown): boolean
   if (!data) return false;
   // Merge, don't replace: older completion messages predate details.tasks
   // and would otherwise erase the command/createdAt the handle provided.
-  for (const task of data.tasks) byId.set(task.id, { ...byId.get(task.id), ...task });
+  for (const task of data.tasks) {
+    // A wait call is observing a task, not changing its execution state.
+    if (task.state !== "waiting") byId.set(task.id, { ...byId.get(task.id), ...task });
+  }
   return true;
 }
 

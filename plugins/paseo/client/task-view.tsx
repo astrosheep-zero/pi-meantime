@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { TaskSummary } from "../shared/tasks.js";
 import { isActiveTask } from "../shared/tasks.js";
-import { doneColor, formatElapsed, frameColor, isDarkSurface, mixColor, monoFont, secondaryColor, stateColor, stateText, taskStateLabel } from "./rows.js";
+import { CODE_FONT_SIZE, CODE_LINE_HEIGHT, doneColor, formatElapsed, frameColor, isDarkSurface, monoFont, secondaryColor, stateColor, stateText, taskStateLabel } from "./rows.js";
 
 type Colors = PluginTheme["colors"];
 type Layout = { compact: boolean; platform: "ios" | "android" | "web" };
@@ -31,7 +31,7 @@ export function TaskCommand({ task, colors, layout }: { task: TaskSummary; color
   const tail = command && split !== undefined && split >= 0 ? command.slice(split) : "";
   return (
     <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, color: colors.foreground,
-      fontFamily: monoFont(layout.platform), fontSize: 10, lineHeight: 16 }}>
+      fontFamily: monoFont(layout.platform), fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>
       {command ? <><Text style={{ fontWeight: "600" }}>{head}</Text><Text style={{ color: secondaryColor(colors) }}>{tail}</Text></>
         : <Text style={{ color: secondaryColor(colors) }}>{task.tool ?? task.id}</Text>}
     </Text>
@@ -75,8 +75,8 @@ export function TaskLine({ task, colors, layout, showId, status = stateText(task
 
 /** v12 / A Terminal replay: one block tells the story — `$ command` in,
  * output out. State lives in the sheet title, bookkeeping in one dim line. */
-export function TaskDetailModal({ task, colors, layout, onClose }: {
-  task: TaskSummary; colors: Colors; layout: Layout; onClose(): void;
+export function TaskDetailModal({ task, colors, layout, waitStatus, onClose }: {
+  task: TaskSummary; colors: Colors; layout: Layout; waitStatus?: string; onClose(): void;
 }) {
   const mono = monoFont(layout.platform);
   const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour12: false });
@@ -90,25 +90,33 @@ export function TaskDetailModal({ task, colors, layout, onClose }: {
     task.isError && task.state !== "failed" ? "error reported" : undefined,
   ].filter(Boolean).join(" · ");
   return (
-    <Modal title={taskStateLabel(task).toLowerCase()} open onOpenChange={next => { if (!next) onClose(); }}>
-      <Modal.Content>
-        <View style={{ gap: 12 }}>
-          <View style={{ backgroundColor: colors.surface1, borderRadius: 6, padding: 10 }}>
-            <Text selectable style={{ color: colors.foreground, fontFamily: mono, fontSize: 10.5, lineHeight: 16 }}>
-              <Text style={{ color: secondaryColor(colors) }}>$ </Text>
+    <Modal title={waitStatus === "Waiting" ? "Waiting for task" : "Task snapshot"} open onOpenChange={next => { if (!next) onClose(); }}>
+      <Modal.Content contentContainerStyle={{ padding: 20, gap: 20 }}>
+        <View style={{ gap: 20 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <Text style={{ fontSize: 12, color: secondaryColor(colors) }}>Meantime</Text>
+            <Text style={{ fontSize: 12, color: secondaryColor(colors) }}>{waitStatus ?? stateText(task.state)}</Text>
+          </View>
+          <View style={{ backgroundColor: colors.surface0, borderRadius: 8, borderWidth: 1, borderColor: colors.border, padding: 16, gap: 8 }}>
+            <Text style={{ color: secondaryColor(colors), fontSize: 11 }}>Command</Text>
+            <Text selectable style={{ color: colors.foreground, fontFamily: mono, fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>
               {task.command ?? task.tool ?? task.id}
             </Text>
-            {task.outputTail ? (
-              <Text selectable style={{ marginTop: 8, color: mixColor(secondaryColor(colors), colors.foreground, 0.2),
-                fontFamily: mono, fontSize: 10.5, lineHeight: 16 }}>{task.outputTail.trimEnd()}</Text>
-            ) : null}
           </View>
-          <Text selectable style={{ color: secondaryColor(colors), fontFamily: mono, fontSize: 9.5,
-            lineHeight: 15 }}>{meta}</Text>
-          {task.outputPath ? (
-            <Text selectable style={{ color: secondaryColor(colors), fontFamily: mono, fontSize: 9.5,
-              lineHeight: 15 }}>{task.outputPath}</Text>
-          ) : null}
+          <View style={{ gap: 8 }}>
+            <Text style={{ color: secondaryColor(colors), fontSize: 11 }}>Output tail</Text>
+            <Text selectable style={{ color: task.outputTail ? colors.foreground : secondaryColor(colors),
+              fontFamily: mono, fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>{task.outputTail?.trimEnd() || "No output included"}</Text>
+          </View>
+          <View style={{ borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 16, gap: 8 }}>
+            {waitStatus !== "Waiting" ? <Text style={{ color: secondaryColor(colors), fontSize: 12 }}>As reported at the time</Text> : null}
+            <Text selectable style={{ color: secondaryColor(colors), fontFamily: mono, fontSize: 11,
+              lineHeight: 18 }}>{meta}</Text>
+            {task.outputPath ? <View style={{ gap: 4 }}>
+              <Text style={{ color: secondaryColor(colors), fontSize: 11 }}>Output file</Text>
+              <Text selectable style={{ color: colors.foreground, fontFamily: mono, fontSize: 11, lineHeight: 18 }}>{task.outputPath}</Text>
+            </View> : null}
+          </View>
         </View>
       </Modal.Content>
     </Modal>

@@ -1,6 +1,6 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { MeantimeBoard } from "./client/board.js";
-import { MeantimeTaskCard } from "./client/task-card.js";
+import { ConnectedMeantimeTaskCard } from "./client/task-card.js";
 import { cardDataSchema, recognizeTimelineToolCall } from "./shared/tasks.js";
 
 export default function contribute(client: PluginClientContext) {
@@ -24,7 +24,7 @@ export default function contribute(client: PluginClientContext) {
     kind: "meantime-task",
     version: 1,
     schema: cardDataSchema,
-    Component: MeantimeTaskCard,
+    Component: ConnectedMeantimeTaskCard,
   });
   client.addWorkspacePanel({
     id: "meantime-board",

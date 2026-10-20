@@ -64,6 +64,7 @@ export function stateColor(state: string, colors: PluginTheme["colors"]): string
   switch (state) {
     case "running":
     case "started":
+    case "waiting":
     case "queued":
     case "cancel_requested":
       return readableColor(colors.statusWarning, colors);
@@ -82,8 +83,8 @@ export function stateLabel(state: string): string {
 export function stateText(state: string): string {
   switch (state) {
     case "completed": return "done";
-    case "cancel_requested": return "cancelling";
-    case "outcome_unknown": return "unknown";
+    case "cancel_requested": return "cancel requested";
+    case "outcome_unknown": return "status unknown";
     default: return state ? state.replaceAll("_", " ") : "unknown";
   }
 }
@@ -93,6 +94,7 @@ export function stateCode(state: string): string {
   switch (state) {
     case "running": return "R";
     case "started": return "S";
+    case "waiting": return "W";
     case "queued": return "Q";
     case "completed": return "X";
     case "failed": return "E";
@@ -107,6 +109,11 @@ export function stateCode(state: string): string {
 export function monoFont(platform: "ios" | "android" | "web"): string {
   return platform === "ios" ? "Menlo" : "monospace";
 }
+
+/** Paseo's default codeFontSize/line-height. Plugin themes expose colors only,
+ * so this aligns with the native default rather than the user's live setting. */
+export const CODE_FONT_SIZE = 12;
+export const CODE_LINE_HEIGHT = 18;
 
 /** Snapshot only. A creation time without an end is not an elapsed duration. */
 export function formatElapsed(task: TaskSummary): string | undefined {

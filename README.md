@@ -1,7 +1,7 @@
 # pi-meantime
 
 让长时间工具调用转到后台，Pi 继续处理其他工作；完成后通知模型，不必反复查询。
-不修改 Pi 核心、不启动第二个 Agent。当前版本 **0.6.1**，面向 **Pi 1.3.0**，需要 **Node.js 22.19+**。
+不修改 Pi 核心、不启动第二个 Agent。当前版本 **0.6.2**，面向 **Pi 1.3.0**，需要 **Node.js 22.19+**。
 
 `bash` 与符合条件的 MCP / 扩展工具都用**原名**调用，只增加可选的 `__background__` 控制字段。没有代理别名或原名阻断；前台返回原生最终结果，后台保留完成原生结果钩子处理后的结果。实现依赖 Pi 1.3.0 的窄宿主 monkeypatch，并非仅使用官方扩展 API；见 [接口边界](docs/API-CONTRACT.md)。
 
@@ -14,7 +14,7 @@
 pi install git:github.com/astrosheep-zero/pi-meantime
 
 # npm（需要该版本已发布；不可用时使用 Git）
-pi install npm:pi-meantime@0.6.1
+pi install npm:pi-meantime@0.6.2
 ```
 
 也可克隆后临时加载，不写入全局安装列表：

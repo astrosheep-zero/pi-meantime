@@ -7,7 +7,7 @@ import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {MeantimeTaskCard} from './client/task-card.tsx';
 export function render(data) {
- return renderToStaticMarkup(<MeantimeTaskCard item={{data}} theme={{colors:{surface0:'#fff',foreground:'#111',foregroundMuted:'#777',border:'#ccc',statusWarning:'#b7791f',statusDanger:'#c2412d'}}} layout={{compact:true,platform:'web'}}/>);
+ return renderToStaticMarkup(<MeantimeTaskCard item={{data}} theme={{colors:{surface0:'#fff',surface1:'#f4f5f4',foreground:'#111',foregroundMuted:'#777',border:'#ccc',statusWarning:'#b7791f',statusDanger:'#c2412d'}}} layout={{compact:true,platform:'web'}}/>);
 }`, loader: "tsx", resolveDir: new URL("..", import.meta.url).pathname },
   bundle: true, write: false, platform: "node", format: "cjs", alias: { "react-native": "react-native-web" },
   plugins: [{ name: "host-rn-stub", setup(b) {
@@ -19,6 +19,17 @@ const { createRequire } = await import("node:module");
 const module = { exports: {} as { render?: (data: unknown) => string } };
 new Function("require", "module", "exports", bundle.outputFiles[0]!.text)(createRequire(import.meta.url), module, module.exports);
 const render = module.exports.render!;
+
+test("wait panel separates waiting from a returned running snapshot", () => {
+  const base = { source: "meantime", action: "wait", phase: "complete" };
+  for (const [state, label] of [["waiting", "Waiting"], ["running", "Wait ended"], ["completed", "Finished waiting"]]) {
+    const html = render({ ...base, tasks: [{ id: "mt_a1b2c3d4", state, command: "sleep 60" }] });
+    assert.match(html, new RegExp(label));
+    assert.match(html, /sleep 60/);
+    assert.doesNotMatch(html, /exit 0|steer|[\u3400-\u9fff]/);
+    if (state === "running") assert.match(html, /Still running when wait ended/);
+  }
+});
 
 test("actual handle card says started even if launch snapshot said running", () => {
   const html = render({ source: "handle", phase: "complete", tasks: [{ id: "mt_a1b2c3d4", state: "running", command: "npm test", createdAt: 1000 }] });

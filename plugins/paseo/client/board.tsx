@@ -3,7 +3,7 @@ import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import type { TaskSummary } from "../shared/tasks.js";
-import { foldItem, isActiveTask, sortTasks } from "../shared/tasks.js";
+import { foldItem, sortTasks } from "../shared/tasks.js";
 import { monoFont, secondaryColor, stateColor } from "./rows.js";
 import { TaskTable } from "./task-view.js";
 
@@ -21,9 +21,6 @@ export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps)
   const [tasks, setTasks] = useState<readonly TaskSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [hasOlder, setHasOlder] = useState(false);
-
-  const active = useMemo(() => tasks.filter(isActiveTask), [tasks]);
-  const finished = useMemo(() => tasks.filter(task => !isActiveTask(task)), [tasks]);
 
   useEffect(() => {
     const handle = paseo.agents.ref(agentId);
@@ -78,9 +75,10 @@ export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps)
     <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.screen}>
       <View style={{ gap: 2 }}>
         <Text style={styles.title}>Background tasks</Text>
+      <Text style={styles.muted}>Last reported status</Text>
         <Text style={styles.summary}>
           {tasks.length === 0 ? "Nothing on this agent's timeline"
-            : `${active.length} active · ${finished.length} finished`}
+            : `${tasks.length} task${tasks.length === 1 ? "" : "s"}`}
         </Text>
       </View>
       {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -88,7 +86,7 @@ export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps)
       {hasOlder
         ? <Text style={styles.muted}>Only the latest {PAGE_LIMIT} timeline entries were scanned; older tasks may be missing.</Text>
         : null}
-      <Text style={styles.muted}>Read-only. To cancel, ask the agent: meantime cancel {"<id>"}.</Text>
+      <Text style={styles.muted}>Ask the agent to cancel a task.</Text>
     </ScrollView>
   );
 }

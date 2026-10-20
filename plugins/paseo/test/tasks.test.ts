@@ -46,6 +46,24 @@ describe("recognizeToolCall: meantime tool", () => {
     assert.equal(elapsedSeconds(data!.tasks[0]!), 60);
   });
 
+  it("recognizes a running wait from its input before any output exists", () => {
+    const data = recognizeToolCall({
+      type: "tool_call", name: "meantime", status: "running",
+      detail: { type: "unknown", input: { action: "wait", id: SNAPSHOT.id, timeout: 60 }, output: null },
+    });
+    assert.equal(data?.source, "meantime");
+    assert.equal(data?.action, "wait");
+    assert.deepEqual(data?.tasks, [{ id: SNAPSHOT.id, state: "waiting" }]);
+  });
+
+  it("retains unfinished tasks from a batch wait", () => {
+    const data = recognizeToolCall(unknownItem("meantime", { action: "wait", ids: [SNAPSHOT.id] }, {
+      details: { tasks: [], pending: [SNAPSHOT] },
+    }));
+    assert.equal(data?.tasks[0]?.state, "running");
+    assert.equal(data?.tasks[0]?.command, "sleep 60");
+  });
+
   it("parses bare snapshot handles via details.id", () => {
     const data = recognizeToolCall(unknownItem("meantime", { action: "cancel", id: SNAPSHOT.id }, { details: SNAPSHOT }));
     assert.equal(data?.tasks[0]?.id, "mt_a1b2c3d4");
@@ -156,6 +174,10 @@ describe("timeline transformer gate", () => {
     };
     assert.equal(recognizeTimelineToolCall(handle), undefined);
     assert.equal(recognizeTimelineToolCall(list)?.source, "meantime");
+    assert.equal(recognizeTimelineToolCall({
+      type: "tool_call", name: "meantime", status: "running",
+      detail: { type: "unknown", input: { action: "wait", id: SNAPSHOT.id }, output: null },
+    })?.tasks[0]?.state, "waiting");
     assert.equal(recognizeTimelineToolCall(bash), undefined);
     assert.equal(recognizeTimelineToolCall(completion)?.source, "completion");
   });
@@ -189,6 +211,19 @@ describe("foldTimeline", () => {
     assert.deepEqual(tasks[0], {
       id: SNAPSHOT.id, tool: "bash", state: "completed",
       command: "sleep 60", createdAt: SNAPSHOT.createdAt, exitCode: 0,
+    });
+  });
+
+  it("keeps the waited command when a running wait is folded after its handle", () => {
+    const started = unknownItem("web_fetch_mt", {}, { details: SNAPSHOT });
+    const waiting = {
+      type: "tool_call" as const, name: "meantime", status: "running" as const,
+      detail: { type: "unknown", input: { action: "wait", id: SNAPSHOT.id }, output: null },
+    };
+    const tasks = foldTimeline([{ item: started }, { item: waiting }]);
+    assert.deepEqual(tasks[0], {
+      id: SNAPSHOT.id, tool: "bash", state: "running",
+      command: "sleep 60", createdAt: SNAPSHOT.createdAt,
     });
   });
 
