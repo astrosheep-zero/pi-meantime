@@ -6,6 +6,7 @@
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { channel } from 'node:diagnostics_channel';
 import { fileURLToPath } from 'node:url';
 import { runToolCall } from '@earendil-works/pi-agent-core';
 import { registerCodemode } from '../src/codemode.ts';
@@ -29,6 +30,21 @@ const hooks = [], events = [], contexts = [], plans = [], bodies = [];
 const notices = new Map(), originalDetails = new Map();
 let session, generation = 0;
 function gate(key) { gates.set(key, deferred()); starts.set(key, deferred()); }
+function aborted(key) {
+  const signal = signals.get(key);
+  return signal.aborted ? Promise.resolve() : new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+}
+// Native script results/close() precede actual thread exit. Observe Node's public
+// worker lifecycle without patching the executor, worker or two-worker admission.
+const workerExits = new Set();
+const workerChannel = channel('worker_threads');
+const observeWorker = ({ worker }) => {
+  const exited = deferred();
+  workerExits.add(exited.promise);
+  worker.once('exit', () => { workerExits.delete(exited.promise); exited.resolve(); });
+};
+workerChannel.subscribe(observeWorker);
+const workersExited = label => bounded(Promise.all([...workerExits]), label);
 const settings = sdk.SettingsManager.inMemory({ defaultTools: ['codemode', 'meantime', 'hold', 'second', 'child'], codemode: { mode: 'only' }, compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: 'off' });
 const loader = new sdk.DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings,
   noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
@@ -76,13 +92,23 @@ const loader = new sdk.DefaultResourceLoader({ cwd: root, agentDir: root, settin
     });
   }],
 });
-async function bounded(promise, label = 'operation') {
+async function bounded(promise, label) {
+  assert(label, 'every bounded wait needs a diagnostic label');
   let timer;
   try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Timed out: ' + label)), 10000); })]); }
   finally { clearTimeout(timer); }
 }
-async function prompt(name, args, id) {
+// Late metadata has no SDK event; yield until its actual persisted/drained state,
+// rather than assuming one event-loop turn is sufficient.
+async function until(predicate, label) {
+  let stopped = false;
+  try {
+    await bounded((async () => { while (!stopped && !predicate()) await new Promise(resolve => setImmediate(resolve)); })(), label);
+  } finally { stopped = true; }
+}
+async function prompt(name, args, id, { overlap = false } = {}) {
   await bounded(session.waitForIdle(), 'idle before ' + id);
+  if (name === 'codemode' && !overlap) await workersExited('native workers exited before ' + id);
   plans.push({ type: 'toolCall', name, arguments: args, id });
   await bounded(session.prompt('offline fixture ' + id), id);
   return session.messages.findLast(m => m.role === 'toolResult' && m.toolCallId === id);
@@ -130,7 +156,7 @@ try {
   const early = await prompt('codemode', { code: 'let local=1; try { const a=await tools.hold({key:"continue"}); local+=a.value; const b=await tools.second({value:local}); store("answer", b.value); return b.value; } finally { text("FINALLY_ONCE"); }' }, 'continuation');
   const id = taskId(early);
   assert(id.startsWith('mt_')); assert.equal(early.nestedCalls, undefined, 'handle must not consume unfinished summary');
-  await bounded(starts.get('continue').promise);
+  await bounded(starts.get('continue').promise, 'continuation child started');
   assert.equal(signals.get('continue').aborted, false);
   await session.prompt('another unrelated model turn');
   await session.abort(); assert.equal(signals.get('continue').aborted, false);
@@ -140,13 +166,13 @@ try {
   assert(!firstSystem.some(m => m.toolsAdded?.some(t => t.name === 'hold')), 'other declarations remain hidden');
   // Interrupt an observer, not the producer.
   const waiter = new AbortController(); const waiting = control({ action: 'wait', id, timeout: 10 }, waiter.signal);
-  waiter.abort(); await bounded(waiting); assert.equal(signals.get('continue').aborted, false);
+  waiter.abort(); await bounded(waiting, 'interrupted observer wait'); assert.equal(signals.get('continue').aborted, false);
   notices.set(id, deferred());
   gates.get('continue').resolve();
   const notice = await bounded(notices.get(id).promise, 'automatic completion');
   assert.match(notice.content, /Automated background completion/);
   assert.equal(session.getSessionStats().tokens.input, 6, 'completion charges before any successful wait');
-  const collected = await bounded(control({ action: 'wait', id, timeout: 10 }));
+  const collected = await bounded(control({ action: 'wait', id, timeout: 10 }), 'collect continuation');
   assert.equal(collected.isError, false);
   const completion = completions().find(c => c.id === id);
   assert.equal(scriptResult(completion).match(/FINALLY_ONCE/g).length, 1);
@@ -172,12 +198,12 @@ try {
   for (const trigger of ['steer', 'command']) {
     gate(trigger);
     const handle = await prompt('codemode', { code: `const a=await tools.hold({key:"${trigger}",__background__:"no"}); return (await tools.second({value:a.value})).value;` }, 'manual-' + trigger);
-    await bounded(starts.get(trigger).promise);
+    await bounded(starts.get(trigger).promise, trigger + ' child started');
     assert.equal(handle.details.detachReason, trigger === 'steer' ? 'steer' : 'shortcut');
     const list = await control({ action: 'list' });
     assert.equal(list.result.structuredContent.tasks.filter(t => t.localRunning).length, 1, 'no child observer/task');
     gates.get(trigger).resolve();
-    await bounded(control({ action: 'wait', id: taskId(handle), timeout: 10 }));
+    await bounded(control({ action: 'wait', id: taskId(handle), timeout: 10 }), trigger + ' root completed');
     assert.match(scriptResult(completions().find(c => c.id === taskId(handle))), /41/);
   }
 
@@ -197,13 +223,13 @@ try {
   // Both unknown-details cases exercise real append-only JSONL and real waits.
   config.autoDetachMs = 0;
   fs.writeFileSync(root + '/settings.json', JSON.stringify({ meantime: config }));
-  await session.reload(); bindStream();
+  await bounded(session.reload(), 'reload with automatic detach off'); bindStream();
   for (const key of ['child', 'bigint', 'cycle']) {
     const before = session.getSessionStats().tokens.input;
     const rootId = key === 'child' ? 'explicit' : 'unsafe-root-' + key;
     gate(key);
     const observed = await prompt('codemode', { code: `const h=await tools.child({key:"${key}",__background__:"yes"}); return {child:h.task.id};` }, rootId);
-    await bounded(starts.get(key).promise);
+    await bounded(starts.get(key).promise, key + ' child started');
     const rootResult = key === 'child' ? observed : (await control({ action: 'wait', id: taskId(observed), timeout: 10 })).result;
     const output = rootResult.content.filter(b => b.type === 'text').map(b => b.text).join('');
     const childId = JSON.parse(output.slice(output.indexOf('Output:\n') + 'Output:\n'.length).split('Non-JSON')[0]).child;
@@ -214,8 +240,9 @@ try {
     assert(!completions().some(c => c.toolCallId === rootId && c.lateScope));
     await session.prompt('unrelated while child is detached');
     gates.get(key).resolve();
-    await bounded(control({ action: 'wait', id: childId, timeout: 10 }));
-    await new Promise(resolve => setImmediate(resolve));
+    await bounded(control({ action: 'wait', id: childId, timeout: 10 }), key + ' child completed');
+    await until(() => completions().some(c => c.toolCallId === rootId && c.lateScope)
+      && session._nestedToolCalls.scopes.size === 0, key + ' late scope indexed and drained');
     const explicit = completions().findLast(c => c.toolCallId === rootId && c.lateScope);
     assert(explicit, 'late root metadata is linked, not a blocked frontend return');
     assert.deepEqual(explicit.result.nestedCalls.calls.map(c => c.id), [rootId + '/1', rootId + '/1/1', rootId + '/1/2']);
@@ -252,22 +279,30 @@ try {
   gate('shutdown-child');
   const independent = await prompt('codemode', { code: 'return await tools.child({key:"shutdown-child",__background__:"yes"});' }, 'finished-root');
   assert.match(JSON.stringify(independent.content), /mt_/);
+  await bounded(starts.get('shutdown-child').promise, 'finished-root child started');
   let reloaded = false;
   const replacing = session.reload().then(() => { reloaded = true; });
-  await new Promise(resolve => setTimeout(resolve, 40));
+  await bounded(aborted('shutdown-child'), 'finished-root child aborted by reload');
   assert.equal(signals.get('shutdown-child').aborted, true);
   assert.equal(reloaded, false, 'finished root still owns its late scope drain');
   gates.get('shutdown-child').resolve();
-  await bounded(replacing); bindStream();
+  await bounded(replacing, 'finished-root reload drained'); bindStream();
   assert.equal(session._nestedToolCalls.scopes.size, 0);
 
   config.autoDetachMs = 50;
   fs.writeFileSync(root + '/settings.json', JSON.stringify({ meantime: config }));
-  await session.reload(); bindStream();
+  await bounded(session.reload(), 'reload with automatic detach on'); bindStream();
 
-  // Keep both native workers occupied. Third must refuse, control needs no worker.
-  for (const key of ['A', 'B']) { gate(key); await prompt('codemode', { code: `await tools.hold({key:"${key}"}); store("${key}", true); return 42;` }, 'capacity-' + key); }
-  const third = await prompt('codemode', { code: 'return 6*7;' }, 'capacity-third');
+  // Only this scenario overlaps workers: A/B must both enter their held child
+  // before the third call tests native fail-fast admission (no queue or retry).
+  for (const key of ['A', 'B']) {
+    gate(key);
+    const held = await prompt('codemode', { code: `await tools.hold({key:"${key}"}); store("${key}", true); return 42;` }, 'capacity-' + key, { overlap: key === 'B' });
+    assert.equal(held.isError, false);
+    await bounded(starts.get(key).promise, 'capacity-' + key + ' child started');
+  }
+  assert.equal(workerExits.size, 2, 'both native threads observed before testing fail-fast admission');
+  const third = await prompt('codemode', { code: 'return 6*7;' }, 'capacity-third', { overlap: true });
   assert.equal(third.isError, true); assert.match(JSON.stringify(third.content), /worker limit reached \(2/);
   const list = await prompt('meantime', { action: 'list' }, 'capacity-list');
   const a = list.details.tasks.find(t => t.tool === 'codemode' && t.localRunning && t.id === taskId(session.messages.find(m => m.toolCallId === 'capacity-A' && m.role === 'toolResult')));
@@ -275,18 +310,19 @@ try {
   assert.equal(cancelled.details.task.state, 'cancelled'); assert.equal(signals.get('A').aborted, true);
   gates.get('B').resolve();
   const bId = taskId(session.messages.find(m => m.toolCallId === 'capacity-B' && m.role === 'toolResult'));
-  await bounded(control({ action: 'wait', id: bId, timeout: 10 }));
+  await bounded(control({ action: 'wait', id: bId, timeout: 10 }), 'capacity-B completed');
   assert(!session.sessionManager.getBranch().some(e => e.customType === 'codemode-store' && e.data.set.A));
 
   // A native abort can settle before its non-cooperative nested pipeline. The
   // task/transition must not call that drained or lose its late result/usage.
   gate('late');
   const late = await prompt('codemode', { code: 'await tools.hold({key:"late",uncooperative:true}); store("wrongBranch",true); return 1;' }, 'late-root');
-  await bounded(starts.get('late').promise);
+  await bounded(starts.get('late').promise, 'late child started');
   const beforeLeaf = session.sessionManager.getBranch().find(e => e.type === 'message' && e.message.role === 'user').id;
   let treeFinished = false;
   const tree = session.navigateTree(beforeLeaf).then(r => { treeFinished = true; return r; });
-  await new Promise(r => setTimeout(r, 80));
+  await bounded(aborted('late'), 'late child aborted by tree navigation');
+  await workersExited('native abort exited before late child drain');
   assert.equal(signals.get('late').aborted, true); assert.equal(treeFinished, false, 'tree waits actual nested pipeline drain');
   assert(!completions().some(c => c.id === taskId(late) && c.lateScope));
   gates.get('late').resolve(); await bounded(tree, 'tree drain');
@@ -307,7 +343,7 @@ try {
   assert(!session.sessionManager.getEntries().some(e => e.customType === 'codemode-store' && e.data.set.afterReload));
   assert(!hooks.some(h => h.id.startsWith('reload-root') && h.generation > oldGeneration));
 
-  await session.waitForIdle();
+  await bounded(session.waitForIdle(), 'idle before final persistence checks');
   const file = session.sessionManager.getSessionFile();
   const jsonl = fs.readFileSync(file, 'utf8').trim().split('\n').map(line => JSON.parse(line));
   const linked = jsonl.find(e => e.customType === 'meantime-index' && e.data.change.completion?.id === id).data.change.completion;
@@ -318,7 +354,8 @@ try {
   const reopenedUsage = reopened.getEntries().reduce((n, e) => n + (e.type === 'usage' ? e.usage.input : e.type === 'message' && e.message.role === 'toolResult' ? e.message.usage?.input ?? 0 : 0), 0);
   assert.equal(reopenedUsage, session.getSessionStats().tokens.input);
   assert.deepEqual(reopened.getEntries().find(e => e.customType === 'meantime-index' && e.data.change.completion?.id === id).data.change.completion, JSON.parse(JSON.stringify(completion)));
-  await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
+  await bounded(session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }), 'shutdown before reopening');
+  await workersExited('native workers exited before reopening');
   session.dispose();
   await loader.reload();
   ({ session } = await sdk.createAgentSession({ cwd: root, agentDir: root, model, modelRuntime: runtime, resourceLoader: loader, settingsManager: settings, sessionManager: reopened }));
@@ -334,8 +371,11 @@ try {
     verified: ['factory replacement/raw grammar', 'normal continuation/local/finally/post-hook values', 'nested IDs/events/records', 'independent child yes with timer off', 'late grandchildren/scope delta accounting', 'BigInt/cycle preflight/JSONL parent integrity', 'wait interruption', 'native two-worker capacity/direct controls/only mode', 'cancel/tree drain/reload including finished roots', 'JSONL/reopened usage/repeated waits'] }));
 } finally {
   for (const pending of gates.values()) pending.resolve();
-  if (session) await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
-  session?.dispose();
+  try {
+    if (session) await bounded(session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }), 'final shutdown');
+    session?.dispose();
+    await workersExited('final native worker exits');
+  } finally { workerChannel.unsubscribe(observeWorker); }
   if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
   // Evidence JSONL deliberately remains in /tmp; no user session/config was used.
 }
