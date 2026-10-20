@@ -1,9 +1,16 @@
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { TaskRuntime } from '../src/runtime.ts';
 import { projectResult } from '../src/schema.ts';
 import { deferred, ok, runtimeHarness, sleep, until } from './helpers.ts';
 import type { Outcome } from '../src/protocol.ts';
+
+function steerClock(t: TestContext) {
+  let now = 1000;
+  t.mock.method(performance, 'now', () => now);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  return { tick(ms: number) { now += ms; t.mock.timers.tick(ms); } };
+}
 
 test('persistent projection omits non-JSON details without mutating the live result or losing usage', () => {
   for (const details of [{ value: 1n }, (() => { const cycle: { self?: unknown } = {}; cycle.self = cycle; return cycle; })()]) {
@@ -73,16 +80,75 @@ test('explicit background returns before producer, notification waits for finali
 test('auto timeout detaches, never aborts the producer', async () => {
   const h = runtimeHarness(); const work = deferred<Outcome>(); let signal: AbortSignal | undefined;
   try {
-    const view = await h.runtime.run({ tool: 'long', kind: 'tool', callId: 'c1', mode: 'auto', canDetach: true, execute: s => { signal = s; return work.promise; } });
+    const waiting = h.runtime.run({ tool: 'long', kind: 'tool', callId: 'c1', mode: 'auto', canDetach: true, execute: s => { signal = s; return work.promise; } });
+    assert.equal(h.runtime.detachAll('steer'), 0);
+    const view = await waiting;
     assert.equal(view.kind, 'handle'); assert.equal(view.task.detachReason, 'timeout'); assert.equal(signal!.aborted, false);
+    assert.equal(h.runtime.tasks.get(view.task.id)!.steerTimer, undefined);
   } finally { work.resolve(ok()); await h.close(); }
 });
-test('steer and shortcut share the detach transition, later parent abort is disconnected', async () => {
-  const h = runtimeHarness({ autoDetachMs: 0 }); const work = deferred<Outcome>(); const parent = new AbortController(); let signal: AbortSignal | undefined;
+for (const native of [false, true]) test(`${native ? 'native root inherited' : 'ordinary'} steer waits for its monotonic admission deadline without extending or replaying`, async t => {
+  const clock = steerClock(t);
+  let wall = 1_000_000; t.mock.method(Date, 'now', () => wall);
+  const h = runtimeHarness({ autoDetachMs: 0 }); const work = deferred<Outcome>(), entered = deferred<void>();
+  const parent = new AbortController(); let signal: AbortSignal | undefined, executions = 0;
   try {
-    const wait = h.runtime.run({ tool: 'long', kind: 'tool', callId: 'c1', mode: 'auto', canDetach: true, parentSignal: parent.signal, execute: s => { signal = s; return work.promise; } });
-    await sleep(1); assert.equal(h.runtime.detachAll('steer'), 1); assert.equal(h.runtime.detachAll('shortcut'), 0);
-    const view = await wait; parent.abort(); assert.equal(signal!.aborted, false); assert.equal(view.task.detachReason, 'steer');
+    const wait = h.runtime.run({ tool: native ? 'codemode' : 'long', kind: 'tool', callId: 'c1', mode: 'auto', canDetach: true,
+      ...(native ? { codemodeRootId: 'c1', userDetach: 'steer' as const } : {}), parentSignal: parent.signal,
+      execute: s => { executions++; signal = s; entered.resolve(); return work.promise; } });
+    await entered.promise; await new Promise<void>(resolve => setImmediate(resolve));
+    const task = [...h.runtime.tasks.values()][0]!;
+    clock.tick(1000); assert.equal(h.runtime.detachAll('steer'), 0);
+    const timer = task.steerTimer; assert.ok(timer);
+    wall += 100_000; clock.tick(1000); assert.equal(h.runtime.detachAll('steer'), 0);
+    assert.equal(task.steerTimer, timer, 'repeated steer must reuse the one deadline timer');
+    wall -= 200_000; clock.tick(999);
+    assert.equal(task.meta.delivery, 'foreground'); assert.equal(h.records.size, 0); assert.equal(signal!.aborted, false);
+    clock.tick(1);
+    const view = await wait;
+    assert.equal(view.kind, 'handle'); assert.equal(view.task.detachReason, 'steer'); assert.equal(h.records.size, 1);
+    assert.equal(task.steerTimer, undefined); assert.equal(h.runtime.detachAll('shortcut'), 0);
+    parent.abort(); assert.equal(signal!.aborted, false); assert.equal(executions, 1);
+    work.resolve(ok('continued once'));
+    assert.match(JSON.stringify((await h.runtime.wait(view.task.id, 1000)).result), /continued once/);
+  } finally { work.resolve(ok()); await h.close(); }
+});
+
+test('steer after the startup deadline detaches immediately, with no new timer', async t => {
+  const clock = steerClock(t);
+  const h = runtimeHarness({ autoDetachMs: 0 }); const work = deferred<Outcome>();
+  try {
+    const waiting = h.runtime.run({ tool: 'long', kind: 'tool', callId: 'c1', mode: 'auto', canDetach: true, execute: () => work.promise });
+    await Promise.resolve(); clock.tick(3100);
+    assert.equal(h.runtime.detachAll('steer'), 1);
+    assert.equal((await waiting).task.detachReason, 'steer');
+    assert.equal([...h.runtime.tasks.values()][0]!.steerTimer, undefined);
+  } finally { work.resolve(ok()); await h.close(); }
+});
+
+for (const ending of ['completion', 'cancel', 'close', 'shortcut', 'explicit'] as const) test(`pending steer timer is cleared by ${ending}`, async t => {
+  const clock = steerClock(t);
+  const h = runtimeHarness({ autoDetachMs: 0 }); const work = deferred<Outcome>(), entered = deferred<void>(); let signal: AbortSignal | undefined;
+  try {
+    const waiting = h.runtime.run({ tool: 'long', kind: 'tool', callId: 'c1', mode: ending === 'explicit' ? 'yes' : 'auto', canDetach: true,
+      execute: s => { signal = s; s.addEventListener('abort', () => work.resolve(ok('cancelled'))); entered.resolve(); return work.promise; } });
+    await entered.promise;
+    const task = [...h.runtime.tasks.values()][0]!;
+    assert.equal(h.runtime.detachAll('steer'), 0); assert.ok(task.steerTimer);
+    clock.tick(1000);
+    if (ending === 'completion') work.resolve(ok('fast result'));
+    else if (ending === 'cancel') { h.runtime.cancel(task.meta.id); assert.equal(task.steerTimer, undefined); }
+    else if (ending === 'close') { const closing = h.runtime.close(); assert.equal(task.steerTimer, undefined); await closing; }
+    else if (ending === 'shortcut') assert.equal(h.runtime.detachAll('shortcut'), 1);
+    const view = await waiting; // Explicit yes runs on its original immediate, not the steer timer.
+    assert.equal(view.kind, ending === 'shortcut' || ending === 'explicit' ? 'handle' : 'result');
+    assert.equal(task.steerTimer, undefined); assert.equal(task.requestedDetach, undefined);
+    assert.equal(signal!.aborted, ending === 'cancel' || ending === 'close');
+    clock.tick(3000);
+    assert.equal(h.records.size, view.kind === 'handle' ? 1 : 0, 'no delayed/spurious handle after the original view');
+    if (view.kind === 'handle') assert.equal(view.task.detachReason, ending === 'explicit' ? 'explicit' : 'shortcut');
+    else if (ending === 'completion') assert.match(JSON.stringify(view.result), /fast result/);
+    else assert.equal(view.task.state, 'cancelled');
   } finally { work.resolve(ok()); await h.close(); }
 });
 test('no mode disables timed detachment but remains cancellable', async () => {
@@ -97,25 +163,79 @@ test('no mode disables timed detachment but remains cancellable', async () => {
     assert.equal(aborted, true); assert.equal(view.task.state, 'cancelled'); assert.equal(view.task.isError, true);
   } finally { await h.close(); }
 });
-test('no-mode user detachment waits for an active prompt to close', async () => {
+test('no-mode pending steer at its deadline still waits for approval and its continuation turn', async t => {
+  const clock = steerClock(t);
   const h = runtimeHarness(); const work = deferred<Outcome>();
   try {
     h.runtime.prompt(true);
     const wait = h.runtime.run({ tool: 'guarded', kind: 'tool', callId: 'c1', mode: 'no', canDetach: true, execute: () => work.promise });
+    await Promise.resolve();
     assert.equal(h.runtime.detachAll('steer'), 0);
+    clock.tick(3000);
     assert.equal(h.runtime.list()[0]!.delivery, 'foreground'); assert.equal(h.records.size, 0);
     h.runtime.prompt(false);
+    assert.equal(h.runtime.detachAll('steer'), 0, 'ui_prompt_end must not bypass the approval continuation');
     const view = await wait;
     assert.equal(view.kind, 'handle'); assert.equal(view.task.detachReason, 'steer'); assert.equal(h.records.size, 1);
   } finally { work.resolve(ok()); await h.close(); }
 });
-test('approval gate defers detach until prompt closes', async () => {
+
+test('prompt-deferred replay before 3s keeps the original startup deadline', async t => {
+  const clock = steerClock(t);
+  const h = runtimeHarness({ autoDetachMs: 0 }); const work = deferred<Outcome>();
+  try {
+    const waiting = h.runtime.run({ tool: 'guarded', kind: 'tool', callId: 'c1', mode: 'auto', canDetach: true, execute: () => work.promise });
+    await Promise.resolve();
+    h.runtime.prompt(true); h.runtime.detachAll('steer');
+    clock.tick(1000); h.runtime.prompt(false);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    clock.tick(1999); assert.equal(h.runtime.list()[0]!.delivery, 'foreground');
+    clock.tick(1); assert.equal((await waiting).task.detachReason, 'steer');
+  } finally { work.resolve(ok()); await h.close(); }
+});
+test('approval gate defers explicit yes until prompt closes, never until a later steer deadline', async t => {
+  const clock = steerClock(t);
   const h = runtimeHarness(); const work = deferred<Outcome>();
   try {
     h.runtime.prompt(true);
     const waiting = h.runtime.run({ tool: 'one', kind: 'tool', callId: 'c1', mode: 'yes', canDetach: true, execute: () => work.promise });
-    await sleep(10); assert.equal(h.runtime.list()[0]!.delivery, 'foreground');
-    h.runtime.prompt(false); assert.equal((await waiting).kind, 'handle');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    clock.tick(1000); assert.equal(h.runtime.detachAll('steer'), 0);
+    assert.equal(h.runtime.list()[0]!.delivery, 'foreground');
+    h.runtime.prompt(false);
+    const view = await waiting;
+    assert.equal(view.kind, 'handle'); assert.equal(view.task.detachReason, 'explicit');
+  } finally { work.resolve(ok()); await h.close(); }
+});
+
+test('steer cannot postpone a shortcut already waiting on approval', async t => {
+  steerClock(t);
+  const h = runtimeHarness({ autoDetachMs: 0 }); const work = deferred<Outcome>();
+  try {
+    h.runtime.prompt(true);
+    const waiting = h.runtime.run({ tool: 'one', kind: 'tool', callId: 'c1', mode: 'no', canDetach: true, execute: () => work.promise });
+    await Promise.resolve();
+    assert.equal(h.runtime.detachAll('shortcut'), 0); assert.equal(h.runtime.detachAll('steer'), 0);
+    h.runtime.prompt(false);
+    const view = await waiting;
+    assert.equal(view.kind, 'handle'); assert.equal(view.task.detachReason, 'shortcut');
+  } finally { work.resolve(ok()); await h.close(); }
+});
+
+test('at the mature steer deadline, approval denial still settles before prompt-resume detachment', async t => {
+  const clock = steerClock(t);
+  const h = runtimeHarness({ autoDetachMs: 0 }); const work = deferred<Outcome>();
+  try {
+    h.runtime.prompt(true);
+    const waiting = h.runtime.run({ tool: 'guarded', kind: 'tool', callId: 'c1', mode: 'no', canDetach: true, execute: () => work.promise });
+    await Promise.resolve(); clock.tick(3000);
+    h.runtime.prompt(false);
+    assert.equal(h.runtime.detachAll('steer'), 0, 'only the approval continuation gate prevents this mature steer');
+    await Promise.resolve(); work.resolve({ ...ok('Permission denied'), isError: true });
+    const view = await waiting;
+    assert.equal(view.kind, 'result'); assert.equal(view.task.state, 'failed'); assert.equal(view.task.delivery, 'foreground');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(h.records.size, 0, 'denial never publishes a handle');
   } finally { work.resolve(ok()); await h.close(); }
 });
 

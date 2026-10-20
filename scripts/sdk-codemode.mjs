@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { channel } from 'node:diagnostics_channel';
 import { fileURLToPath } from 'node:url';
+import { mock } from 'node:test';
 import { runToolCall } from '@earendil-works/pi-agent-core';
 import { registerCodemode } from '../src/codemode.ts';
 import { install } from '../src/extension.ts';
@@ -92,11 +93,13 @@ const loader = new sdk.DefaultResourceLoader({ cwd: root, agentDir: root, settin
     });
   }],
 });
+// Keep watchdogs real while the focused steer scenario advances runtime timers.
+const watchdog = { setTimeout, clearTimeout };
 async function bounded(promise, label) {
   assert(label, 'every bounded wait needs a diagnostic label');
   let timer;
-  try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Timed out: ' + label)), 10000); })]); }
-  finally { clearTimeout(timer); }
+  try { return await Promise.race([promise, new Promise((_, reject) => { timer = watchdog.setTimeout(() => reject(Error('Timed out: ' + label)), 10000); })]); }
+  finally { watchdog.clearTimeout(timer); }
 }
 // Late metadata has no SDK event; yield until its actual persisted/drained state,
 // rather than assuming one event-loop turn is sufficient.
@@ -194,18 +197,15 @@ try {
   }
   assert.equal(session.getSessionStats().tokens.input, 6);
 
-  // Manual observers detach only the root, including a mode:no descendant.
-  for (const trigger of ['steer', 'command']) {
-    gate(trigger);
-    const handle = await prompt('codemode', { code: `const a=await tools.hold({key:"${trigger}",__background__:"no"}); return (await tools.second({value:a.value})).value;` }, 'manual-' + trigger);
-    await bounded(starts.get(trigger).promise, trigger + ' child started');
-    assert.equal(handle.details.detachReason, trigger === 'steer' ? 'steer' : 'shortcut');
-    const list = await control({ action: 'list' });
-    assert.equal(list.result.structuredContent.tasks.filter(t => t.localRunning).length, 1, 'no child observer/task');
-    gates.get(trigger).resolve();
-    await bounded(control({ action: 'wait', id: taskId(handle), timeout: 10 }), trigger + ' root completed');
-    assert.match(scriptResult(completions().find(c => c.id === taskId(handle))), /41/);
-  }
+  // Manual command detaches only the root immediately, including a mode:no descendant.
+  gate('command');
+  const commanded = await prompt('codemode', { code: 'const a=await tools.hold({key:"command",__background__:"no"}); return (await tools.second({value:a.value})).value;' }, 'manual-command');
+  await bounded(starts.get('command').promise, 'command child started');
+  assert.equal(commanded.details.detachReason, 'shortcut');
+  assert.equal((await control({ action: 'list' })).result.structuredContent.tasks.filter(t => t.localRunning).length, 1, 'no child observer/task');
+  gates.get('command').resolve();
+  await bounded(control({ action: 'wait', id: taskId(commanded), timeout: 10 }), 'command root completed');
+  assert.match(scriptResult(completions().find(c => c.id === taskId(commanded))), /41/);
 
   // A foreground producer still uses native message_start for summary/charge.
   // Disable detachment via Pi's native sequential mode, not a timing guess about
@@ -224,6 +224,42 @@ try {
   config.autoDetachMs = 0;
   fs.writeFileSync(root + '/settings.json', JSON.stringify({ meantime: config }));
   await bounded(session.reload(), 'reload with automatic detach off'); bindStream();
+
+  // Exercise the real native root with inherited steer, but advance its common
+  // runtime clock/timer deterministically. Worker startup is still a real barrier.
+  await workersExited('native workers exited before steer clock');
+  gate('steer');
+  let now = 1000, steerReturned = false, steered;
+  const monotonic = mock.method(performance, 'now', () => now);
+  mock.timers.enable({ apis: ['setTimeout'] });
+  const tick = ms => { now += ms; mock.timers.tick(ms); };
+  try {
+    const pending = prompt('codemode', { code: 'let local=1; try { const a=await tools.hold({key:"steer",__background__:"no"}); local+=a.value; const b=await tools.second({value:local}); return b.value; } finally { text("STEER_FINALLY_ONCE"); }' }, 'manual-steer').then(value => { steerReturned = true; return value; });
+    await bounded(starts.get('steer').promise, 'steer child started before deadline');
+    await new Promise(resolve => setImmediate(resolve));
+    tick(1000); await session.steer('repeated redirect', undefined, { source: 'rpc' });
+    tick(1999);
+    assert.equal(steerReturned, false, 'native root must remain foreground until 3s, even after repeated steer');
+    const live = (await control({ action: 'list' })).result.structuredContent.tasks.filter(t => t.localRunning);
+    assert.deepEqual(live.map(t => [t.tool, t.delivery]), [['codemode', 'foreground']], 'no independent ordinary child observer');
+    assert.equal(signals.get('steer').aborted, false);
+    tick(1); steered = await bounded(pending, 'steer root detached at startup deadline');
+    assert.equal(steered.details.detachReason, 'steer');
+  } finally { mock.timers.reset(); monotonic.mock.restore(); }
+  await session.prompt('unrelated after guarded steer');
+  await session.abort(); assert.equal(signals.get('steer').aborted, false);
+  gates.get('steer').resolve();
+  await bounded(control({ action: 'wait', id: taskId(steered), timeout: 10 }), 'steered root continued');
+  const steerCompletion = completions().find(c => c.id === taskId(steered));
+  assert.match(scriptResult(steerCompletion), /42/);
+  assert.equal(scriptResult(steerCompletion).match(/STEER_FINALLY_ONCE/g).length, 1);
+  assert.deepEqual(steerCompletion.result.nestedCalls.calls.map(c => c.id), ['manual-steer/1', 'manual-steer/2']);
+  for (const child of ['manual-steer/1', 'manual-steer/2']) {
+    assert.equal(hooks.filter(h => h.kind === 'call' && h.id === child).length, 1);
+    assert.equal(hooks.filter(h => h.kind === 'result' && h.id === child).length, 1);
+  }
+  assert.equal(bodies.filter(b => b.key === 'steer').length, 1, 'no cancellation/replay of the held producer');
+
   for (const key of ['child', 'bigint', 'cycle']) {
     const before = session.getSessionStats().tokens.input;
     const rootId = key === 'child' ? 'explicit' : 'unsafe-root-' + key;
@@ -368,7 +404,7 @@ try {
   assert.equal(session.getSessionStats().tokens.input, reopenedUsage, 'reopened retrieval does not recharge');
   assert.deepEqual(errors, []);
   console.log('NATIVE_CODEMODE_PASS', JSON.stringify({ sessionFile: file, linkedCompletion: id, usageInput: reopenedUsage,
-    verified: ['factory replacement/raw grammar', 'normal continuation/local/finally/post-hook values', 'nested IDs/events/records', 'independent child yes with timer off', 'late grandchildren/scope delta accounting', 'BigInt/cycle preflight/JSONL parent integrity', 'wait interruption', 'native two-worker capacity/direct controls/only mode', 'cancel/tree drain/reload including finished roots', 'JSONL/reopened usage/repeated waits'] }));
+    verified: ['factory replacement/raw grammar', 'normal continuation/local/finally/post-hook values', 'nested IDs/events/records', 'independent child yes with timer off', 'late grandchildren/scope delta accounting', 'BigInt/cycle preflight/JSONL parent integrity', 'wait interruption', '3s inherited steer/repeated steer/native continuation', 'native two-worker capacity/direct controls/only mode', 'cancel/tree drain/reload including finished roots', 'JSONL/reopened usage/repeated waits'] }));
 } finally {
   for (const pending of gates.values()) pending.resolve();
   try {

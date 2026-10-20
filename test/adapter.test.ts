@@ -42,6 +42,7 @@ test('one original name, schema-preserving control and a single shared execution
     assert.match(event.systemPromptOptions.sections.meantime!, /original names/);
     assert.match(event.systemPromptOptions.sections.meantime!, /detaches after 1.75s/);
     assert.match(event.systemPromptOptions.sections.meantime!, /"no" disables automatic backgrounding\./);
+    assert.match(event.systemPromptOptions.sections.meantime!, /no earlier than 3s after execution admission; early steer waits/);
     assert.doesNotMatch(JSON.stringify(h.pi.getAllTools()) + JSON.stringify(event), /_mt/);
   } finally { await h.close(); }
   assert.equal(original.parameters, nativeParameters); assert.equal(original.execute, nativeExecute);
@@ -156,7 +157,9 @@ test('detached finalized results feed wait, completion tail and native renderer 
   } finally { work.resolve(ok().result); await h.close(); }
 });
 
-for (const trigger of ['timeout', 'steer', 'shortcut', 'command'] as const) test(`${trigger} detaches once without aborting, no-mode only disables timer`, async () => {
+for (const trigger of ['timeout', 'steer', 'shortcut', 'command'] as const) test(`${trigger} detaches once without aborting, no-mode only disables timer`, async t => {
+  let now = 1000;
+  if (trigger === 'steer') t.mock.method(performance, 'now', () => now);
   const work = deferred<Result>(); let signal: AbortSignal | undefined;
   const h = await setup([basicTool('mcp__slow', (_id, _args, s) => { signal = s; return work.promise; })], { autoDetachMs: 10 });
   try {
@@ -164,6 +167,7 @@ for (const trigger of ['timeout', 'steer', 'shortcut', 'command'] as const) test
     if (trigger !== 'timeout') {
       await sleep(20); assert.equal((h.instance.inspect() as { tasks: Snapshot[] }).tasks[0]!.delivery, 'foreground');
       if (trigger === 'steer') {
+        now += 3000; // This legacy transition test steers an already-aged producer.
         const images: Content[] = [{ type: 'image', data: 'eA==', mimeType: 'image/png' }];
         const event = { type: 'input' as const, text: 'next', source: 'rpc' as const, streamingBehavior: 'steer' as const, images };
         assert.deepEqual(await h.pi.emit('input', event), [{ action: 'continue' }]); assert.equal(event.images, images);
@@ -175,17 +179,39 @@ for (const trigger of ['timeout', 'steer', 'shortcut', 'command'] as const) test
   } finally { work.resolve(ok().result); await h.close(); }
 });
 
-test('early manual detach follows the live call, not a later sibling', async () => {
+test('early manual detach survives later steer and follows the live call, not a later sibling', async () => {
   const approval = deferred<void>(), entered = deferred<void>(), work = deferred<Result>(); let bodies = 0, first = true;
   const h = await setup([basicTool('mcp__held', () => { bodies++; return work.promise; })]);
   h.pi.on('tool_call', async event => { if (event.toolName === 'mcp__held' && first) { first = false; entered.resolve(); await approval.promise; } });
   try {
     const original = h.pi.call('mcp__held', {}); await entered.promise;
     await h.pi.commands.get('meantime')!('detach', h.pi.ctx);
+    await h.pi.emit('input', { type: 'input', text: 'next', source: 'rpc', streamingBehavior: 'steer' });
     const sibling = h.pi.call('mcp__held', {}); await until(() => bodies === 1);
     approval.resolve(); assert.equal(snapshot(await original).detachReason, 'shortcut');
     assert.equal((h.instance.inspect() as { tasks: Snapshot[] }).tasks.filter(t => t.delivery === 'foreground').length, 1);
     work.resolve(ok().result); assert.equal(((await sibling).result.structuredContent as { task?: unknown } | undefined)?.task, undefined);
+  } finally { approval.resolve(); work.resolve(ok().result); await h.close(); }
+});
+
+test('steer inherited before permission admission gets the full startup window after approval', async t => {
+  const approval = deferred<void>(), entered = deferred<void>(), work = deferred<Result>(), started = deferred<void>();
+  let now = 1000, effects = 0; let signal: AbortSignal | undefined;
+  t.mock.method(performance, 'now', () => now);
+  const h = await setup([basicTool('mcp__held', (_id, _args, s) => { effects++; signal = s; started.resolve(); return work.promise; })]);
+  h.pi.on('tool_call', async event => { if (event.toolName === 'mcp__held') { entered.resolve(); await approval.promise; } });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const tick = (ms: number) => { now += ms; t.mock.timers.tick(ms); };
+  try {
+    const original = h.pi.call('mcp__held', {}); await entered.promise;
+    await h.pi.emit('input', { type: 'input', text: 'next', source: 'rpc', streamingBehavior: 'steer' });
+    tick(3000);
+    assert.equal(effects, 0); assert.deepEqual((h.instance.inspect() as { tasks: Snapshot[] }).tasks, []);
+    approval.resolve(); await started.promise; await new Promise<void>(resolve => setImmediate(resolve));
+    tick(2999);
+    assert.equal((h.instance.inspect() as { tasks: Snapshot[] }).tasks[0]!.delivery, 'foreground');
+    tick(1); assert.equal(snapshot(await original).detachReason, 'steer');
+    assert.equal(effects, 1); assert.equal(signal!.aborted, false); assert.equal(h.pi.abortCalls, 0);
   } finally { approval.resolve(); work.resolve(ok().result); await h.close(); }
 });
 
@@ -442,7 +468,8 @@ test('real shell fixture runs, can detach without a second spawn, and result is 
   } finally { await h.close(); }
 });
 
-test('a detached producer cannot pass old steer to descendants in a later model turn', async () => {
+test('a detached producer cannot pass old steer to descendants in a later model turn', async t => {
+  let now = 1000; t.mock.method(performance, 'now', () => now);
   const launch = deferred<void>(), entered = deferred<void>(), child = deferred<Result>();
   let innerResult: Result | undefined;
   const h = await setup([
@@ -455,6 +482,7 @@ test('a detached producer cannot pass old steer to descendants in a later model 
   ]);
   try {
     const outer = h.pi.call('mcp__t__outer', {}); await entered.promise;
+    now += 3000; // Detach the outer at its startup deadline, then test intent isolation.
     await h.pi.emit('input', { type: 'input', text: 'next', source: 'rpc', streamingBehavior: 'steer' });
     assert.equal(snapshot(await outer).detachReason, 'steer');
     await h.pi.emit('turn_end', { type: 'turn_end' });

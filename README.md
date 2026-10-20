@@ -29,7 +29,7 @@ pi -e ./index.mjs
 
 ## 人怎么用
 
-正常让模型执行工具即可。默认从前台开始，运行超过 **120 秒**自动转后台；运行中发送 steer 输入或按 **Ctrl+Shift+B** 也可释放前台等待，不取消底层操作。`"no"` 只关闭计时转后台，不阻止这些用户操作或 `/meantime detach`；所有转后台仍须通过审批、调用进入和索引保存门槛。
+正常让模型执行工具即可。默认从前台开始，运行超过 **120 秒**自动转后台；运行中发送 steer 输入也可释放前台等待，但最早在调用进入执行后的 **3 秒**启动保护期结束时转后台。过早的 steer 会延迟到该期限处理，不忽略、不取消或重放执行，重复 steer 不延长保护期；期间完成的调用直接返回结果。**Ctrl+Shift+B**、`/meantime detach` 和显式 `"yes"` 不受此保护期限制，原有自动超时策略不变。`"no"` 只关闭计时转后台，不阻止这些用户操作；所有转后台仍须通过审批、调用进入和索引保存门槛。中断 `meantime wait` 仍立即释放等待，不取消底层操作。
 
 | 命令 | 用途 |
 |---|---|
@@ -79,7 +79,7 @@ ID 用实际返回值替换；支持唯一前缀，可省略 `mt_`，有歧义�
 
 ## 原生 CodeMode 整段后台执行
 
-`codemode` 保留原名、raw JavaScript grammar、discovery、models、store 和原生 executor。没有第二套 sandbox，也不重写脚本。公开工厂通过注册 facade 组合；宿主桥只在当前实例保留 `_executeNestedToolCall`、原生 runner 的 `takeRecord`/`clear` 及 scope Map 的删除生命周期，drain 后按原 descriptor 归还，不替换全局 registry。它不增加 `__background__` 参数：使用现有计时、Ctrl+Shift+B、steer 或 `/meantime detach` 分离**整段脚本的观察者**。后续 await、局部变量、正常完成时的 `finally` 在同一次执行中继续，不重放脚本。
+`codemode` 保留原名、raw JavaScript grammar、discovery、models、store 和原生 executor。没有第二套 sandbox，也不重写脚本。公开工厂通过注册 facade 组合；宿主桥只在当前实例保留 `_executeNestedToolCall`、原生 runner 的 `takeRecord`/`clear` 及 scope Map 的删除生命周期，drain 后按原 descriptor 归还，不替换全局 registry。它不增加 `__background__` 参数：使用现有计时、Ctrl+Shift+B、steer 或 `/meantime detach` 分离**整段脚本的观察者**。CodeMode 根脚本与普通工具共用上述 3 秒 steer 启动保护，不另起脚本专用计时器。后续 await、局部变量、正常完成时的 `finally` 在同一次执行中继续，不重放脚本。
 
 - 普通子调用及其后代等待原生最终结果，不因计时、steer 或快捷键独立变成句柄；显式 `tools.someTool({...args, __background__: "yes"})` 仍可独立转后台。**脚本结束立即返回自己的结果**（包括 child handle），不等待独立子 producer，即使 `autoDetachMs: 0`。后代的 scope/记录有独立 drain 生命周期，晚到孙调用仍保留原 ID 和 usage；它们不继续占用已完成根脚本的前台观察者或 runtime admission。
 - 原生限制不变：整个 Pi 进程**最多两个存活或正在退出的 CodeMode worker**。第三次执行立即返回原生容量错误；不排队、不自动重试，也不取消现有任务。`meantime` 在 `codemode.mode: "only"` 中仍直接声明，list/wait/cancel 不需要第三个 worker。

@@ -100,12 +100,12 @@ function storedResult(task: Snapshot, source: Result, budget?: { remaining: numb
 /** Runtime/UI composition. Pi-specific interception is isolated in host.ts. */
 export function install(pi: PiHost, options: InstallOptions): { dispose(): Promise<void>; inspect(): unknown } {
   const { config } = options;
-  const executionControl = `Optional ${CONTROL} (interactive sessions): "auto" (default) starts in the foreground and ${config.autoDetachMs > 0 ? `the timer detaches after ${config.autoDetachMs / 1000}s if still running` : 'never detaches on a timer'}; it may detach sooner on Ctrl+Shift+B, /meantime detach or steer (if enabled). "yes" requests background execution; "no" disables automatic backgrounding. Detaching does not cancel the operation.`;
+  const executionControl = `Optional ${CONTROL} (interactive sessions): "auto" (default) starts in the foreground and ${config.autoDetachMs > 0 ? `the timer detaches after ${config.autoDetachMs / 1000}s if still running` : 'never detaches on a timer'}; Ctrl+Shift+B and /meantime detach request immediate detachment. Steer (if enabled) requests detachment no earlier than 3s after execution admission; early steer waits until that startup window ends. "yes" requests background execution; "no" disables automatic backgrounding. Detaching does not cancel the operation.`;
   let host: ReturnType<typeof manageTools> | undefined;
   // Only live public call identities may donate intent to later nested calls.
   const calls = new Map<string, { parent?: string; intent?: 'steer' | 'shortcut' }>();
   function userDetach(reason: 'steer' | 'shortcut'): number {
-    for (const call of calls.values()) call.intent = reason;
+    for (const call of calls.values()) if (reason === 'shortcut' || call.intent !== 'shortcut') call.intent = reason;
     runtime?.releaseWaiters();
     return runtime?.detachAll(reason) ?? 0;
   }

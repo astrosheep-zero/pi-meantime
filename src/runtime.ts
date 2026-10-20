@@ -39,6 +39,7 @@ interface Task {
   meta: Snapshot; callId: string; controller?: AbortController;
   result?: Result; outputTail?: string; published: boolean; observed: boolean; viewSettled: boolean;
   requestedDetach?: DetachReason; canDetach: boolean;
+  steerAfter?: number; steerTimer?: ReturnType<typeof setTimeout>;
   resolveView?: (view: View) => void;
   cleanupParent?: () => void; autoTimer?: ReturnType<typeof setTimeout>;
   cancelTimer?: ReturnType<typeof setTimeout>;
@@ -101,7 +102,8 @@ export class TaskRuntime {
       state: 'running', delivery: 'foreground', createdAt: Date.now(), localRunning: true, notification: 'none' };
     const task: Task = { meta, callId: request.callId, controller: new AbortController(), published: false,
       observed: false, viewSettled: false, canDetach: request.canDetach, notifyAttempts: 0, waiters: 0,
-      codemodeRootId: request.codemodeRootId, onDetach: request.onDetach };
+      codemodeRootId: request.codemodeRootId, onDetach: request.onDetach,
+      steerAfter: performance.now() + 3000 };
     const view = new Promise<View>(resolve => { task.resolveView = resolve; });
     this.tasks.set(id, task); leases().add(id);
     if (request.scope) {
@@ -174,7 +176,22 @@ export class TaskRuntime {
   }
   private detach(task: Task, reason: DetachReason): boolean {
     if (!this.open || task.viewSettled || !task.canDetach || (task.meta.mode === 'no' && reason === 'timeout') || task.meta.state !== 'running') return false;
-    if (this.promptDepth > 0 || this.promptResume) { task.requestedDetach = reason; return false; }
+    // Steer must not postpone an immediate control already deferred by approval.
+    if (reason === 'steer' && task.requestedDetach) reason = task.requestedDetach;
+    task.requestedDetach = reason;
+    if (reason === 'steer') {
+      const remaining = task.steerAfter! - performance.now();
+      if (remaining > 0) {
+        // One observer wakeup at the admission deadline, never a producer timer.
+        // Repeated steer (including prompt replay) cannot extend that deadline.
+        task.steerTimer ??= setTimeout(() => {
+          task.steerTimer = undefined;
+          if (task.requestedDetach) this.detach(task, task.requestedDetach);
+        }, Math.ceil(remaining));
+        return false;
+      }
+    }
+    if (this.promptDepth > 0 || this.promptResume) return false;
     task.meta.detachReason = reason;
     return this.releaseToBackground(task);
   }
@@ -191,6 +208,7 @@ export class TaskRuntime {
     }
     task.cleanupParent?.(); task.cleanupParent = undefined;
     clearTimeout(task.autoTimer);
+    clearTimeout(task.steerTimer); task.steerTimer = undefined; task.requestedDetach = undefined;
     this.resolveView(task, { kind: 'handle', task: snap(task) });
     return true;
   }
@@ -221,6 +239,7 @@ export class TaskRuntime {
     task.meta.localRunning = false; task.meta.endedAt = Date.now(); task.finishSequence = ++this.completionSequence;
     delete task.meta.progress; // Terminal previews must use finalized output, not a pre-hook partial.
     clearTimeout(task.autoTimer); clearTimeout(task.cancelTimer); task.cleanupParent?.();
+    clearTimeout(task.steerTimer); task.steerTimer = undefined; task.requestedDetach = undefined;
     // Cancellation is a lifecycle fact, not a claim of remote rollback.
     task.meta.isError = isError;
     task.meta.state = task.meta.cancelRequestedAt !== undefined ? 'cancelled' : isError ? 'failed' : 'completed';
@@ -361,6 +380,7 @@ export class TaskRuntime {
     if (!task.meta.localRunning || !task.controller || task.meta.cancelRequestedAt) return;
     task.meta.cancelRequestedAt = Date.now(); task.meta.state = 'cancel_requested';
     clearTimeout(task.autoTimer);
+    clearTimeout(task.steerTimer); task.steerTimer = undefined; task.requestedDetach = undefined;
     task.controller.abort(reason);
     if (!task.viewSettled) {
       // Cancellation is cooperative for arbitrary tools. Release the observer

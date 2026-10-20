@@ -33,12 +33,18 @@ test('cancellation grace and shutdown both index an unfinished foreground handle
   const h = runtimeHarness({ autoDetachMs: 0 }); const cancelled = deferred<Outcome>(); const closing = deferred<Outcome>();
   try {
     const wait = h.runtime.run({ tool: 'cancel', kind: 'tool', callId: 'cancel', mode: 'no', canDetach: true, execute: () => cancelled.promise });
-    await sleep(1); h.runtime.cancel(h.runtime.list()[0]!.id);
+    await sleep(1); assert.equal(h.runtime.detachAll('steer'), 0);
+    const task = h.runtime.tasks.get(h.runtime.list()[0]!.id)!; assert.ok(task.steerTimer);
+    h.runtime.cancel(task.meta.id);
+    assert.equal(task.steerTimer, undefined, 'cancel clears pending steer even while the producer ignores abort');
     const handle = await wait;
     assert.equal(handle.kind, 'handle'); assert.equal(h.records.size, 1);
     const shutdownWait = h.runtime.run({ tool: 'close', kind: 'tool', callId: 'close', mode: 'no', canDetach: true, execute: () => closing.promise });
     await sleep(1); // The producer has started before shutdown requests cancellation.
+    assert.equal(h.runtime.detachAll('steer'), 0);
+    const shutdownTask = [...h.runtime.tasks.values()].find(t => t.callId === 'close')!; assert.ok(shutdownTask.steerTimer);
     await h.runtime.close(); const shutdownHandle = await shutdownWait;
+    assert.equal(shutdownTask.steerTimer, undefined, 'shutdown clears pending steer before a late producer settles');
     assert.equal(shutdownHandle.kind, 'handle'); assert.equal(h.records.size, 2);
     cancelled.resolve(ok()); closing.resolve(ok()); await until(() => TaskRuntime.liveProducerCount() === 0);
     assert.equal(h.records.size, 2);
