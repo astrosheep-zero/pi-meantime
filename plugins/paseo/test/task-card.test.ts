@@ -10,6 +10,9 @@ export function render(data) {
  return renderToStaticMarkup(<MeantimeTaskCard item={{data}} theme={{colors:{surface0:'#fff',foreground:'#111',foregroundMuted:'#777',border:'#ccc',statusWarning:'#b7791f',statusDanger:'#c2412d'}}} layout={{compact:true,platform:'web'}}/>);
 }`, loader: "tsx", resolveDir: new URL("..", import.meta.url).pathname },
   bundle: true, write: false, platform: "node", format: "cjs", alias: { "react-native": "react-native-web" },
+  plugins: [{ name: "host-rn-stub", setup(b) {
+    b.onResolve({ filter: /^@getpaseo\/plugin\/client\/react-native$/ }, () => ({ path: new URL("./stubs/paseo-react-native.js", import.meta.url).pathname }));
+  }}],
   define: { "process.env.NODE_ENV": '"production"' } });
 // Bundled CJS keeps React's node builtins available without writing build artifacts.
 const { createRequire } = await import("node:module");

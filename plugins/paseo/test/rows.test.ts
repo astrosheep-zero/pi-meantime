@@ -5,7 +5,7 @@ import { build } from "esbuild";
 // Resolve the client's .js imports as TypeScript, as the plugin bundler does.
 const bundle = await build({ entryPoints: [new URL("../client/rows.ts", import.meta.url).pathname],
   bundle: true, write: false, platform: "node", format: "esm" });
-const { formatElapsed, completionResult, stateCode, stateLabel, stateColor, taskStateCode, taskStateLabel, secondaryColor, frameColor, readableColor } =
+const { formatElapsed, completionResult, stateCode, stateLabel, stateColor, doneColor, taskStateCode, taskStateLabel, secondaryColor, frameColor, readableColor } =
   await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0]!.text).toString("base64")}`);
 
 test("elapsed is a fixed snapshot, never inferred from a start alone", () => {
@@ -22,11 +22,13 @@ test("states remain distinct and only observed running is R", () => {
   assert.equal(new Set(states.map(stateCode)).size, states.length);
   assert.equal(stateLabel("started"), "STARTED");
   assert.equal(stateLabel(""), "MISSING STATE");
-  const colors = { statusDanger: "danger", statusWarning: "amber", foregroundMuted: "muted" };
+  const colors = { statusDanger: "danger", statusWarning: "amber", statusSuccess: "green", foregroundMuted: "muted" };
   assert.equal(stateColor("running", colors), "amber");
   assert.equal(stateColor("completed", colors), "muted");
   assert.equal(stateColor("cancelled", colors), "muted");
   assert.equal(stateColor("failed", colors), "danger");
+  assert.equal(doneColor(colors), "green");
+  assert.equal(doneColor({ foregroundMuted: "muted" }), "#7fb26a");
 });
 
 test("terminal table cells keep supplied exit codes compact and accessible", () => {

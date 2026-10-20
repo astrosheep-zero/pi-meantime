@@ -47,7 +47,10 @@ await build({ stdin: { contents: fixture, loader: "tsx", resolveDir: root },
   plugins: [{ name: "preview-host", setup(b) {
     b.onResolve({ filter: /^@getpaseo\/plugin\/client(?:\/react-native)?$/ }, args => ({ path: args.path, namespace: "preview" }));
     b.onLoad({ filter: /.*/, namespace: "preview" }, args => ({ loader: "js", resolveDir: root,
-      contents: args.path.endsWith("react-native") ? `export {ScrollView} from 'react-native-web';` : `
+      contents: args.path.endsWith("react-native") ? `export {ScrollView} from 'react-native-web';
+export function Modal(){ return null; }
+Modal.Content = function ModalContent(){ return null; }
+export async function copyText(){}` : `
 const host={agents:{ref:()=>({timeline:{refetch:async()=>({entries:globalThis.previewTasks.map(task=>({item:{type:'tool_call',name:'meantime',status:'completed',detail:{type:'unknown',output:{details:{task:{tool:'bash',...task}}}}}})),hasOlder:false,error:null}),subscribe:()=>Object.assign(()=>{},{ready:Promise.resolve()})}})}};
 export function usePaseo(){return host;}` }));
   }}] });

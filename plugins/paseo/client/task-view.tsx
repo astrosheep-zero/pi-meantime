@@ -1,29 +1,27 @@
 import type { PluginTheme } from "@getpaseo/plugin";
-import type { ReactNode } from "react";
-import { Text, View } from "react-native";
+import { Modal } from "@getpaseo/plugin/client/react-native";
+import { useState } from "react";
+import { Pressable, Text, View } from "react-native";
 import type { TaskSummary } from "../shared/tasks.js";
-import { formatElapsed, frameColor, monoFont, secondaryColor, stateColor, stateText, taskStateLabel } from "./rows.js";
+import { isActiveTask } from "../shared/tasks.js";
+import { doneColor, formatElapsed, frameColor, isDarkSurface, mixColor, monoFont, secondaryColor, stateColor, stateText, taskStateLabel } from "./rows.js";
 
 type Colors = PluginTheme["colors"];
 type Layout = { compact: boolean; platform: "ios" | "android" | "web" };
 
-/** A4 / B5's shared thin frame. The title masks the border with the host surface. */
-export function TaskPanel({ title, colors, layout, children }: {
-  title: ReactNode; colors: Colors; layout: Layout; children: ReactNode;
-}) {
-  return (
-    <View style={{ marginTop: 6, borderWidth: 0.5, borderColor: frameColor(colors), borderRadius: 3,
-      paddingTop: 5, paddingHorizontal: 9, paddingBottom: 7, backgroundColor: colors.surface0 }}>
-      <View style={{ position: "absolute", top: -7, left: 8, right: 8 }}>
-        <Text numberOfLines={1} style={{ alignSelf: "flex-start", maxWidth: "100%",
-          paddingHorizontal: 4, backgroundColor: colors.surface0, color: secondaryColor(colors),
-          fontFamily: monoFont(layout.platform), fontSize: 8.5, lineHeight: 12, letterSpacing: 0.6 }}>
-          {title}
-        </Text>
-      </View>
-      <View>{children}</View>
-    </View>
-  );
+/**
+ * v10 / 01 Pilot lamp: no frame. A static lamp leads each row: lit amber for active
+ * (glowing only on dark surfaces), red for failed, quiet green for completed,
+ * dim for the rest. Never animated.
+ */
+export function TaskLamp({ task, colors }: { task: TaskSummary; colors: Colors }) {
+  const active = isActiveTask(task);
+  const lit = active || task.state === "failed";
+  const color = lit ? stateColor(task.state, colors)
+    : task.state === "completed" ? doneColor(colors) : frameColor(colors);
+  const glow = lit && isDarkSurface(colors)
+    ? { shadowColor: color, shadowOpacity: 0.9, shadowRadius: 4, shadowOffset: { width: 0, height: 0 } } : null;
+  return <View style={{ width: 5, height: 5, borderRadius: 2.5, alignSelf: "center", backgroundColor: color, ...glow }} />;
 }
 
 export function TaskCommand({ task, colors, layout }: { task: TaskSummary; colors: Colors; layout: Layout }) {
@@ -44,15 +42,18 @@ export function TaskCommand({ task, colors, layout }: { task: TaskSummary; color
  * Command first; status and elapsed are trailing facts. Task ids are shown only
  * where the user can act on them (the board), not as timeline decoration.
  */
-export function TaskLine({ task, colors, layout, showId, showStatus = true }: {
-  task: TaskSummary; colors: Colors; layout: Layout; showId?: boolean; showStatus?: boolean;
+export function TaskLine({ task, colors, layout, showId, status = stateText(task.state) }: {
+  task: TaskSummary; colors: Colors; layout: Layout; showId?: boolean; status?: string;
 }) {
   const mono = monoFont(layout.platform);
   const cell = { fontFamily: mono, fontSize: 10, lineHeight: 16, color: secondaryColor(colors) };
   const elapsed = formatElapsed(task);
+  const [open, setOpen] = useState(false);
   return (
     <View>
+      <Pressable onPress={() => setOpen(true)} accessibilityRole="button" accessibilityLabel={taskStateLabel(task)}>
       <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
+        <TaskLamp task={task} colors={colors} />
         <TaskCommand task={task} colors={colors} layout={layout} />
         {showId ? (
           <Text accessibilityLabel={task.id} selectable style={{ ...cell, opacity: 0.8 }} numberOfLines={1}>
@@ -60,15 +61,57 @@ export function TaskLine({ task, colors, layout, showId, showStatus = true }: {
           </Text>
         ) : null}
         {elapsed ? <Text style={{ ...cell, width: 30, textAlign: "right" }} numberOfLines={1}>{elapsed}</Text> : null}
-        {showStatus ? (
-          <Text accessibilityLabel={taskStateLabel(task)} style={{ ...cell, width: 56, textAlign: "right",
-            color: stateColor(task.state, colors) }} numberOfLines={1}>
-            {stateText(task.state)}
-          </Text>
-        ) : null}
+        <Text accessibilityLabel={taskStateLabel(task)} style={{ ...cell, textAlign: "right",
+          color: stateColor(task.state, colors) }} numberOfLines={1}>
+          {status}
+        </Text>
       </View>
-      <TaskNotes task={task} colors={colors} layout={layout} />
+      <View style={{ paddingLeft: 13 }}><TaskNotes task={task} colors={colors} layout={layout} /></View>
+      </Pressable>
+      {open ? <TaskDetailModal task={task} colors={colors} layout={layout} onClose={() => setOpen(false)} /> : null}
     </View>
+  );
+}
+
+/** v12 / A Terminal replay: one block tells the story — `$ command` in,
+ * output out. State lives in the sheet title, bookkeeping in one dim line. */
+export function TaskDetailModal({ task, colors, layout, onClose }: {
+  task: TaskSummary; colors: Colors; layout: Layout; onClose(): void;
+}) {
+  const mono = monoFont(layout.platform);
+  const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour12: false });
+  const meta = [
+    formatElapsed(task),
+    task.id,
+    task.createdAt !== undefined && task.endedAt !== undefined
+      ? `${clock(task.createdAt)} → ${clock(task.endedAt)}`
+      : task.createdAt !== undefined ? `started ${clock(task.createdAt)}` : undefined,
+    task.recovered ? "recovered" : undefined,
+    task.isError && task.state !== "failed" ? "error reported" : undefined,
+  ].filter(Boolean).join(" · ");
+  return (
+    <Modal title={taskStateLabel(task).toLowerCase()} open onOpenChange={next => { if (!next) onClose(); }}>
+      <Modal.Content>
+        <View style={{ gap: 12 }}>
+          <View style={{ backgroundColor: colors.surface1, borderRadius: 6, padding: 10 }}>
+            <Text selectable style={{ color: colors.foreground, fontFamily: mono, fontSize: 10.5, lineHeight: 16 }}>
+              <Text style={{ color: secondaryColor(colors) }}>$ </Text>
+              {task.command ?? task.tool ?? task.id}
+            </Text>
+            {task.outputTail ? (
+              <Text selectable style={{ marginTop: 8, color: mixColor(secondaryColor(colors), colors.foreground, 0.2),
+                fontFamily: mono, fontSize: 10.5, lineHeight: 16 }}>{task.outputTail.trimEnd()}</Text>
+            ) : null}
+          </View>
+          <Text selectable style={{ color: secondaryColor(colors), fontFamily: mono, fontSize: 9.5,
+            lineHeight: 15 }}>{meta}</Text>
+          {task.outputPath ? (
+            <Text selectable style={{ color: secondaryColor(colors), fontFamily: mono, fontSize: 9.5,
+              lineHeight: 15 }}>{task.outputPath}</Text>
+          ) : null}
+        </View>
+      </Modal.Content>
+    </Modal>
   );
 }
 
@@ -87,17 +130,9 @@ export function TaskNotes({ task, colors, layout }: { task: TaskSummary; colors:
 export function TaskTable({ tasks, colors, layout, showId }: {
   tasks: readonly TaskSummary[]; colors: Colors; layout: Layout; showId?: boolean;
 }) {
-  const running = tasks.filter(task => task.state === "running").length;
-  const single = tasks.length === 1 ? tasks[0] : undefined;
-  const title = single
-    ? <Text style={{ color: stateColor(single.state, colors) }}>{stateText(single.state)}</Text>
-    : running
-      ? <><Text style={{ color: stateColor("running", colors) }}>{running} running</Text><Text> · {tasks.length} total</Text></>
-      : `${tasks.length} tasks`;
   return (
-    <TaskPanel title={title} colors={colors} layout={layout}>
-      {tasks.map(task => <TaskLine key={task.id} task={task} colors={colors} layout={layout}
-        showId={showId} showStatus={!single} />)}
-    </TaskPanel>
+    <View style={{ marginTop: 4 }}>
+      {tasks.map(task => <TaskLine key={task.id} task={task} colors={colors} layout={layout} showId={showId} />)}
+    </View>
   );
 }

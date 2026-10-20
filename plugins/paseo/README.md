@@ -11,7 +11,7 @@ Non-goals (v1): no cancel/control channel, no `setStatus`/`setWidget`/`custom()`
 
 ## Display
 
-Completion cards and the board use compact, thin-framed task rows. States and elapsed durations are snapshots, not live liveness indicators: elapsed appears only when both start and end are known. Completion receipts may have only an id and result. No progress meter or client-side ticking is inferred.
+Completion cards and the board use compact task rows with static status lamps. Press a row to open a detail sheet showing its command, retained output tail, timing and output path. States and elapsed durations are snapshots, not live liveness indicators: elapsed appears only when both start and end are known. Completion data comes from structured message metadata, not parsed receipt prose. No progress meter or client-side ticking is inferred.
 
 ## Develop
 

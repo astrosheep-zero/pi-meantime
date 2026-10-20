@@ -45,8 +45,19 @@ export function secondaryColor(colors: PluginTheme["colors"]): string {
   return readableColor(mixColor(colors.foregroundMuted, colors.foreground, 0.15), colors);
 }
 
+/** Glow only reads on dark surfaces; on light ones the lamp is just ink. */
+export function isDarkSurface(colors: PluginTheme["colors"]): boolean {
+  const surface = rgb(colors.surface0);
+  return surface ? luminance(surface) < 0.2 : false;
+}
+
 export function frameColor(colors: PluginTheme["colors"]): string {
   return mixColor(secondaryColor(colors), colors.surface0, 0.4);
+}
+
+/** Done is green when the theme has one; the pilot lamp always uses this. */
+export function doneColor(colors: PluginTheme["colors"]): string {
+  return readableColor(colors.statusSuccess ?? "#7fb26a", colors);
 }
 
 export function stateColor(state: string, colors: PluginTheme["colors"]): string {

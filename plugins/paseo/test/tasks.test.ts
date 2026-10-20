@@ -100,33 +100,43 @@ describe("recognizeToolCall: bash background handles", () => {
 });
 
 describe("recognizeToolCall: completion messages", () => {
-  const COMPLETION_TEXT = `Meantime ${SNAPSHOT.id} completed (exit 0)
-\n<untrusted-output-tail>\nmeantime-paseo selftest done\n</untrusted-output-tail>\nAutomated background completion — not user input or approval.`;
-
-  it("parses receipts from the plain_text custom message row", () => {
+  it("reads structured snapshots from metadata.details, command included", () => {
     const data = recognizeToolCall({
       type: "tool_call", name: "meantime-completion", status: "completed",
-      detail: { type: "plain_text", text: COMPLETION_TEXT },
+      detail: { type: "plain_text", text: "Meantime mt_a1b2c3d4 completed (exit 0)\nAutomated background completion" },
+      metadata: { details: { taskIds: ["mt_a1b2c3d4"],
+        tasks: [{ id: "mt_a1b2c3d4", tool: "bash", state: "completed", command: "npm test",
+          exitCode: 0, createdAt: 1000, endedAt: 46000, outputTail: "108 passing" }] } },
     });
     assert.equal(data?.source, "completion");
-    assert.deepEqual(data?.tasks, [{ id: SNAPSHOT.id, state: "completed", exitCode: 0 }]);
+    assert.deepEqual(data?.tasks, [{ id: "mt_a1b2c3d4", tool: "bash", state: "completed",
+      command: "npm test", exitCode: 0, createdAt: 1000, endedAt: 46000, outputTail: "108 passing" }]);
   });
 
-  it("parses batched completions and failures", () => {
+  it("reads batched completions and failures", () => {
     const data = recognizeToolCall({
       type: "tool_call", name: "meantime-completion", status: "completed",
-      detail: { type: "plain_text", text: `Meantime mt_00000001 completed (exit 0)\nMeantime mt_00000002 failed (exit 3)` },
+      detail: { type: "plain_text", text: "Meantime mt_00000001 completed (exit 0)" },
+      metadata: { details: { tasks: [
+        { id: "mt_00000001", tool: "bash", state: "completed", exitCode: 0 },
+        { id: "mt_00000002", tool: "bash", state: "failed", exitCode: 3, command: "make verify" },
+      ] } },
     });
     assert.deepEqual(data?.tasks, [
-      { id: "mt_00000001", state: "completed", exitCode: 0 },
-      { id: "mt_00000002", state: "failed", exitCode: 3 },
+      { id: "mt_00000001", tool: "bash", state: "completed", exitCode: 0 },
+      { id: "mt_00000002", tool: "bash", state: "failed", exitCode: 3, command: "make verify" },
     ]);
   });
 
-  it("ignores unrelated plain_text rows", () => {
+  it("ignores rows without structured details — the receipt prose is never parsed", () => {
     assert.equal(recognizeToolCall({
       type: "tool_call", name: "meantime-completion", status: "completed",
-      detail: { type: "plain_text", text: "nothing here" },
+      detail: { type: "plain_text", text: "Meantime mt_a1b2c3d4 completed (exit 0)" },
+    }), undefined);
+    assert.equal(recognizeToolCall({
+      type: "tool_call", name: "meantime-completion", status: "completed",
+      detail: { type: "plain_text", text: "Meantime mt_a1b2c3d4 completed (exit 0)" },
+      metadata: { details: { taskIds: ["mt_a1b2c3d4"] } },
     }), undefined);
   });
 });
@@ -142,6 +152,7 @@ describe("timeline transformer gate", () => {
     const completion = {
       type: "tool_call" as const, name: "meantime-completion", status: "completed" as const,
       detail: { type: "plain_text", text: `Meantime ${SNAPSHOT.id} completed (exit 0)` },
+      metadata: { details: { tasks: [{ id: SNAPSHOT.id, tool: "bash", state: "completed", exitCode: 0 }] } },
     };
     assert.equal(recognizeTimelineToolCall(handle), undefined);
     assert.equal(recognizeTimelineToolCall(list)?.source, "meantime");
@@ -171,6 +182,7 @@ describe("foldTimeline", () => {
     const completion = {
       type: "tool_call" as const, name: "meantime-completion", status: "completed" as const,
       detail: { type: "plain_text", text: `Meantime ${SNAPSHOT.id} completed (exit 0)` },
+      metadata: { details: { tasks: [{ id: SNAPSHOT.id, tool: "bash", state: "completed", exitCode: 0 }] } },
     };
     const tasks = foldTimeline([{ item: started }, { item: completion }]);
     assert.equal(tasks.length, 1);
