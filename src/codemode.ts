@@ -27,18 +27,8 @@ export function isNativeCodemode(definition: Tool): boolean { return definitions
 export function withStoreOwner<T>(check: () => void, execute: () => T): T { return storeOwner.run(check, execute); }
 
 type Usage = NonNullable<Result['usage']>;
-// Same additive fields as Pi's native nested-call accounting, including optional splits.
-function addUsage(a: Usage | undefined, b: Usage): Usage {
-  if (!a) return b;
-  return { input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead,
-    cacheWrite: a.cacheWrite + b.cacheWrite, totalTokens: a.totalTokens + b.totalTokens,
-    ...(a.cacheWrite1h !== undefined || b.cacheWrite1h !== undefined ? { cacheWrite1h: (a.cacheWrite1h ?? 0) + (b.cacheWrite1h ?? 0) } : {}),
-    ...(a.reasoning !== undefined || b.reasoning !== undefined ? { reasoning: (a.reasoning ?? 0) + (b.reasoning ?? 0) } : {}),
-    cost: { input: a.cost.input + b.cost.input, output: a.cost.output + b.cost.output,
-      cacheRead: a.cost.cacheRead + b.cost.cacheRead, cacheWrite: a.cost.cacheWrite + b.cost.cacheWrite, total: a.cost.total + b.cost.total } };
-}
 interface Scope {
-  recorder: { addUsage(usage: Usage): void };
+  recorder: { addUsage(usage: Usage): void; readonly totalUsage: Usage | undefined };
 }
 interface NestedRunner {
   scopes: Map<string, Scope>;
@@ -83,17 +73,25 @@ export function codemodeScopes(host: HostSession) {
   let runner: NestedRunner | undefined;
   let take: NestedRunner['takeRecord'] | undefined, clear: NestedRunner['clear'] | undefined;
   let remove: Map<string, Scope>['delete'] | undefined;
-  let disposed = false;
   const belongs = (id: string, root: Root) => id === root.id || id.startsWith(`${root.id}/`);
   function rootFor(id: string): Root | undefined { return [...roots.values()].find(root => belongs(id, root)); }
+  function collect(id: string, result: Result): ScopeResult | undefined {
+    const recorder = runner?.scopes.get(id)?.recorder;
+    const summary = runner && take!.call(runner, id);
+    if (!summary) return;
+    // Keep the nested delta before adding root-own usage to the drained recorder.
+    // Native addUsage replaces its usage object and preserves optional splits/cost.
+    const usage = summary.usage;
+    if (usage && result.usage) recorder!.addUsage(result.usage);
+    return { result: { ...result, nestedCalls: summary.calls,
+      ...(usage ? { usage: recorder!.totalUsage } : {}),
+    }, usage };
+  }
   function changed(root: Root) {
     if (root.producers.size || root.pending.size) return;
     held.delete(root.id); roots.delete(root.id);
     if (root.late) {
-      const summary = runner && take!.call(runner, root.id);
-      root.resolveScope({ result: { ...root.late.result, nestedCalls: summary?.calls,
-        ...(summary?.usage ? { usage: addUsage(root.late.result.usage, summary.usage) } : {}),
-      }, usage: summary?.usage });
+      root.resolveScope(collect(root.id, root.late.result) ?? { result: { ...root.late.result, nestedCalls: undefined } });
     } else root.resolveScope();
   }
   const takeHook: NestedRunner['takeRecord'] = function (this: NestedRunner, id) {
@@ -174,11 +172,8 @@ export function codemodeScopes(host: HostSession) {
             }
             if (detached) {
               held.delete(id); // native takeRecord deletes through this Map too
-              const summary = runner && take!.call(runner, id);
-              if (summary) outcome = { ...outcome, result: { ...outcome.result,
-                nestedCalls: summary.calls,
-                ...(summary.usage ? { usage: addUsage(outcome.result.usage, summary.usage) } : {}),
-              } };
+              const collected = collect(id, outcome.result);
+              if (collected) outcome = { ...outcome, result: collected.result };
             }
           } else if (detached && outcome.result.usage) {
             // The native pipeline recorded a handle (no usage). Donate the late
@@ -200,10 +195,8 @@ export function codemodeScopes(host: HostSession) {
       };
     },
     dispose() {
-      if (disposed) return;
       if (roots.size) throw new Error('Cannot dispose live codemode scopes before drain');
-      disposed = true;
-      for (const unpatch of restore.reverse()) unpatch();
+      for (const unpatch of restore.splice(0).reverse()) unpatch();
     },
   };
 }

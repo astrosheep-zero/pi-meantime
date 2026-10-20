@@ -20,7 +20,8 @@ process.env.PI_CODING_AGENT_DIR = root;
 const config = { autoDetachMs: 50, notifyDebounceMs: 5, shutdownGraceMs: 10 };
 fs.writeFileSync(root + '/settings.json', JSON.stringify({ meantime: config }));
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-const toolUsage = { ...usage, input: 3, totalTokens: 3, cost: { ...usage.cost, input: 0.03, total: 0.03 } };
+const toolUsage = { input: 3, output: 2, cacheRead: 4, cacheWrite: 6, cacheWrite1h: 1, reasoning: 1, totalTokens: 15,
+  cost: { input: 0.03125, output: 0.0625, cacheRead: 0.125, cacheWrite: 0.25, total: 0.46875 } };
 const model = { id: 'probe', name: 'probe', provider: 'anthropic', api: 'anthropic-messages', baseUrl: 'http://invalid', reasoning: false, input: ['text'], cost: usage.cost, contextWindow: 100000, maxTokens: 1000 };
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const gates = new Map(), starts = new Map(), signals = new Map();
@@ -152,7 +153,8 @@ try {
   assert.match(scriptResult(completion), /42/);
   assert.deepEqual(completion.result.nestedCalls.calls.map(c => c.id), ['continuation/1', 'continuation/2']);
   assert(completion.result.nestedCalls.complete);
-  assert.equal(completion.result.usage.input, 6);
+  assert.deepEqual(completion.result.usage, { input: 6, output: 4, cacheRead: 8, cacheWrite: 12, cacheWrite1h: 2, reasoning: 2, totalTokens: 30,
+    cost: { input: 0.0625, output: 0.125, cacheRead: 0.25, cacheWrite: 0.5, total: 0.9375 } });
   assert.equal(session.getSessionStats().tokens.input, 6, 'completed independently of retrieval');
   for (const child of ['continuation/1', 'continuation/2']) {
     assert.equal(hooks.filter(h => h.kind === 'call' && h.id === child).length, 1);
@@ -218,7 +220,13 @@ try {
     assert(explicit, 'late root metadata is linked, not a blocked frontend return');
     assert.deepEqual(explicit.result.nestedCalls.calls.map(c => c.id), [rootId + '/1', rootId + '/1/1', rootId + '/1/2']);
     assert(explicit.result.nestedCalls.complete);
-    assert.equal(explicit.nestedUsage.input, 9, 'late nested delta excludes already-charged root usage');
+    const nestedUsage = { input: 9, output: 6, cacheRead: 12, cacheWrite: 18, cacheWrite1h: 3, reasoning: 3, totalTokens: 45,
+      cost: { input: 0.09375, output: 0.1875, cacheRead: 0.375, cacheWrite: 0.75, total: 1.40625 } };
+    assert.deepEqual(explicit.nestedUsage, nestedUsage, 'late nested delta excludes already-charged root usage');
+    assert.deepEqual(explicit.result.usage, key === 'child' ? nestedUsage : {
+      input: 12, output: 8, cacheRead: 16, cacheWrite: 24, cacheWrite1h: 4, reasoning: 4, totalTokens: 60,
+      cost: { input: 0.125, output: 0.25, cacheRead: 0.5, cacheWrite: 1, total: 1.875 },
+    }, 'full result includes root-own usage without mutating the nested delta');
     assert.equal(session.getSessionStats().tokens.input, before + (key === 'child' ? 9 : 12));
     const retrieved = await prompt('meantime', { action: 'wait', id: childId, timeout: 0 }, 'safe-wait-' + key);
     assert.equal(retrieved.usage, undefined);
