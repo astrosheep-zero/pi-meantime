@@ -29,7 +29,7 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
   let panel: Component | undefined, renders = 0, closed = 0;
   pi.ctx.ui.custom = async factory => new Promise(resolve => {
     panel = factory({ requestRender() { renders++; } } as Parameters<Factory>[0],
-      { fg: (_color: string, text: string) => text } as Parameters<Factory>[1],
+      { fg: (color: string, text: string) => color === 'warning' ? `!${text}` : color === 'muted' ? `~${text}` : text } as Parameters<Factory>[1],
       {} as Parameters<Factory>[2], result => { closed++; panel?.dispose?.(); resolve(result); }) as Component;
   });
   const text = () => panel!.render(1000).join('\n');
@@ -50,7 +50,7 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
       const rows = lines.filter(line => line.includes(idA) || line.includes(idB));
       assert.equal(rows.length, 2);
       for (const row of rows) {
-        assert.match(row, / \| \d+s$/);
+        assert.match(row, / · \d+s · mt_[a-f0-9]{8}$/);
         assert.ok(visibleWidth(row) <= 80);
       }
     };
@@ -74,7 +74,7 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
     panel!.handleInput!('\u001b[A');
     panel!.handleInput!('c');
     assert.equal(aborts, 1);
-    assert.match(text(), /cancel_requested/);
+    assert.match(text(), /!●/, 'cancellation request keeps the running row with a warning glyph');
     const cancel = t.mock.method(TaskRuntime.prototype, 'cancel', () => { throw new Error('Recovered task has no live local controller'); });
     panel!.handleInput!('c');
     assert.match(text(), /Recovered task has no live local controller/);
@@ -96,7 +96,7 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
     const reopened = command();
     panel!.handleInput!('\r');
     assert.match(text(), /recent output/); assert.doesNotMatch(text(), /Output:/);
-    assert.match(text(), /cancelled/);
+    assert.match(text(), /~⊘/, 'cancelled task shows the muted cancellation glyph');
     await sleep(10); assert.equal(pi.notifications.length, 1);
     panel!.handleInput!('\u001b'); await reopened;
     assert.equal(closed, 2);

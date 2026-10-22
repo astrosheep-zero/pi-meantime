@@ -138,6 +138,7 @@ export type EventHandler<K extends keyof EventMap> =
   (event: EventMap[K], ctx: Context) => EventResultMap[K] | void | Promise<EventResultMap[K] | void>;
 export interface PiHost {
   registerToolRenderer: ExtensionAPI['registerToolRenderer'];
+  registerMessageRenderer: ExtensionAPI['registerMessageRenderer'];
   registerTool(tool: Tool): void;
   getAllTools(): ToolInfo[];
   on<K extends keyof EventMap>(event: K,

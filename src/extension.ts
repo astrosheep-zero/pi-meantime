@@ -6,6 +6,7 @@ import type { Context, EventHandler, EventMap, Json, PiHost, Result } from './pr
 import { captureSession, manageTools } from './host.ts';
 import type { HostSession, ManagedCall } from './host.ts';
 import { CONTROL, isRecord, projectResult } from './schema.ts';
+import { renderCompletion, renderMeantimeCall, renderTaskResult, stateGlyph } from './render.ts';
 import { TaskRuntime } from './runtime.ts';
 import { CompletionDelivery } from './notifications.ts';
 import type { Snapshot, View, TaskRecord, IndexChange } from './runtime.ts';
@@ -140,15 +141,15 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       const refresh = () => {
         tasks = r.list().sort((a, b) => Number(b.localRunning) - Number(a.localRunning) || b.createdAt - a.createdAt);
         list = new SelectList(tasks.map(task => ({ value: task.id,
-          label: `${taskLabel(task)} | ${Math.max(0, Math.floor(((task.endedAt ?? Date.now()) - task.createdAt) / 1000))}s` })), 10, {
+          label: `${stateGlyph(theme, task.state)} ${task.command !== undefined ? commandPreview(task.command) : task.tool} · ${Math.max(0, Math.floor(((task.endedAt ?? Date.now()) - task.createdAt) / 1000))}s · ${task.id}` })), 10, {
           selectedPrefix: text => theme.fg('accent', text), selectedText: text => theme.fg('accent', text),
           description: text => theme.fg('muted', text), scrollInfo: text => theme.fg('dim', text), noMatch: text => theme.fg('muted', text),
         }, {
           truncatePrimary({ text, maxWidth }) {
-            // Reserve the elapsed suffix before shortening the command preview.
-            const split = text.lastIndexOf(' | '), elapsed = text.slice(split);
-            if (visibleWidth(elapsed) >= maxWidth) return truncateToWidth(elapsed.trimStart(), maxWidth, '');
-            return truncateToWidth(text.slice(0, split), maxWidth - visibleWidth(elapsed), '…') + elapsed;
+            // Reserve the elapsed/id facts before shortening the command preview.
+            const facts = /( · \d+s · mt_[a-f0-9]{8})$/.exec(text)?.[1] ?? '';
+            if (visibleWidth(facts) >= maxWidth) return truncateToWidth(facts.trimStart(), maxWidth, '');
+            return truncateToWidth(text.slice(0, text.length - facts.length), maxWidth - visibleWidth(facts), '…') + facts;
           },
         });
         list.setSelectedIndex(Math.max(0, tasks.findIndex(task => task.id === selected)));
@@ -235,51 +236,35 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     }).then(foregroundOrHandle);
   }
 
+  pi.registerMessageRenderer('meantime-completion', (message, options, theme) => renderCompletion(message, options, theme));
+
   pi.registerToolRenderer((name, next) => {
     const native = next();
     if (name !== 'meantime' && !host?.names().includes(name)) return native;
     return {
       ...native,
+      // The control tool gets a compact call row; managed tools keep their own call rendering.
+      ...(name === 'meantime' ? { renderCall: (args: unknown, theme: Parameters<typeof renderMeantimeCall>[1]) => renderMeantimeCall(args, theme) } : {}),
       renderResult(result, renderOptions, theme, context) {
         const details = result.details;
         // Pi projects renderer input to content/details; structuredContent is
         // model/programmatic data and is not passed to this callback.
         const handle = isRecord(details) && details.delivery === 'background'
           && typeof details.id === 'string' && typeof details.createdAt === 'number';
-        if (!handle && (name !== 'meantime' || (isRecord(context.args) && context.args.action === 'wait'))) {
-          if (native?.renderResult) return native.renderResult(result, renderOptions, theme, context);
-          // Match Pi's generic result preview for tools without a renderer.
-          const blocks = result.content.filter(block => block.type === 'text').map(block =>
-            stripTerminalSequences(block.text).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\uFFF9-\uFFFB\r]/g, ''));
-          if (!getCapabilities().images || !context.showImages) {
-            blocks.push(...result.content.filter(block => block.type === 'image').map(block =>
-              imageFallback(block.mimeType, getImageDimensions(block.data, block.mimeType) ?? undefined)));
-          }
-          const lines = blocks.join('\n').split('\n');
-          const shown = renderOptions.expanded ? lines : lines.slice(0, 10);
-          const remaining = lines.length - shown.length;
-          const text = shown.map(line => theme.fg('toolOutput', line)).join('\n');
-          return new Text(text + (remaining ? `${theme.fg('muted', `\n... (${remaining} more lines,`)} ${keyHint('app.tools.expand', 'to expand')}${theme.fg('muted', ')')}` : ''), 0, 0);
+        if (handle || name === 'meantime') return renderTaskResult(result, renderOptions, theme, context, handle);
+        if (native?.renderResult) return native.renderResult(result, renderOptions, theme, context);
+        // Match Pi's generic result preview for tools without a renderer.
+        const blocks = result.content.filter(block => block.type === 'text').map(block =>
+          stripTerminalSequences(block.text).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\uFFF9-\uFFFB\r]/g, ''));
+        if (!getCapabilities().images || !context.showImages) {
+          blocks.push(...result.content.filter(block => block.type === 'image').map(block =>
+            imageFallback(block.mimeType, getImageDimensions(block.data, block.mimeType) ?? undefined)));
         }
-        const tasks = isRecord(details) && Array.isArray(details.tasks) ? details.tasks
-          : isRecord(details) && isRecord(details.task) ? [details.task]
-          : isRecord(details) && typeof details.id === 'string' ? [details] : [];
-        if (!tasks.length) return new Text(result.content.filter(b => b.type === 'text').map(b => b.text).join('\n'), 0, 0);
-        const lines = tasks.map(value => {
-          const task = value as Snapshot;
-          const summary = `${task.id} | ${task.tool} | ${task.state} | ${elapsed(task)}`;
-          if (!renderOptions.expanded) return summary;
-          return [summary,
-            task.command !== undefined ? `Command: ${task.command}` : '',
-            task.progress !== undefined ? `Progress: ${task.progress}` : '',
-            value.exitCode !== undefined ? `Exit: ${value.exitCode}` : '',
-            task.isError !== undefined ? `isError: ${task.isError}` : '',
-            task.outputPath ? `Output: ${task.outputPath}` : '',
-            task.cancelRequestedAt ? 'Cancellation requested; the native outcome may not be settled.' : '',
-          ].filter(Boolean).join('\n');
-        });
-        if (isRecord(details) && details.next_offset != null) lines.push(`More: offset=${details.next_offset}`);
-        return new Text(theme.fg('toolOutput', stripTerminalSequences(lines.join('\n'))), 0, 0);
+        const lines = blocks.join('\n').split('\n');
+        const shown = renderOptions.expanded ? lines : lines.slice(0, 10);
+        const remaining = lines.length - shown.length;
+        const text = shown.map(line => theme.fg('toolOutput', line)).join('\n');
+        return new Text(text + (remaining ? `${theme.fg('muted', `\n... (${remaining} more lines,`)} ${keyHint('app.tools.expand', 'to expand')}${theme.fg('muted', ')')}` : ''), 0, 0);
       },
     };
   });

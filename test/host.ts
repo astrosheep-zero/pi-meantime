@@ -27,6 +27,8 @@ export function validate(schema: Schema, value: unknown): void {
 export class FakePi implements PiHost, HostSession {
   readonly renderers: Parameters<PiHost['registerToolRenderer']>[0][] = [];
   registerToolRenderer(resolver: Parameters<PiHost['registerToolRenderer']>[0]): void { this.renderers.push(resolver); }
+  readonly messageRenderers = new Map<string, unknown>();
+  registerMessageRenderer: PiHost['registerMessageRenderer'] = (customType, renderer) => { this.messageRenderers.set(customType, renderer); };
   readonly definitions = new Map<string, Tool>();
   readonly active = new Set<string>();
   readonly handlers = new Map<string, Handler[]>();

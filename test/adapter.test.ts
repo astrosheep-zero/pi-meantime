@@ -1,6 +1,6 @@
 import { initTheme, ToolExecutionComponent } from '@earendil-works/pi-coding-agent';
 import type { ToolRenderers } from '@earendil-works/pi-coding-agent';
-import { Text } from '@earendil-works/pi-tui';
+import { Text, stripTerminalSequences } from '@earendil-works/pi-tui';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { install } from '../src/extension.ts';
@@ -276,18 +276,21 @@ test('wait previews show native single and batch bodies, while handle cards reta
     const handles = [];
     for (let i = 0; i < 2; i++) handles.push(await h.pi.call('mcp__preview', { __background__: 'yes' }));
     const ids = handles.map(out => snapshot(out).id);
-    assert.match(managed.renderResult!(handles[0]!.result, { expanded: false, isPartial: false }, theme, {} as Parameters<Render>[3]).render(200).join('\n'), /mcp__preview \| running/);
+    assert.match(managed.renderResult!(handles[0]!.result, { expanded: false, isPartial: false }, theme, {} as Parameters<Render>[3]).render(200).map(line => line.trimEnd()).join('\n'), /● mcp__preview · \d+s · mt_[a-f0-9]{8}\n +background — \/meantime to inspect/);
     initTheme('dark', false);
     const ui = { requestRender() {} } as ConstructorParameters<typeof ToolExecutionComponent>[5];
     for (const args of [{ action: 'wait', ids: [ids[0] ]}, { action: 'wait', ids }]) {
       const outcome = await h.pi.call('meantime', args);
       const make = (renderers: ToolRenderers) => new ToolExecutionComponent('meantime', 'preview', args, { showImages: false }, renderers, ui, process.cwd());
-      const plain = make({}), preview = make(resolve('meantime', () => undefined)!);
-      plain.updateResult({ ...outcome.result, isError: outcome.isError }); preview.updateResult({ ...outcome.result, isError: outcome.isError });
-      assert.deepEqual(preview.render(200), plain.render(200)); assert.match(preview.render(200).join('\n'), /BODY_1\b/);
-      assert.doesNotMatch(preview.render(200).join('\n'), /BODY_25\b/);
-      plain.setExpanded(true); preview.setExpanded(true);
-      assert.deepEqual(preview.render(200), plain.render(200)); assert.match(preview.render(200).join('\n'), /BODY_25\b/);
+      const preview = make(resolve('meantime', () => undefined)!);
+      preview.updateResult({ ...outcome.result, isError: outcome.isError });
+      const collapsed = stripTerminalSequences(preview.render(200).map(line => line.trimEnd()).join('\n'));
+      assert.match(collapsed, /✓ mcp__preview · \d+s · mt_[a-f0-9]{8}/, 'wait results open with a glyph header');
+      assert.doesNotMatch(collapsed, /Meantime mt_/, 'the machine receipt line is not duplicated under the header');
+      assert.match(collapsed, /BODY_1\b/);
+      assert.doesNotMatch(collapsed, /BODY_25\b/);
+      preview.setExpanded(true);
+      assert.match(stripTerminalSequences(preview.render(200).join('\n')), /BODY_25\b/);
     }
     assert.equal(TaskRuntime.liveProducerCount(), 0);
   } finally { await h.close(); }
