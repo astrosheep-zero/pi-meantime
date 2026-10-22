@@ -2,7 +2,7 @@
  * test/sdk-contract.compile.ts checks assignability against the official SDK. */
 import type {
   AgentToolResult, BeforeAgentStartEventResult, ExtensionAPI, ExtensionContext, InputEventResult, ToolCallEventResult,
-  ToolDefinition, ToolLoadout,
+  ToolDefinition, ToolLoadout, TurnEndEventResult,
 } from '@earendil-works/pi-coding-agent';
 import type { ToolResultMessage } from '@earendil-works/pi-ai';
 export type Json = Exclude<AgentToolResult<unknown>['structuredContent'], undefined>;
@@ -107,8 +107,8 @@ export interface EventMap {
   session_tree: { type: 'session_tree' };
   session_compact: { type: 'session_compact' };
   session_compact_failed: { type: 'session_compact_failed' };
-  turn_end: { type: 'turn_end' };
-  tool_execution_start: { type: 'tool_execution_start'; toolCallId: string; parentToolCallId?: string };
+  turn_end: { type: 'turn_end'; outcome?: 'completed' | 'aborted' | 'error' };
+  tool_execution_start: { type: 'tool_execution_start'; toolCallId: string; toolName: string; args: unknown; parentToolCallId?: string };
   before_agent_start: { type: 'before_agent_start'; systemPromptOptions: { sections: Record<string, string> } };
   agent_settled: { type: 'agent_settled'; aborted?: boolean };
   input: InputEvent;
@@ -124,7 +124,7 @@ export interface EventResultMap {
   session_tree: void;
   session_compact: void;
   session_compact_failed: void;
-  turn_end: void;
+  turn_end: TurnEndEventResult;
   tool_execution_start: void;
   before_agent_start: BeforeAgentStartEventResult;
   agent_settled: void;
@@ -148,7 +148,5 @@ export interface PiHost {
   registerCommand(name: string, options: {
     description: string; handler: (args: string, ctx: Context) => Promise<void>;
   }): void;
-  sendMessage(message: { customType: string; content: string; display: boolean; details?: unknown },
-    options: { deliverAs: 'steer'; triggerTurn: true }): void;
   appendEntry(customType: string, data?: unknown): void;
 }

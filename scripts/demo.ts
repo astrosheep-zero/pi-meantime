@@ -24,7 +24,7 @@ try {
   console.log('BASH:', parallel.result.content);
   await until(() => pi.notifications.length > 0);
   console.log('\nNOTIFICATION:', pi.notifications[0]!.content);
-  const done = await pi.call('meantime', { action: 'wait', timeout: 0, id: task.id });
+  const done = await pi.call('meantime', { action: 'wait', timeout: 0, ids: [task.id ]});
   console.log('COLLECTED:', JSON.stringify(done.result.structuredContent));
   console.log('MCP REQUEST COUNT:', client.sent.filter(m => m.method === 'tools/call').length);
 } finally {

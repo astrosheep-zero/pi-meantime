@@ -14,6 +14,7 @@ import type { InstallOptions } from '../src/extension.ts';
 import type { Loadout, PiHost, Result, Tool, ToolContext, ToolInfo } from '../src/protocol.ts';
 import { DEFAULT_CONFIG } from '../src/config.ts';
 import { decorateSchema } from '../src/schema.ts';
+import type { DeliveryHost } from '../src/notifications.ts';
 
 declare const pi: ExtensionAPI;
 declare const tool: Tool;
@@ -40,6 +41,10 @@ const prepareLoadout: NonNullable<ToolDefinition['prepareLoadout']> = current =>
   const view: Loadout = current;
   return tool.prepareLoadout?.(view);
 };
+
+// Completion staging and consumption use public AgentSession methods/events.
+const deliveryHost: DeliveryHost = session;
+host.on('turn_end', () => ({ continue: true }));
 
 // Public TSchema does not promise a string index signature. The schema boundary
 // validates it before transformation, including native TypeBox Bash schemas.
@@ -78,5 +83,5 @@ host.registerCommand('invalid', { description: 'compile-only', handler() {} });
 // @ts-expect-error SDK KeyId rejects an arbitrary string.
 host.registerShortcut('not-a-real-key', { description: 'compile-only', handler() {} });
 
-void [entry, host, sdkTool, toolContext, toolLoadout, registry, emitted, readonlyJson,
+void [entry, host, deliveryHost, sdkTool, toolContext, toolLoadout, registry, emitted, readonlyJson,
   invalidGuidelines, invalidUsage];

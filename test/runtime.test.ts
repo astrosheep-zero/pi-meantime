@@ -258,6 +258,117 @@ test('notification enqueue failure is retried; it is not falsely marked delivere
     assert.equal(sends, 2);
   } finally { work.resolve(ok()); await runtime.close(); await h.close(); }
 });
+async function notificationBatch(count: number) {
+  const h = runtimeHarness({ notifyDebounceMs: 5000, maxRunning: 32 });
+  const work = deferred<Outcome>(), ids: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const view = await h.runtime.run({ tool: 'one', kind: 'tool', callId: `notice-${i}`, mode: 'yes', canDetach: true, execute: () => work.promise });
+    ids.push(view.task.id); h.runtime.published(`notice-${i}`, view.task.id);
+  }
+  work.resolve(ok());
+  await Promise.all([...h.runtime.tasks.values()].map(task => task.done));
+  return { ...h, ids };
+}
+
+test('notification handoff reserves queued before synchronous reentry and consumption', async () => {
+  const h = await notificationBatch(2); let sends = 0;
+  h.sink.notify = tasks => {
+    sends++;
+    assert.ok(tasks.every(task => task.notification === 'queued'));
+    h.runtime.flushNotifications(); // A synchronous run start must not resend.
+    h.runtime.notificationConsumed(tasks.map(task => task.id));
+  };
+  try {
+    h.runtime.flushNotifications();
+    assert.equal(sends, 1);
+    assert.ok(h.ids.every(id => h.runtime.get(id).notification === 'delivered'));
+    h.runtime.notificationConsumed([...h.ids, 'missing']);
+    h.runtime.notificationFailed(h.ids);
+    h.runtime.flushNotifications();
+    assert.equal(sends, 1, 'duplicate/late receipts cannot rearm delivered tasks');
+  } finally { await h.close(); }
+});
+
+for (const outcome of ['false', 'throw'] as const) test(`notification ${outcome} rolls back only still-queued members`, async () => {
+  const h = await notificationBatch(3);
+  const [delivered, observed, retry] = h.ids as [string, string, string];
+  h.sink.notify = () => {
+    h.runtime.notificationConsumed([delivered]);
+    h.runtime.result(observed);
+    if (outcome === 'throw') throw new Error('enqueue failed after receipts');
+    return false;
+  };
+  try {
+    h.runtime.flushNotifications();
+    assert.deepEqual(h.ids.map(id => h.runtime.get(id).notification), ['delivered', 'observed', 'pending']);
+    assert.equal(h.runtime.tasks.get(retry)!.notifyAttempts, outcome === 'throw' ? 1 : 0);
+    const sent: string[] = [];
+    h.sink.notify = tasks => { sent.push(...tasks.map(task => task.id)); h.runtime.notificationConsumed(sent); };
+    await h.runtime.flushNotificationsAtBoundary();
+    assert.deepEqual(sent, [retry]);
+    assert.equal(h.runtime.get(retry).notification, 'delivered');
+  } finally { await h.close(); }
+});
+
+test('async notification failure waits for a boundary and shares the synchronous retry budget', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = await notificationBatch(1); const id = h.ids[0]!;
+  let sends = 0;
+  h.sink.notify = () => { if (++sends === 2) throw new Error('synchronous retry failure'); };
+  try {
+    h.runtime.flushNotifications(); // Ahead of the original debounce timer.
+    h.runtime.notificationFailed([id, id, 'missing']);
+    assert.equal(h.runtime.tasks.get(id)!.notifyAttempts, 1);
+    assert.equal(h.runtime.get(id).notification, 'pending');
+    t.mock.timers.tick(10_000);
+    assert.equal(sends, 1, 'async failure cannot self-wake via a leftover debounce');
+    await h.runtime.flushNotificationsAtBoundary();
+    assert.equal(sends, 2, 'synchronous failure cannot retry in the same drain');
+    assert.equal(h.runtime.tasks.get(id)!.notifyAttempts, 2);
+    t.mock.timers.tick(5000);
+    assert.equal(h.runtime.get(id).notification, 'queued');
+    h.runtime.notificationFailed([id, id]);
+    assert.equal(h.runtime.tasks.get(id)!.notifyAttempts, 3);
+    assert.equal(h.runtime.get(id).notification, 'failed');
+    t.mock.timers.tick(10_000);
+    await h.runtime.flushNotificationsAtBoundary();
+    assert.equal(sends, 3);
+    h.runtime.notificationConsumed([id]);
+    assert.equal(h.runtime.get(id).notification, 'failed', 'late consumption cannot acknowledge an unqueued retry');
+  } finally { await h.close(); }
+});
+
+test('boundary drains bounded batches without claiming unconfirmed delivery', async () => {
+  const h = await notificationBatch(17);
+  try {
+    await h.runtime.flushNotificationsAtBoundary();
+    assert.deepEqual(h.notifications.map(batch => batch.length), [16, 1]);
+    assert.deepEqual(h.notifications.flat().map(task => task.id), h.ids);
+    assert.ok(h.ids.every(id => h.runtime.get(id).notification === 'queued'));
+    h.runtime.notificationConsumed(h.ids);
+    await h.runtime.flushNotificationsAtBoundary();
+    assert.equal(h.notifications.length, 2);
+    assert.ok(h.ids.every(id => h.runtime.get(id).notification === 'delivered'));
+  } finally { await h.close(); }
+});
+
+test('late notification receipts preserve observation and closed-generation suppression', async () => {
+  const h = await notificationBatch(2);
+  try {
+    h.runtime.flushNotifications();
+    h.runtime.result(h.ids[0]!);
+    h.runtime.notificationFailed([h.ids[0]!]);
+    h.runtime.notificationConsumed([h.ids[0]!]);
+    assert.equal(h.runtime.get(h.ids[0]!).notification, 'observed');
+    await h.runtime.close();
+    h.runtime.notificationFailed(h.ids);
+    h.runtime.notificationConsumed(h.ids);
+    await h.runtime.flushNotificationsAtBoundary();
+    assert.ok(h.ids.every(id => h.runtime.get(id).notification === 'suppressed'));
+    assert.equal(h.notifications.length, 1);
+  } finally { await h.close(); }
+});
+
 test('capacity counts actual live producers, not foreground waiters', async () => {
   const h = runtimeHarness({ maxRunning: 1 }); const work = deferred<Outcome>();
   try {

@@ -143,8 +143,8 @@ test('model cancel returns the single-wait stored result with native payload and
     await pi.emit('session_start', { type: 'session_start' });
     const handle = await pi.call('mcp__test__cancel', { __background__: 'yes' });
     const id = (handle.result.details as Snapshot).id;
-    const cancelled = await pi.call('meantime', { action: 'cancel', id });
-    const wait = await pi.call('meantime', { action: 'wait', id, timeout: 0 });
+    const cancelled = await pi.call('meantime', { action: 'cancel', ids: [id] });
+    const wait = await pi.call('meantime', { action: 'wait', ids: [id], timeout: 0 });
     assert.deepEqual(cancelled.result, wait.result);
     assert.deepEqual(cancelled.result.content.slice(1), native.content);
     assert.deepEqual(cancelled.result.details, { ...native.details!, task: (wait.result.details as { task: Snapshot }).task });
@@ -179,7 +179,7 @@ test('real SDK codemode cancel receives the settled structured result without a 
     await loader.reload(); assert.deepEqual(loader.getExtensions().errors, []);
     const modelRuntime = await sdk.ModelRuntime.create({ authPath: join(root, 'auth.json'), modelsPath: join(root, 'models.json') });
     const code = `const handle = await tools.fixture({__background__: 'yes'});
-      return await tools.meantime({action: 'cancel', id: handle.task.id});`;
+      return await tools.meantime({action: 'cancel', ids: [handle.task.id]});`;
     const manager = sdk.SessionManager.inMemory(root);
     // SDK nested dispatch requires a recorded assistant call as its parent.
     manager.appendMessage({ role: 'assistant', api: 'openai-completions', provider: 'fixture', model: 'fixture',
@@ -239,7 +239,7 @@ test('/bg cancel requires one explicit id and never guesses among current sessio
     await h.command('cancel mt_00000000');
     assert.match(h.pi.uiMessages.at(-1)!, /No task with that id in this session/); assert.equal(h.aborts(), 0);
     await h.command(`cancel ${idA}`); await h.command(`cancel ${idA}`); assert.equal(h.aborts(), 1);
-    const listed = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: idB });
+    const listed = await h.pi.call('meantime', { action: 'wait', timeout: 0, ids: [idB ]});
     assert.equal((listed.result.details as Snapshot).state, 'running');
   } finally { await h.close(); }
 });
@@ -270,7 +270,7 @@ test('/bg cancel rejects an old session id and does not cancel a different task'
     await h.pi.emit('session_start', { type: 'session_start' });
     const b = await h.pi.call('mcp__test__one', { __background__: 'yes' }); const idB = (b.result.details as Snapshot).id; const before = h.aborts();
     await h.command(`cancel ${id}`); assert.equal(h.aborts(), before);
-    const statusB = await h.pi.call('meantime', { action: 'wait', timeout: 0, id: idB });
+    const statusB = await h.pi.call('meantime', { action: 'wait', timeout: 0, ids: [idB ]});
     assert.equal((statusB.result.details as Snapshot).state, 'running');
     assert.match(h.pi.uiMessages.at(-1)!, /No task with that id in this session/);
     await h.command('cancel'); assert.ok(h.pi.uiMessages.at(-1)!.includes(idB)); assert.ok(!h.pi.uiMessages.at(-1)!.includes(id));

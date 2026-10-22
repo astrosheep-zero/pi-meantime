@@ -25,7 +25,7 @@ test("wait panel separates waiting from a returned running snapshot", () => {
   for (const [state, label] of [["waiting", "Waiting"], ["running", "Wait ended"], ["completed", "Finished waiting"]]) {
     const html = render({ ...base, tasks: [{ id: "mt_a1b2c3d4", state, command: "sleep 60" }] });
     assert.match(html, new RegExp(label));
-    assert.match(html, /sleep 60/);
+    assert.match(html, /sleep.*60/);
     assert.doesNotMatch(html, /exit 0|steer|[\u3400-\u9fff]/);
     if (state === "running") assert.match(html, /Still running when wait ended/);
   }

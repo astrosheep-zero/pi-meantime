@@ -55,11 +55,13 @@ async function invoke(name, args, { id = `call-${events.length}-${Date.now()}`, 
     model: 'fixture', usage, stopReason: 'toolUse', timestamp: Date.now() };
   session.sessionManager.appendMessage(assistantMessage);
   session.refreshContext();
+  await session.extensionRunner.emit({ type: 'tool_execution_start', toolCallId: id, toolName: name, args });
   const outcome = await runToolCall(toolCall, {
     tools: session.agent.state.tools, assistantMessage,
     context: { messages: session.agent.state.messages, tools: session.agent.state.tools },
     beforeToolCall: session.agent.beforeToolCall, afterToolCall: session.agent.afterToolCall, signal,
   });
+  await session.extensionRunner.emit({ type: 'tool_execution_end', toolCallId: id, toolName: name, result: outcome.result, isError: outcome.isError });
   events.push({ type: 'finalized_outcome', id, name, isError: outcome.isError,
     payloadIsError: outcome.result.isError, task: outcome.result.structuredContent?.task,
     resultAvailable: outcome.result.structuredContent?.result_available });

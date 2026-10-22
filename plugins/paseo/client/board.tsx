@@ -4,8 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import type { TaskSummary } from "../shared/tasks.js";
 import { foldItem, sortTasks } from "../shared/tasks.js";
-import { monoFont, secondaryColor, stateColor } from "./rows.js";
-import { TaskTable } from "./task-view.js";
+import { Card } from "./card.js";
+import { dividerColor, secondaryColor, stateColor } from "./rows.js";
+import { TaskLine } from "./task-view.js";
 
 const PAGE_LIMIT = 500;
 
@@ -65,24 +66,33 @@ export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps)
       width: "100%" as const,
       alignSelf: "center" as const,
     },
-    title: { color: colors.foreground, fontSize: 10, lineHeight: 16, fontFamily: monoFont(layout.platform) },
-    summary: { color: secondaryColor(colors), fontSize: 10, lineHeight: 16, fontFamily: monoFont(layout.platform) },
-    muted: { color: secondaryColor(colors), fontSize: 10, lineHeight: 16, fontFamily: monoFont(layout.platform) },
-    error: { color: stateColor("failed", colors), fontSize: 10, fontFamily: monoFont(layout.platform) },
+    title: { color: colors.foreground, fontSize: 13, lineHeight: 16, fontWeight: "500" as const, letterSpacing: -0.2 },
+    summary: { color: secondaryColor(colors), fontSize: 12, lineHeight: 16 },
+    muted: { color: secondaryColor(colors), fontSize: 12, lineHeight: 16 },
+    error: { color: stateColor("failed", colors), fontSize: 12 },
   }), [colors, layout.compact, layout.platform]);
 
   return (
     <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.screen}>
-      <View style={{ gap: 2 }}>
-        <Text style={styles.title}>Background tasks</Text>
-      <Text style={styles.muted}>Last reported status</Text>
-        <Text style={styles.summary}>
-          {tasks.length === 0 ? "Nothing on this agent's timeline"
-            : `${tasks.length} task${tasks.length === 1 ? "" : "s"}`}
-        </Text>
-      </View>
+      <Card colors={colors}>
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12,
+          paddingHorizontal: 12, paddingVertical: 9,
+          borderBottomWidth: tasks.length > 0 ? 1 : 0, borderBottomColor: dividerColor(colors) }}>
+          <Text style={styles.title}>Background tasks</Text>
+          <Text style={styles.summary}>
+            {tasks.length === 0 ? "None" : `${tasks.length} task${tasks.length === 1 ? "" : "s"}`}
+          </Text>
+        </View>
+        {tasks.length === 0
+          ? <Text style={{ ...styles.muted, paddingHorizontal: 12, paddingVertical: 9 }}>Nothing on this agent's timeline</Text>
+          : tasks.map((task, index) => (
+            <View key={task.id} style={index > 0
+              ? { borderTopWidth: 1, borderTopColor: dividerColor(colors) } : undefined}>
+              <TaskLine task={task} colors={colors} layout={layout} showId />
+            </View>
+          ))}
+      </Card>
       {error ? <Text style={styles.error}>{error}</Text> : null}
-      {tasks.length > 0 ? <TaskTable tasks={tasks} colors={colors} layout={layout} showId /> : null}
       {hasOlder
         ? <Text style={styles.muted}>Only the latest {PAGE_LIMIT} timeline entries were scanned; older tasks may be missing.</Text>
         : null}

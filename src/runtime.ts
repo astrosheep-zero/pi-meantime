@@ -13,7 +13,7 @@ export interface Snapshot {
   indexError?: string;
   /** Final native Outcome error flag, independent of stale result.isError. */
   isError?: boolean;
-  recovered?: boolean; textOnly?: boolean; notification: 'none' | 'pending' | 'queued' | 'observed' | 'failed' | 'suppressed';
+  recovered?: boolean; textOnly?: boolean; notification: 'none' | 'pending' | 'queued' | 'delivered' | 'observed' | 'failed' | 'suppressed';
 }
 export type TaskIndex = Pick<Snapshot, 'id' | 'tool' | 'kind' | 'command' | 'mode' | 'createdAt' | 'detachReason'>;
 export interface Completion {
@@ -69,7 +69,7 @@ export class TaskRuntime {
   private closing?: Promise<void>;
   private scopes = new Map<string, { controller: AbortController; done: Promise<void> }>();
   private promptDepth = 0;
-  private promptResume?: ReturnType<typeof setImmediate>;
+  private promptResume?: { timer: ReturnType<typeof setImmediate>; done: Promise<void>; release(): void };
   private completionSequence = 0;
   private notifyTimer?: ReturnType<typeof setTimeout>;
   private waitReleases = new Set<() => void>();
@@ -215,19 +215,27 @@ export class TaskRuntime {
   prompt(started: boolean): void {
     this.promptDepth = Math.max(0, this.promptDepth + (started ? 1 : -1));
     if (this.promptDepth === 0) {
-      clearImmediate(this.promptResume);
+      this.clearPromptResume();
       // Pi emits ui_prompt_end before the awaiting permission handler returns.
       // Let its grant/deny microtasks settle before releasing a pending waiter.
-      // Keep every detach trigger gated during that continuation turn.
-      this.promptResume = setImmediate(() => {
-        this.promptResume = undefined;
+      // Request boundaries can await this gate rather than race past it.
+      let release!: () => void;
+      const done = new Promise<void>(resolve => { release = resolve; });
+      const timer = setImmediate(() => {
+        this.clearPromptResume();
         if (!this.open || this.promptDepth > 0) return;
         for (const task of this.tasks.values()) {
           if (task.requestedDetach) this.detach(task, task.requestedDetach);
         }
         this.scheduleNotifications();
       });
+      this.promptResume = { timer, done, release };
     }
+  }
+  private clearPromptResume(): void {
+    const resume = this.promptResume;
+    this.promptResume = undefined;
+    if (resume) { clearImmediate(resume.timer); resume.release(); }
   }
   private resolveView(task: Task, view: View): void {
     if (task.viewSettled) return;
@@ -401,23 +409,53 @@ export class TaskRuntime {
     }, this.config.notifyDebounceMs);
     this.notifyTimer.unref();
   }
-  flushNotifications(): void {
-    if (!this.open || this.promptDepth > 0 || this.promptResume) return;
-    const batch = this.eligible().slice(0, 16); if (!batch.length) return;
-    try {
-      if (this.sink.notify(batch.map(snap)) === false) return;
-      for (const task of batch) task.meta.notification = 'queued';
-      this.scheduleNotifications();
-    } catch {
-      for (const task of batch) {
-        task.notifyAttempts++;
-        if (task.notifyAttempts >= 3) task.meta.notification = 'failed';
-      }
-      this.scheduleNotifications();
+  async flushNotificationsAtBoundary(): Promise<void> {
+    // Await the permission continuation itself, not a timer that runs after
+    // the next model request has already captured its context.
+    while (this.promptResume) await this.promptResume.done;
+    this.flushNotifications();
+  }
+  notificationConsumed(ids: readonly string[]): void {
+    if (!this.open) return;
+    for (const id of ids) {
+      const task = this.tasks.get(id);
+      if (task?.meta.notification === 'queued') task.meta.notification = 'delivered';
     }
-    // Pending items were protected at finish/publish. Queueing (or exhausting
-    // retries) releases that protection even if no further task event occurs.
     this.prune(); this.changed();
+  }
+  notificationFailed(ids: readonly string[]): void {
+    if (!this.open) return;
+    for (const id of ids) {
+      const task = this.tasks.get(id);
+      if (!task || task.observed || task.meta.notification !== 'queued') continue;
+      task.meta.notification = ++task.notifyAttempts >= 3 ? 'failed' : 'pending';
+      // A boundary may have flushed ahead of an already armed debounce. Async
+      // delivery failure must wait for the next legal boundary, not that timer.
+      clearTimeout(this.notifyTimer); this.notifyTimer = undefined;
+    }
+    this.prune(); this.changed();
+  }
+  flushNotifications(): void {
+    while (this.open && this.promptDepth === 0 && !this.promptResume) {
+      const batch = this.eligible().slice(0, 16); if (!batch.length) return;
+      // The sink can synchronously start a run, flush again or acknowledge.
+      // Reserve this batch before handing off; queued is not yet delivered.
+      for (const task of batch) task.meta.notification = 'queued';
+      try {
+        if (this.sink.notify(batch.map(snap)) === false) {
+          for (const task of batch) if (task.meta.notification === 'queued') task.meta.notification = 'pending';
+          this.prune(); this.changed();
+          return;
+        }
+      } catch {
+        this.notificationFailed(batch.map(task => task.meta.id));
+        this.scheduleNotifications();
+        return; // Retry failures later, never exhaust retries in this drain.
+      }
+      // Keep messages bounded while handing off every ready batch. Retain
+      // queued records until a consumption receipt or explicit observation.
+      this.prune(); this.changed();
+    }
   }
   /** Before branch movement, cancel and truly drain script-owned pipelines.
    * Non-cooperative host tools can delay this boundary; grace is not proof of drain. */
@@ -430,7 +468,7 @@ export class TaskRuntime {
   close(): Promise<void> { return this.closing ??= this.closeRuntime(); }
   private async closeRuntime(): Promise<void> {
     if (!this.open) return;
-    this.open = false; clearTimeout(this.notifyTimer); clearImmediate(this.promptResume); this.promptResume = undefined;
+    this.open = false; clearTimeout(this.notifyTimer); this.clearPromptResume();
     for (const task of this.tasks.values()) {
       this.requestCancel(task); task.meta.notification = 'suppressed';
       task.cleanupParent?.(); clearTimeout(task.autoTimer);
@@ -457,7 +495,7 @@ export class TaskRuntime {
       .sort((a, b) => Number(b.meta.id === retainId) - Number(a.meta.id === retainId)
         || (b.meta.endedAt ?? 0) - (a.meta.endedAt ?? 0) || (b.finishSequence ?? 0) - (a.finishSequence ?? 0));
     for (const task of ended.slice(this.config.maxRetained)) {
-      if (!task.published || task.waiters || task.meta.notification === 'pending' || leases().has(task.meta.id) || this.scopes.has(task.meta.id)) continue;
+      if (!task.published || task.waiters || (task.meta.notification === 'pending' || task.meta.notification === 'queued') || leases().has(task.meta.id) || this.scopes.has(task.meta.id)) continue;
       try {
         this.sink.index({ removed: [task.meta.id] }); this.tasks.delete(task.meta.id);
       } catch (error) { task.meta.indexError = String(error); }

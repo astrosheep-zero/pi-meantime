@@ -108,8 +108,8 @@ export class FakePi implements PiHost, HostSession {
     const fn = handler as Handler; const list = this.handlers.get(name) ?? []; list.push(fn); this.handlers.set(name, list);
     return () => { const index = list.indexOf(fn); if (index >= 0) list.splice(index, 1); };
   }
-  private listeners = new Set<(event: { type: string; toolCallId?: string }) => void>();
-  subscribe(listener: (event: { type: string; toolCallId?: string }) => void): () => void {
+  private listeners = new Set<(event: { type: string; toolCallId?: string; message?: { role: string; customType?: string; details?: unknown } }) => void>();
+  subscribe(listener: (event: { type: string; toolCallId?: string; message?: { role: string; customType?: string; details?: unknown } }) => void): () => void {
     this.listeners.add(listener); return () => { this.listeners.delete(listener); };
   }
   async emit<K extends keyof EventMap>(name: K, event: EventMap[K], ctx = this.ctx): Promise<unknown[]> {
@@ -120,7 +120,11 @@ export class FakePi implements PiHost, HostSession {
   }
   registerShortcut(name: string, options: { handler: (ctx: Context) => void | Promise<void> }): void { this.shortcuts.set(name, options.handler); }
   registerCommand(name: string, options: { handler: (args: string, ctx: Context) => void | Promise<void> }): void { this.commands.set(name, options.handler); }
-  sendMessage(message: { content: string; details?: unknown }): void { this.notifications.push(message); }
+  async sendCustomMessage(message: Parameters<HostSession['sendCustomMessage']>[0]): Promise<void> {
+    this.notifications.push({ ...message, content: typeof message.content === 'string' ? message.content : JSON.stringify(message.content) });
+    // Deterministic fixture receipt; real SDK persistence is tested separately.
+    for (const listener of this.listeners) listener({ type: 'message_end', message: { role: 'custom', ...message } });
+  }
   appendEntry(customType: string, data?: unknown): void {
     this.journal.push(data); this.entries.push({ type: 'custom', customType, data: structuredClone(data) });
   }
@@ -141,7 +145,7 @@ export class FakePi implements PiHost, HostSession {
   private async dispatch(name: string, args: Record<string, unknown>, id: string, parent: string | undefined,
     signal?: AbortSignal, onUpdate?: Update): Promise<Outcome> {
     this.trace.push({ type: 'start', name, id });
-    await this.emit('tool_execution_start', { type: 'tool_execution_start', toolCallId: id, parentToolCallId: parent });
+    await this.emit('tool_execution_start', { type: 'tool_execution_start', toolCallId: id, toolName: name, args, parentToolCallId: parent });
     const definition = this.definitions.get(name);
     const toolCall: AgentToolCall = { type: 'toolCall', id, name, arguments: args as AgentToolCall['arguments'] };
     const assistantMessage = { role: 'assistant' as const, content: [toolCall], api: 'openai-completions' as const, provider: 'fake', model: 'fake',

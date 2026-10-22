@@ -4,7 +4,7 @@ import { Text, View } from "react-native";
 import type { MeantimeCardData, TaskSummary } from "../shared/tasks.js";
 import { foldItem } from "../shared/tasks.js";
 import { completionResult, monoFont, secondaryColor } from "./rows.js";
-import { TaskLine, TaskTable } from "./task-view.js";
+import { TaskTable } from "./task-view.js";
 import { WaitCard } from "./wait-card.js";
 
 const RESOLUTION_PAGE_LIMIT = 500;
@@ -21,10 +21,8 @@ export function MeantimeTaskCard(props: PluginTimelineItemProps<MeantimeCardData
     : data.tasks;
   return (
     <View style={{ gap: 4 }}>
-      {data.source === "completion"
-        ? <View style={{ marginTop: 4 }}>{tasks.map(task => <TaskLine key={task.id} task={task} colors={colors}
-            layout={layout} status={completionResult(task)} />)}</View>
-        : <TaskTable tasks={tasks} colors={colors} layout={layout} />}
+      <TaskTable tasks={tasks} colors={colors} layout={layout}
+        status={data.source === "completion" ? completionResult : undefined} />
       {data.moreOffset !== undefined ? <Text style={{ color: secondaryColor(colors), fontSize: 10,
         fontFamily: monoFont(layout.platform) }}>More tasks not shown (offset {data.moreOffset})</Text> : null}
     </View>

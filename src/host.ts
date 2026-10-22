@@ -2,22 +2,21 @@ import { AgentSession } from '@earendil-works/pi-coding-agent';
 import type { SessionManager } from '@earendil-works/pi-coding-agent';
 import { codemodeScopes, isNativeCodemode, withStoreOwner } from './codemode.ts';
 import { runToolCall } from '@earendil-works/pi-agent-core';
-import type { AfterToolCallContext, AfterToolCallResult, BeforeToolCallContext, BeforeToolCallResult } from '@earendil-works/pi-agent-core';
+import type { AfterToolCallContext, AfterToolCallResult } from '@earendil-works/pi-agent-core';
+import type { AssistantMessage } from '@earendil-works/pi-ai';
 import type { Config } from './config.ts';
-import type { Mode, Outcome, PiHost, Result, ScopeResult, Tool, ToolContext, Update } from './protocol.ts';
+import type { DeliveryHost } from './notifications.ts';
+import type { Mode, Outcome, PiHost, Result, ScopeResult, Tool, ToolContext, Update, EventMap } from './protocol.ts';
 import { decorateSchema, isRecord, matches, splitControl } from './schema.ts';
 
 /** Pi 1.3 port. Native CodeMode additionally retains the session's nested scopes. */
-export interface HostSession {
-  readonly isStreaming: boolean;
+export interface HostSession extends DeliveryHost {
   readonly sessionManager?: Pick<SessionManager, 'appendUsage' | 'getEntries'>;
   getAllTools: PiHost['getAllTools'];
   getToolDefinition(name: string): Tool | undefined;
   readonly agent: { toolExecution?: 'parallel' | 'sequential' };
-  readonly extensionRunner: { createToolContext(id: string, signal?: AbortSignal): ToolContext };
+  readonly extensionRunner: object;
   readonly resourceLoader: { getExtensions(): { runtime: { refreshTools(): void } } };
-  subscribe(listener: (event: { type: string; toolCallId?: string }) => void): () => void;
-  _beforeToolCall(context: BeforeToolCallContext, parentId?: string): Promise<BeforeToolCallResult | undefined>;
   _afterToolCall(context: AfterToolCallContext, parentId?: string): Promise<AfterToolCallResult | undefined>;
 }
 export function captureSession(pi: PiHost, Session = AgentSession): HostSession {
@@ -42,50 +41,46 @@ const FIELDS = ['parameters', 'prepareArguments', 'execute', 'outputSchema'] as 
 type Field = typeof FIELDS[number];
 type Patch = Map<Field, { saved?: PropertyDescriptor; value: unknown }>;
 const HANDLE_SCHEMA = { type: 'object', properties: { task: { type: 'object' }, result_available: { const: false } }, required: ['task', 'result_available'] };
+// Pi 1.3 after reads only id/name, args and result, not this valid carrier stub.
+const CARRIER: AssistantMessage = { role: 'assistant', content: [], api: 'openai-completions', provider: 'meantime', model: 'carrier',
+  stopReason: 'stop', timestamp: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
 
-// One fence per session, not per runner. Weak tags never retain retired runners.
+// One permanent fence per session, not per runner: calls tagged by a retired
+// generation never reach successor result hooks; untagged calls pass through.
 const FENCE = Symbol.for('pi-meantime.result-fence');
 type After = HostSession['_afterToolCall'];
-interface Fence {
-  native: After; hook: After; owner?: object;
-  calls: WeakMap<object, object>; pending: Map<string, object>;
-  end(id?: string, call?: object): void;
-}
+type Start = EventMap['tool_execution_start'];
+interface Fence { native: After; owner?: object; calls: WeakMap<object, { owner: object; start?: Start }>; primitives: Map<string, object> }
+const objectKey = (value: unknown): value is object => value !== null && typeof value === 'object';
 function resultFence(session: HostSession): Fence {
   const existing = (session._afterToolCall as After & { [FENCE]?: Fence })[FENCE];
   if (existing) return existing;
-  const fence: Fence = { native: session._afterToolCall, hook: undefined!, calls: new WeakMap(), pending: new Map(),
-    end(id, call) {
-      if (id !== undefined && (!call || fence.pending.get(id) === call)) fence.pending.delete(id);
-      if (!fence.owner && !fence.pending.size) {
-        if (session._afterToolCall === fence.hook) session._afterToolCall = fence.native;
-        unsubscribe();
-      }
-    } };
-  fence.hook = async function (context, parentId) {
-    const owner = fence.calls.get(context.toolCall);
-    const skip = owner !== undefined && owner !== fence.owner;
-    fence.end(context.toolCall.id, context.toolCall);
-    return skip ? undefined : fence.native.call(this, context, parentId);
+  const fence: Fence = { native: session._afterToolCall, calls: new WeakMap(), primitives: new Map() };
+  const hook: After = async function (this: HostSession, context, parentId) {
+    const owner = objectKey(context.args) ? fence.calls.get(context.args)?.owner : fence.primitives.get(context.toolCall.id);
+    if (objectKey(context.args)) fence.calls.delete(context.args);
+    else fence.primitives.delete(context.toolCall.id);
+    return owner !== undefined && owner !== fence.owner ? undefined : fence.native.call(this, context, parentId);
   };
-  Object.defineProperty(fence.hook, FENCE, { value: fence });
-  const unsubscribe = session.subscribe(event => { if (event.type === 'tool_execution_end') fence.end(event.toolCallId!); });
-  session._afterToolCall = fence.hook;
+  session._afterToolCall = Object.defineProperty(hook, FENCE, { value: fence });
   return fence;
 }
 
-export function manageTools(session: HostSession, config: Config, run: (call: ManagedCall) => Promise<Result>, diagnostic: (name: string, message: string) => void) {
+export function manageTools(pi: PiHost, session: HostSession, config: Config, run: (call: ManagedCall) => Promise<Result>, diagnostic: (name: string, message: string) => void) {
   const runner = session.extensionRunner, loaderRuntime = session.resourceLoader.getExtensions().runtime;
-  const before = session._beforeToolCall, refresh = loaderRuntime.refreshTools;
+  const refresh = loaderRuntime.refreshTools;
   const fence = resultFence(session), token = {}; fence.owner = token;
-  const patches = new Map<Tool, Patch>(), frames = new Map<string, { context: BeforeToolCallContext; parentId?: string; mode: Mode }>();
-  const modes = new WeakMap<object, Mode>();
+  const patches = new Map<Tool, Patch>(), starts = new Map<string, Start>();
   let scopes: ReturnType<typeof codemodeScopes> | undefined;
   let closing = false;
   // Copied definitions may contain our wrappers; unwrap exact identities only.
   const origins = new WeakMap<object, unknown>();
   const active = () => fence.owner === token && session.extensionRunner === runner && session.resourceLoader.getExtensions().runtime === loaderRuntime;
   const assertActive = () => { if (!active()) throw new Error('Managed tool session has retired'); };
+  const eligible = (definition: Tool) => definition.name !== 'meantime' && definition.executionMode !== 'sequential'
+    && (definition.name === 'bash' || (matches(definition.name, config.include) && !matches(definition.name, config.exclude)))
+    && (isNativeCodemode(definition) || ['direct', 'codemode', 'deferred'].includes(definition.exposure ?? 'direct'));
   function restore(definition: Tool, patch: Patch): void {
     for (const [key, { saved, value }] of patch) if (definition[key] === value) {
       if (saved) Object.defineProperty(definition, key, saved);
@@ -101,9 +96,7 @@ export function manageTools(session: HostSession, config: Config, run: (call: Ma
     }
     const nativeCodemode = isNativeCodemode(definition);
     const fields = nativeCodemode ? ['execute'] as const : FIELDS;
-    const exposure = definition.exposure ?? 'direct';
-    if (definition.name === 'meantime' || (definition.name !== 'bash' && (!matches(definition.name, config.include) || matches(definition.name, config.exclude)))
-      || (!nativeCodemode && !['direct', 'codemode', 'deferred'].includes(exposure)) || definition.executionMode === 'sequential') return;
+    if (!eligible(definition)) return;
     for (const key of fields) {
       const descriptor = Object.getOwnPropertyDescriptor(definition, key);
       if (descriptor?.configurable === false || (!descriptor && !Object.isExtensible(definition))) throw new Error(`Cannot decorate readonly tool property: ${key}`);
@@ -116,23 +109,25 @@ export function manageTools(session: HostSession, config: Config, run: (call: Ma
       prepareArguments(raw: unknown) {
         // Preserve primitive native repair; transport mode defaults to auto.
         const split = isRecord(raw) ? splitControl(raw) : undefined;
-        if (split) modes.set(raw as object, split.mode);
         return prepare ? prepare.call(definition, split ? split.args : raw) : split ? split.args : raw;
       },
       outputSchema: definition.outputSchema ? { anyOf: [definition.outputSchema, HANDLE_SCHEMA] } : {},
       async execute(id: string, args: Record<string, unknown>, signal: AbortSignal | undefined, update: Update | undefined, ctx: ToolContext): Promise<Result> {
         assertActive();
         if (closing) throw new Error('Managed tool session is closing');
-        const frame = frames.get(id); frames.delete(id);
-        if (!frame) throw new Error('Managed tool execution requires the native permission pipeline');
+        const frame = fence.calls.get(args)?.start;
+        if (!frame) throw new Error('Managed tool execution requires the native lifecycle pipeline');
+        // Execute entry proves every permission handler passed; args are their
+        // final validated/mutated input. Start keeps raw intent, even primitives.
+        const mode = !nativeCodemode && isRecord(frame.args) ? splitControl(frame.args).mode : 'auto';
         // Ordinary descendants belong to the whole script, not to a second
         // observer. In particular mode:no alone would still detach on steer.
-        const nestedRoot = frame.parentId && scopes?.rootId(frame.parentId);
-        if (nestedRoot && frame.mode !== 'yes') return nativeExecute.call(definition, id, args, signal, update, ctx);
+        const nestedRoot = frame.parentToolCallId && scopes?.rootId(frame.parentToolCallId);
+        if (nestedRoot && mode !== 'yes') return nativeExecute.call(definition, id, args, signal, update, ctx);
         if (nativeCodemode) scopes ??= codemodeScopes(session);
         const lease = nativeCodemode || nestedRoot ? scopes!.begin(id, nativeCodemode) : undefined;
         let view: Promise<Result>;
-        try { view = run({ name: definition.name, id, args, signal, update, ctx, mode: frame.mode,
+        try { view = run({ name: definition.name, id, args, signal, update, ctx, mode,
           codemodeRootId: lease?.rootId, onDetach: lease ? () => lease.detached() : undefined,
           onSettled: lease ? () => lease.end() : undefined,
           scope: lease?.scope, finalize: lease ? outcome => lease.finish(outcome) : undefined,
@@ -140,26 +135,27 @@ export function manageTools(session: HostSession, config: Config, run: (call: Ma
           async execute(jobSignal, onUpdate) {
             assertActive();
             jobSignal = lease?.signal(jobSignal) ?? jobSignal;
-            const base = runner.createToolContext(id, jobSignal);
-            const descriptors: Record<string, PropertyDescriptor> = Object.getOwnPropertyDescriptors(base);
+            const descriptors: Record<string, PropertyDescriptor> = Object.getOwnPropertyDescriptors(ctx);
             descriptors.signal = { value: jobSignal, enumerable: true };
-            descriptors.tools = { ...descriptors.tools, get() { assertActive(); return base.tools; } };
-            descriptors.executeTool = { ...descriptors.executeTool, value: (...input: Parameters<ToolContext['executeTool']>) => { assertActive(); return base.executeTool(...input); } };
+            descriptors.tools = { ...descriptors.tools, get() { assertActive(); return ctx.tools; } };
+            descriptors.executeTool = { ...descriptors.executeTool, value: (name: string, args: unknown, options?: Parameters<ToolContext['executeTool']>[2]) => {
+              assertActive(); return ctx.executeTool(name, args, { ...options, signal: options?.signal ?? jobSignal });
+            } };
             const jobCtx = Object.defineProperties({}, descriptors) as ToolContext;
-            // Never revalidate native args after permission mutations.
-            return runToolCall({ ...frame.context.toolCall, arguments: {}, argumentsError: undefined }, {
+            // Empty-schema carrier never revalidates permission-mutated args.
+            return runToolCall({ type: 'toolCall', id, name: definition.name, arguments: {} }, {
               tools: [{ name: definition.name, label: definition.label, description: '',
                 parameters: { type: 'object', properties: {}, additionalProperties: false },
                 execute: (_id, _empty, signal, update) => withStoreOwner(() => {
                   assertActive();
                   if (closing || signal?.aborted) throw new Error('Codemode store owner has been cancelled');
                 }, () => nativeExecute.call(definition, id, args, signal, update, jobCtx)) }],
-              assistantMessage: frame.context.assistantMessage, context: frame.context.context, signal: jobSignal, onUpdate,
-              afterToolCall: inner => { assertActive(); return fence.native.call(session, { ...inner, toolCall: frame.context.toolCall, args }, frame.parentId); },
+              assistantMessage: CARRIER, context: { messages: [] }, signal: jobSignal, onUpdate,
+              afterToolCall: inner => { assertActive(); return fence.native.call(session, { ...inner, args }, frame.parentToolCallId); },
             });
           },
         }); } catch (error) { lease?.end(); throw error; } // Failed admission retains native finalization.
-        fence.calls.set(frame.context.toolCall, fence); // admitted: skip outer finalization
+        fence.calls.set(args, { owner: fence }); // admitted: skip outer finalization
         return view;
       },
     };
@@ -178,8 +174,7 @@ export function manageTools(session: HostSession, config: Config, run: (call: Ma
       .map(t => session.getToolDefinition(t.name)).filter((d): d is Tool => !!d));
     let changed = false;
     for (const [definition, patch] of patches) {
-      if (definitions.has(definition) && [...patch].every(([key, { value }]) => definition[key] === value)
-        && (isNativeCodemode(definition) || ['direct', 'codemode', 'deferred'].includes(definition.exposure ?? 'direct')) && definition.executionMode !== 'sequential') continue;
+      if (definitions.has(definition) && eligible(definition) && [...patch].every(([key, { value }]) => definition[key] === value)) continue;
       restore(definition, patch); patches.delete(definition); changed = true;
     }
     for (const definition of definitions) if (!patches.has(definition)) {
@@ -188,40 +183,33 @@ export function manageTools(session: HostSession, config: Config, run: (call: Ma
     }
     return changed;
   }
-  const beforeHook: HostSession['_beforeToolCall'] = async function (this: HostSession, context, parentId) {
-    fence.calls.set(context.toolCall, token); fence.pending.set(context.toolCall.id, context.toolCall);
-    try {
-      const result = await before.call(this, context, parentId);
-      if (result?.block) fence.end(context.toolCall.id, context.toolCall);
-      else if (active() && patches.has(session.getToolDefinition(context.toolCall.name)!)) {
-        const raw = context.toolCall.arguments;
-        frames.set(context.toolCall.id, { context, parentId, mode: isRecord(raw) ? modes.get(raw) ?? 'auto' : 'auto' });
-      }
-      return result;
-    } catch (error) { fence.end(context.toolCall.id, context.toolCall); throw error; }
-  };
   const refreshHook = () => {
     refresh.call(loaderRuntime);
     // Select the winner first; rebuild copied AgentTools only if raw fields changed.
     if (reconcile()) refresh.call(loaderRuntime);
   };
-  session._beforeToolCall = beforeHook;
+  // Bind the generation, not the mutable extension host: an old permission
+  // snapshot may resume after dispose/reload. Tag even then, but never admit it.
+  const offCall = pi.on('tool_call', event => {
+    if (objectKey(event.input)) fence.calls.set(event.input, { owner: token, start: active() ? starts.get(event.toolCallId) : undefined });
+    else fence.primitives.set(event.toolCallId, token);
+    starts.delete(event.toolCallId);
+  });
   loaderRuntime.refreshTools = refreshHook;
   refreshHook();
   return {
     refresh: refreshHook,
-    end(id: string) { frames.delete(id); },
+    start(event: Start) { if (active()) starts.set(event.toolCallId, event); },
+    end(id: string) { starts.delete(id); fence.primitives.delete(id); },
     names: () => [...patches.keys()].map(t => t.name),
     closeAdmission() { closing = true; },
-    retire() { frames.clear(); if (fence.owner === token) fence.owner = undefined; },
     dispose() {
       scopes?.dispose();
-      frames.clear(); if (fence.owner === token) fence.owner = undefined;
-      if (session._beforeToolCall === beforeHook) session._beforeToolCall = before;
+      offCall(); starts.clear();
+      if (fence.owner === token) fence.owner = undefined;
       if (loaderRuntime.refreshTools === refreshHook) loaderRuntime.refreshTools = refresh;
       for (const [definition, patch] of patches) restore(definition, patch);
       patches.clear();
-      fence.end();
       if (session.extensionRunner === runner) refresh.call(loaderRuntime);
     },
   };

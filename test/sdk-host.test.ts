@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import type { ExtensionAPI, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { runToolCall } from '@earendil-works/pi-agent-core';
+import { createAssistantMessageEventStream } from '@earendil-works/pi-ai/compat';
 import type { ToolCall, AssistantMessage } from '@earendil-works/pi-ai';
 import { install } from '../src/extension.ts';
 import { validateConfig } from '../src/config.ts';
@@ -51,7 +52,7 @@ async function sdk(managed: boolean, maxRunning = 8) {
       update?.({ content: [{ type: 'text', text: 'partial' }], details: undefined });
       if (args.mode === 'nested') assert.equal((await ctx.executeTool('child', {})).isError, false);
       if (gates.has(id)) await gates.get(id)!.promise;
-      if (args.mode === 'old') await ctx.executeTool('child', {});
+      if (args.mode === 'old' || args.mode === 'late-nested') await ctx.executeTool('child', {});
       if (args.mode === 'cancel') await new Promise((_, reject) => {
         if (signal?.aborted) reject(Error('native cancellation'));
         else signal?.addEventListener('abort', () => reject(Error('native cancellation')), { once: true });
@@ -74,6 +75,15 @@ async function sdk(managed: boolean, maxRunning = 8) {
           trace.push({ kind: 'child-settled', id });
           return { content: [], details: undefined, usage };
         } });
+      for (const [name, parameters] of [
+        ['unmanaged', { type: 'object', properties: { __background__: { type: 'string' } } }],
+        ['primitive', { type: 'string' }], ['array', { type: 'array', items: { type: 'number' } }],
+      ] as const) pi.registerTool({ name, label: name, description: 'Unmanaged input contract fixture', parameters: parameters as any,
+        async execute(id) {
+          trace.push({ kind: 'exotic', id });
+          if (gates.has(id)) await gates.get(id)!.promise;
+          return { content: [], details: undefined };
+        } });
       pi.on('tool_call', event => {
         trace.push({ kind: 'pre', id: event.toolCallId, name: event.toolName, parent: event.parentToolCallId });
         if (event.toolName !== 'victim') return;
@@ -81,12 +91,6 @@ async function sdk(managed: boolean, maxRunning = 8) {
         event.input.n = Number(event.input.n) + 10;
         inputs.set(event.toolCallId, event.input);
         if (event.input.mode === 'blocked') return { block: true, reason: 'native denial' };
-      });
-      pi.on('tool_call', event => {
-        if (event.toolName === 'victim') {
-          trace.push({ kind: 'last-pre', id: event.toolCallId });
-          event.input.afterValidation = true;
-        }
       });
       pi.on('tool_result', event => {
         trace.push({ kind: 'post', id: event.toolCallId, name: event.toolName, parent: event.parentToolCallId });
@@ -106,13 +110,29 @@ async function sdk(managed: boolean, maxRunning = 8) {
     }, ...(managed ? [(pi: ExtensionAPI) => {
       // Capture delivery, not native finalization. All registration and session
       // capture still use the actual factory API, without a test connect port.
-      plugin = install({ ...pi, sendMessage: (message: unknown) => { notices.push(message); } } as unknown as PiHost,
+      plugin = install(pi as unknown as PiHost,
         { config: validateConfig({ include: ['victim'], autoDetachMs: 0, maxRunning, shutdownGraceMs: 1, notifyDebounceMs: 1 }) });
-    }] : [])],
+    }] : []), (pi: ExtensionAPI) => {
+      // Registered AFTER meantime: admission must wait for this whole chain,
+      // including late denial and mutations forbidden by the original schema.
+      pi.on('tool_call', event => {
+        if (event.toolName !== 'victim') return;
+        trace.push({ kind: 'last-pre', id: event.toolCallId });
+        event.input.afterValidation = true;
+        if (event.input.mode === 'late-blocked') return { block: true, reason: 'late native denial' };
+      });
+    }],
   });
   await loader.reload();
   ({ session } = await createAgentSession({ cwd: root, agentDir: root, resourceLoader: loader, settingsManager: settings,
-    sessionManager: SessionManager.inMemory(root), tools: ['bash', 'victim', 'child', ...(managed ? ['meantime'] : [])] }));
+    sessionManager: SessionManager.inMemory(root), tools: ['bash', 'victim', 'child', 'unmanaged', 'primitive', 'array', ...(managed ? ['meantime'] : [])] }));
+  if (managed) {
+    const persist = session.sendCustomMessage.bind(session);
+    session.sendCustomMessage = async message => {
+      notices.push(message);
+      await persist(message, { triggerTurn: false });
+    };
+  }
   await session.bindExtensions({ mode: 'rpc', onError: error => { errors.push(error); } });
   assert.equal(errors.length, 0);
   if (managed) assert.ok((plugin!.inspect() as any).managed.includes('victim'), 'ordinary session_start captured genuine session');
@@ -122,9 +142,11 @@ async function sdk(managed: boolean, maxRunning = 8) {
     const toolCall = { type: 'toolCall', name, id, arguments: args } as ToolCall;
     const assistant = { role: 'assistant', content: [toolCall], stopReason: 'toolUse', timestamp: 0 } as AssistantMessage;
     session.agent.state.messages.push(assistant);
+    await session.extensionRunner.emit({ type: 'tool_execution_start', toolCallId: id, toolName: name, args });
     const outcome = await runToolCall(toolCall, { tools: session.agent.state.tools, assistantMessage: assistant,
       context: { messages: session.agent.state.messages, tools: session.agent.state.tools }, signal,
       beforeToolCall: session.agent.beforeToolCall, afterToolCall: session.agent.afterToolCall });
+    await session.extensionRunner.emit({ type: 'tool_execution_end', toolCallId: id, toolName: name, result: outcome.result, isError: outcome.isError });
     const taskId = (outcome.result.structuredContent as any)?.task?.id;
     if (taskId) taskIds.set(id, taskId);
     return outcome;
@@ -133,13 +155,13 @@ async function sdk(managed: boolean, maxRunning = 8) {
   async function retained(id: string) {
     await until(() => tasks().some(t => t.id === taskIds.get(id) && !t.localRunning));
     const task = tasks().find(t => t.id === taskIds.get(id));
-    return { task, outcome: await call('meantime', { action: 'wait', id: task.id, timeout: 0 }) };
+    return { task, outcome: await call('meantime', { action: 'wait', ids: [task.id], timeout: 0 }) };
   }
   return { session, loader, owner, plugin, definition, root, trace, repairs, signals, gates, notices, errors, call, tasks, retained,
     async close() { await plugin?.dispose(); session.dispose(); rmSync(root, { recursive: true, force: true }); } };
 }
 
-test('real SDK: reload drains stale approved/blocked native prehooks and restores original result hook', async () => {
+test('real SDK: reload drains stale approved/blocked native prehooks behind one permanent result fence', async () => {
   const root = mkdtempSync(join(tmpdir(), 'meantime-reload-'));
   const settings = SettingsManager.inMemory();
   const approvals = new Map<string, { entered: ReturnType<typeof deferred<void>>; release: ReturnType<typeof deferred<void>>; block: boolean }>();
@@ -174,7 +196,6 @@ test('real SDK: reload drains stale approved/blocked native prehooks and restore
   const { session } = await createAgentSession({ cwd: root, agentDir: root, resourceLoader: loader, settingsManager: settings,
     sessionManager: SessionManager.inMemory(root), tools: ['victim', 'child', 'meantime'] });
   const host = session as unknown as HostSession;
-  const nativeAfter = host._afterToolCall;
   // Native nested dispatch emits these through the public session subscription,
   // including immediate abort/block outcomes which have no afterToolCall phase.
   const unsubscribe = session.subscribe(event => {
@@ -192,9 +213,11 @@ test('real SDK: reload drains stale approved/blocked native prehooks and restore
       const call = { type: 'toolCall', name: 'victim', id, arguments: { __background__: 'yes' } } as ToolCall;
       const assistant = { role: 'assistant', content: [call], stopReason: 'toolUse', timestamp: 0 } as AssistantMessage;
       session.agent.state.messages.push(assistant);
+      await session.extensionRunner.emit({ type: 'tool_execution_start', toolCallId: id, toolName: 'victim', args: call.arguments });
       const out = await runToolCall(call, { tools: session.agent.state.tools, assistantMessage: assistant,
         context: { messages: session.agent.state.messages, tools: session.agent.state.tools }, signal: new AbortController().signal,
         beforeToolCall: session.agent.beforeToolCall, afterToolCall: session.agent.afterToolCall });
+      await session.extensionRunner.emit({ type: 'tool_execution_end', toolCallId: id, toolName: 'victim', result: out.result, isError: out.isError });
       assert.equal((out.result.structuredContent as any).result_available, false);
       await approval.entered.promise;
       return approval;
@@ -219,13 +242,12 @@ test('real SDK: reload drains stale approved/blocked native prehooks and restore
     }
     const finalApproval = await startHeld('final-blocked', true);
     await session.extensionRunner!.emit({ type: 'session_shutdown', reason: 'quit' });
-    assert.equal(host._afterToolCall, fence, 'blocked-only pending call keeps fence until its native end');
     finalApproval.release.resolve();
-    await until(() => ends.has('final-blocked/1') && host._afterToolCall === nativeAfter);
+    await until(() => ends.has('final-blocked/1'));
     assert.equal(denials, 4);
     assert.equal(effects, 0);
     assert.equal(posts.some(post => post.id.startsWith('final-blocked')), false);
-    assert.equal(host._afterToolCall, nativeAfter, 'blocked-only drain without successor restores original native hook');
+    assert.equal(host._afterToolCall, fence, 'the session keeps one pass-through fence after shutdown');
     assert.equal(ends.size, 7);
     assert.deepEqual(errors, []);
   } finally {
@@ -279,7 +301,7 @@ test('real SDK: native baseline = managed foreground = finalized detached output
 
     const gate = deferred<void>(); managed.gates.set('detached', gate);
     const outer = new AbortController();
-    const handle = await managed.call('victim', { n: '2', mode: 'hold', __background__: 'yes' }, 'detached', outer.signal);
+    const handle = await managed.call('victim', { n: '2', mode: 'late-nested', __background__: 'yes' }, 'detached', outer.signal);
     assert.equal((handle.result.structuredContent as any).result_available, false);
     assert.equal(count(managed, 'post', 'detached'), 0);
     assert.notEqual(managed.signals.get('detached'), outer.signal);
@@ -289,19 +311,20 @@ test('real SDK: native baseline = managed foreground = finalized detached output
     clean(outcome); assert.equal(task.isError, true);
     assert.match(JSON.stringify(outcome.result.content), /FINAL REDACTED/);
     assert.equal(count(managed, 'post', 'detached'), 1);
+    assert.equal(count(managed, 'child', 'detached/1'), 1, 'default nested dispatch survives original parent abort');
+    assert.equal(count(managed, 'post', 'detached/1'), 1);
 
     const nativeBash = await baseline.call('bash', { command: "printf 'RAW_'\"PRIVATE_TOKEN\"" }, 'bash-native');
     const bash = await managed.call('bash', { command: "printf 'RAW_'\"PRIVATE_TOKEN\"", __background__: 'yes' }, 'bash-detached');
     clean(bash);
-    await managed.session.extensionRunner!.emit({ type: 'tool_execution_end', toolCallId: 'bash-detached', toolName: 'bash', result: bash.result, isError: false });
     await until(() => managed.notices.length > 0);
     const saved = await managed.retained('bash-detached');
     clean(saved.outcome);
     assert.match(JSON.stringify(saved.outcome.result.content), /BASH REDACTED/);
     assert.equal((nativeBash.result.content[0] as any).text, 'BASH REDACTED');
     assert.equal(count(managed, 'post', 'bash-detached'), 1);
-    // runToolCall intentionally emits no lifecycle events; the genuine runner
-    // publication above releases the completion notification without a model.
+    // The helper emits model-order lifecycle events through the actual runner;
+    // native nested calls emit their own events without fixture intervention.
     clean(managed.notices);
     clean(managed.tasks());
     clean(managed.session.sessionManager.getEntries().filter(entry => entry.type === 'custom' && entry.customType === 'meantime-index'));
@@ -312,12 +335,71 @@ test('real SDK: native baseline = managed foreground = finalized detached output
   } finally { await baseline.close(); await managed.close(); }
 });
 
+test('real SDK core loop: public starts precede repair; foreground/detached hooks and nested job signals stay native', async () => {
+  const h = await sdk(true);
+  const events: Array<{ type: string; id: string }> = [];
+  const unsubscribe = h.session.subscribe(event => {
+    if (event.type === 'tool_execution_start' || event.type === 'tool_execution_end') events.push({ type: event.type, id: event.toolCallId });
+  });
+  // Drive Agent's real core event path, not the manually emitted call helper.
+  // No provider request, credentials or session/prototype patches.
+  let plan: ToolCall | undefined;
+  h.session.agent.streamFunction = () => {
+    const stream = createAssistantMessageEventStream();
+    const message: AssistantMessage = { role: 'assistant', content: plan ? [plan] : [],
+      api: 'openai-completions', provider: 'fixture', model: 'fixture', usage,
+      stopReason: plan ? 'toolUse' : 'stop', timestamp: 0 };
+    plan = undefined;
+    stream.push({ type: 'done', reason: message.stopReason === 'toolUse' ? 'toolUse' : 'stop', message });
+    return stream;
+  };
+  try {
+    const before = (h.session as unknown as { _beforeToolCall: unknown })._beforeToolCall;
+    assert.equal(Object.hasOwn(h.session, '_beforeToolCall'), false, 'no before monkeypatch');
+    for (const [id, raw] of [
+      ['core-json', JSON.stringify({ n: '2', mode: 'normal' })],
+      ['core-fg', { n: '2', mode: 'nested', __background__: 'no' }],
+      ['core-bg', { n: '2', mode: 'nested', __background__: 'yes' }],
+      ['core-denied', { n: '2', mode: 'late-blocked', __background__: 'yes' }],
+    ] as const) {
+      const gate = id === 'core-bg' ? deferred<void>() : undefined;
+      if (gate) h.gates.set(`${id}/1`, gate);
+      plan = { type: 'toolCall', id, name: 'victim', arguments: raw } as ToolCall;
+      await h.session.agent.prompt('offline lifecycle fixture');
+      const result = [...h.session.messages].reverse().find(m => m.role === 'toolResult' && m.toolCallId === id);
+      assert.ok(result && result.role === 'toolResult');
+      if (gate) {
+        assert.equal(count(h, 'post', id), 0, 'outer handle cannot finalize producer');
+        assert.equal((result.details as any).delivery, 'background');
+        assert.equal(h.signals.get(id)?.aborted, false);
+        gate.resolve();
+        await until(() => count(h, 'post', id) === 1);
+      } else if (id === 'core-denied') {
+        assert.equal(result.isError, true);
+        assert.equal(count(h, 'execute', id), 0);
+      } else assert.match(JSON.stringify(result.content), /FINAL REDACTED/);
+      for (const type of ['tool_execution_start', 'tool_execution_end']) assert.equal(events.filter(e => e.type === type && e.id === id).length, 1);
+      for (const kind of ['pre', 'last-pre']) assert.equal(count(h, kind, id), 1);
+      for (const kind of ['execute', 'post', 'last-post']) assert.equal(count(h, kind, id), id === 'core-denied' ? 0 : 1);
+    }
+    assert.equal(count(h, 'post', 'core-fg/1'), 1);
+    assert.equal(count(h, 'post', 'core-bg/1'), 1);
+    assert.equal((h.session as unknown as { _beforeToolCall: unknown })._beforeToolCall, before);
+    assert.deepEqual(h.errors, []);
+  } finally { unsubscribe(); await h.close(); }
+});
+
 test('real SDK: native denial, invalid arguments, admission failure and cooperative cancellation', async () => {
   const h = await sdk(true, 1);
   try {
     const blocked = await h.call('victim', { n: '2', mode: 'blocked', __background__: 'yes' }, 'blocked');
     assert.equal(blocked.isError, true); assert.equal(count(h, 'execute', 'blocked'), 0); assert.equal(count(h, 'post', 'blocked'), 0);
     assert.equal(h.tasks().length, 0);
+    const lateBlocked = await h.call('victim', { n: '2', mode: 'late-blocked', __background__: 'yes' }, 'late-blocked');
+    assert.match(JSON.stringify(lateBlocked.result), /late native denial/);
+    assert.equal(lateBlocked.isError, true);
+    for (const kind of ['execute', 'post']) assert.equal(count(h, kind, 'late-blocked'), 0);
+    assert.equal(count(h, 'last-pre', 'late-blocked'), 1);
     const invalid = await h.call('victim', { n: '2', mode: 'normal', extra: true }, 'invalid');
     assert.equal(invalid.isError, true); assert.equal(count(h, 'pre', 'invalid'), 0); assert.equal(h.tasks().length, 0);
     const handle = await h.call('victim', { n: '2', mode: 'cancel', __background__: 'yes' }, 'cancel');
@@ -327,7 +409,7 @@ test('real SDK: native denial, invalid arguments, admission failure and cooperat
     assert.equal(count(h, 'post', 'capacity'), 1, 'failed admission retains native outer finalization');
     assert.match(JSON.stringify(rejected.result), /FINAL REDACTED/);
     const task = h.tasks()[0];
-    await h.call('meantime', { action: 'cancel', id: task.id });
+    await h.call('meantime', { action: 'cancel', ids: [task.id ]});
     const saved = await h.retained('cancel');
     assert.equal(h.signals.get('cancel')?.aborted, true);
     assert.equal(saved.task.isError, true); clean(saved.outcome);
@@ -381,6 +463,33 @@ test('real SDK: same-owner replacement, hidden/restored spread, metadata and own
     assert.equal(current.execute, foreign, 'dispose restores only properties still owned by plugin');
     assert.deepEqual(current.parameters, replacementSchema);
   } finally { await h.close(); }
+});
+
+test('real SDK: weak result fence isolates overlapping reused object IDs; unmanaged primitive/array inputs pass through', async () => {
+  const h = await sdk(true);
+  try {
+    for (const [name, args] of [['primitive', 'valid string'], ['array', [1, 2]], ['unmanaged', { __background__: 'business-value' }]] as const) {
+      assert.equal((await h.call(name, args, name)).isError, false);
+      assert.equal(count(h, 'exotic', name), 1);
+      assert.equal(count(h, 'post', name), 1);
+    }
+    const oldGate = deferred<void>(); h.gates.set('reused', oldGate);
+    const old = h.call('unmanaged', {}, 'reused');
+    const primitiveGate = deferred<void>(); h.gates.set('old-primitive', primitiveGate);
+    const primitive = h.call('primitive', 'old string', 'old-primitive');
+    await until(() => count(h, 'exotic', 'reused') === 1 && count(h, 'exotic', 'old-primitive') === 1);
+    await h.session.extensionRunner.emit({ type: 'session_shutdown', reason: 'reload' });
+    await h.session.bindExtensions({ mode: 'rpc', onError: error => h.errors.push(error) });
+    const freshGate = deferred<void>(); h.gates.set('reused', freshGate);
+    const fresh = h.call('unmanaged', {}, 'reused');
+    await until(() => count(h, 'exotic', 'reused') === 2);
+    oldGate.resolve(); primitiveGate.resolve(); await old; await primitive;
+    assert.equal(count(h, 'post', 'reused'), 0, 'old args cannot reach successor hooks');
+    assert.equal(count(h, 'post', 'old-primitive'), 0, 'primitive fallback also fences retired results');
+    freshGate.resolve(); await fresh;
+    assert.equal(count(h, 'post', 'reused'), 1, 'old end cannot erase fresh object marker');
+    assert.deepEqual(h.errors, []);
+  } finally { for (const gate of h.gates.values()) gate.resolve(); await h.close(); }
 });
 
 test('real SDK: noncooperative retired job cannot enter successor hooks or nested dispatcher', async () => {

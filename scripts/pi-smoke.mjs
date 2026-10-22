@@ -33,7 +33,7 @@ if (sdk) {
     for (const scenario of ['outer-approval', 'outer-denial', 'codemode-startup', 'body', 'disabled', 'execution-start']) {
       await earlySteerRace(sdk, root, scenario);
     }
-    for (const scenario of ['active-tool', 'in-flight', 'before-wait', 'unobserved', 'partial', 'timeout', 'compact', 'compact-cancel', 'tree', 'tree-cancel']) {
+    for (const scenario of ['active-tool', 'batch-boundary', 'in-flight', 'before-wait', 'unobserved', 'partial', 'timeout', 'compact', 'compact-cancel', 'tree', 'tree-cancel']) {
       await completionRace(sdk, root, scenario);
     }
     await controlGuidance(sdk, root);
@@ -64,7 +64,7 @@ if (sdk) {
             assert.equal(started.result.structuredContent.result_available, false);
             const id = started.result.structuredContent.task.id;
             await new Promise(resolve => setTimeout(resolve, 300));
-            const collected = await ctx.executeTool('meantime', { action: 'wait', timeout: 0, id });
+            const collected = await ctx.executeTool('meantime', { action: 'wait', timeout: 0, ids: [id] });
             assert.equal(collected.isError, false);
             assert.equal(collected.result.structuredContent.result_available, true);
             assert.equal(collected.result.structuredContent.result.output, 'REAL_BACKGROUND_OK');
@@ -75,7 +75,7 @@ if (sdk) {
             ]) {
               const handle = await ctx.executeTool(tool, { ...args, __background__: 'yes' });
               const id = handle.result.structuredContent.task.id;
-              const result = await ctx.executeTool('meantime', { action: 'wait', id });
+              const result = await ctx.executeTool('meantime', { action: 'wait', ids: [id] });
               assert.equal(result.isError, false);
               const task = result.result.structuredContent.task;
               assert.ok(task.outputPath, JSON.stringify({ tool, task, result: result.result.structuredContent.result }).slice(0, 2000));
@@ -105,7 +105,7 @@ if (sdk) {
             assert.equal(outputs[1].path.includes('pi-bash-'), true);
             assert.equal(outputs[2].path.includes('pi-mcp-'), true);
             const failed = await ctx.executeTool('mcp__meantime_fixture__fail', { ms: 100, __background__: 'yes' });
-            const failure = await ctx.executeTool('meantime', { action: 'wait', id: failed.result.structuredContent.task.id });
+            const failure = await ctx.executeTool('meantime', { action: 'wait', ids: [failed.result.structuredContent.task.id ]});
             const nativeFailure = nativeMcpResults.get('mcp__meantime_fixture__fail');
             assert.equal(failure.isError, true);
             assert.equal(failure.result.structuredContent.task.state, 'failed');
@@ -176,12 +176,12 @@ if (sdk) {
     ({ session } = await sdk.createAgentSession({ cwd: root, resourceLoader: loader, settingsManager, sessionManager: reopened }));
     await session.bindExtensions({ mode: 'rpc' });
     session.setActiveToolsByName(['meantime']);
-    const restored = await invoke(session, 'meantime', 'restored-result', { action: 'wait', timeout: 0, id });
+    const restored = await invoke(session, 'meantime', 'restored-result', { action: 'wait', timeout: 0, ids: [id] });
     assert.equal(restored.structuredContent.task.recovered, true);
     assert.equal(restored.structuredContent.result, 'REAL_BACKGROUND_OK');
     assert.match(restored.content.map(b => b.text).join('\n'), /contains text only/);
     for (const { id, path, text } of outputs.filter(o => o.id)) {
-      const result = await invoke(session, 'meantime', `restored-output-${id}`, { action: 'wait', timeout: 0, id });
+      const result = await invoke(session, 'meantime', `restored-output-${id}`, { action: 'wait', timeout: 0, ids: [id] });
       assert.equal(result.structuredContent.task.outputPath, path);
       assert.match(result.content[0].text, /\nOutput: /);
       assert.equal(result.content[1].text, text);
@@ -216,12 +216,14 @@ async function invoke(session, name, id, args) {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
   session.sessionManager.appendMessage(assistantMessage);
   session.refreshContext();
+  await session.extensionRunner.emit({ type: 'tool_execution_start', toolCallId: id, toolName: name, args });
   const outcome = await runToolCall(toolCall, {
     tools: session.agent.state.tools, assistantMessage,
     context: { messages: session.agent.state.messages, tools: session.agent.state.tools },
     beforeToolCall: session.agent.beforeToolCall, afterToolCall: session.agent.afterToolCall,
     signal: new AbortController().signal,
   });
+  await session.extensionRunner.emit({ type: 'tool_execution_end', toolCallId: id, toolName: name, result: outcome.result, isError: outcome.isError });
   return { ...outcome.result, isError: outcome.isError };
 }
 
@@ -267,7 +269,7 @@ async function batchCodemodeParity(sdk, root) {
         const handles = await Promise.all([tools.fixture_data({__background__: 'yes'}), tools.fixture_text({__background__: 'yes'})]);
         if (handles.some(h => typeof h !== 'object' || h.result_available !== false || !h.task.id)) throw new Error('structured handles required, including text-only native tools');
         const ids = handles.map(h => h.task.id);
-        const singles = await Promise.all(ids.map(id => tools.meantime({action: 'wait', id})));
+        const singles = await Promise.all(ids.map(id => tools.meantime({action: 'wait', ids: [id]})));
         const batch = await tools.meantime({action: 'wait', ids, timeout: 0});
         return {foreground, singles: singles.map(s => s.result), batch};`
         : 'return [await tools.fixture_data({}), await tools.fixture_text({})];';
@@ -356,7 +358,7 @@ async function completionRace(sdk, root, scenario) {
   const trace = [], waitResults = [];
   let extension, session, requests = 0;
   const compact = scenario.startsWith('compact'), tree = scenario.startsWith('tree');
-  const unread = scenario === 'unobserved' || scenario === 'active-tool' || compact || tree;
+  const unread = scenario === 'unobserved' || scenario === 'active-tool' || scenario === 'batch-boundary' || compact || tree;
   const settingsManager = sdk.SettingsManager.inMemory({ defaultTools: ['bash', 'meantime'],
     compaction: { enabled: false, keepRecentTokens: 1, reserveTokens: 1024 } });
   const loader = new sdk.DefaultResourceLoader({
@@ -377,7 +379,7 @@ async function completionRace(sdk, root, scenario) {
             if (n === 1) {
               calls = [{ id: 'start-a', name: 'bash', arguments: { command: 'sleep 0.12; printf RACE_A' } }];
               if (scenario === 'partial') calls.push({ id: 'start-b', name: 'bash', arguments: { command: 'sleep 0.06; printf RACE_B' } });
-            } else if (n === 2 && scenario === 'active-tool') {
+            } else if (n === 2 && (scenario === 'active-tool' || scenario === 'batch-boundary')) {
               calls = [{ id: 'foreground-work', name: 'bash', arguments: { command: 'sleep 0.35; printf FOREGROUND_DONE', __background__: 'no' } }];
             } else if (n === 2 && !unread) {
               // The second request is already streaming when the producer ends.
@@ -387,7 +389,7 @@ async function completionRace(sdk, root, scenario) {
               trace.push(`before wait: notification=${task.notification}, running=${task.localRunning}`);
               assert.equal(task.localRunning, scenario === 'in-flight' || scenario === 'timeout' || scenario === 'partial');
               calls = [{ id: 'collect', name: 'meantime', arguments: {
-                action: 'wait', id: task.id, timeout: scenario === 'timeout' ? 0 : 2,
+                action: 'wait', ids: [task.id], timeout: scenario === 'timeout' ? 0 : 2,
               } }];
             }
             const message = { role: 'assistant', api: model.api, provider: model.provider, model: model.id,
@@ -410,7 +412,7 @@ async function completionRace(sdk, root, scenario) {
         },
       });
       extension = install(pi, {
-        config: validateConfig({ autoDetachMs: 10, notifyDebounceMs: 5 }),
+        config: validateConfig({ autoDetachMs: 10, notifyDebounceMs: scenario === 'batch-boundary' ? 5000 : 5 }),
       });
       if (compact) pi.on('session_before_compact', async event => {
         trace.push('manual compact start');
@@ -439,13 +441,10 @@ async function completionRace(sdk, root, scenario) {
           assert.equal(event.result.structuredContent?.task?.detachReason, 'timeout');
         }
         if (event.toolName === 'meantime') {
-          if (scenario === 'partial') assert.equal(extension.inspect().tasks.find(t => t.command?.includes('RACE_B')).notification, 'queued', 'B queues while wait(A) is in progress');
+          if (scenario === 'partial') assert.equal(extension.inspect().tasks.find(t => t.command?.includes('RACE_B')).notification, 'pending', 'B waits for the next request boundary while wait(A) is in progress');
           waitResults.push(event.result);
           trace.push(`wait returned: available=${event.result.structuredContent?.result_available}`);
         }
-      });
-      pi.on('message_end', event => {
-        if (event.message.customType === 'meantime-completion') trace.push('completion delivered');
       });
     }],
   });
@@ -459,6 +458,7 @@ async function completionRace(sdk, root, scenario) {
     await session.setModel(modelRuntime.getModel('completion-fixture', 'fixture'));
     session.subscribe(event => {
       if (event.type === 'message_queued' || event.type === 'agent_settled') trace.push(event.type);
+      if (event.type === 'message_end' && event.message.customType === 'meantime-completion') trace.push('completion delivered');
     });
     if (compact || tree) session.sessionManager.appendMessage({ role: 'user',
       content: 'older turn '.repeat(100), timestamp: Date.now() });
@@ -477,7 +477,7 @@ async function completionRace(sdk, root, scenario) {
       trace.push(`tree ended: idle=${session.isIdle}`);
       assert.equal(session.isIdle, true);
       if (result.cancelled) {
-        // No tree-end event on cancellation: pending survives until another flush.
+        // No tree-end event on cancellation: next run must flush before its first request.
         await new Promise(r => setTimeout(r, 30));
         assert.equal(extension.inspect().tasks[0].notification, 'pending');
         assert.equal(session.messages.filter(m => m.customType === 'meantime-completion').length, 0);
@@ -497,10 +497,18 @@ async function completionRace(sdk, root, scenario) {
       assert.equal(waitResults[0].structuredContent.result_available, true);
       assert.equal(waitResults[0].structuredContent.result.output, 'RACE_A');
     }
-    assert.equal(messages.length, observed && !['partial', 'before-wait'].includes(scenario) ? 0 : 1);
-    if (scenario === 'active-tool') {
-      assert.ok(trace.indexOf('request 3: completion visible=1') < trace.indexOf('agent_settled'), 'completion enters the next model request before settled');
+    assert.equal(messages.length, observed && scenario !== 'partial' ? 0 : 1);
+    if (scenario === 'active-tool' || scenario === 'batch-boundary') {
+      const nextRequest = trace.indexOf('request 3: completion visible=1');
+      assert.ok(nextRequest >= 0 && nextRequest < trace.indexOf('agent_settled'),
+        'completion enters the next model request before settled, even with a debounce pending');
       assert.equal(requests, 3);
+    }
+    if (scenario === 'tree-cancel') {
+      const resumed = trace.indexOf('tree cancelled: still pending, next prompt resumes');
+      assert.ok(trace.indexOf('request 3: completion visible=1', resumed) > resumed,
+        'deferred completion must enter the resumed run, not wait for its settled event');
+      assert.equal(requests, 3, 'resuming must not need a separate completion run after the answer');
     }
     if (scenario === 'in-flight') assert.equal(requests, 3, 'active wait consumes its task without another notification turn');
     if (scenario === 'partial') {
@@ -759,7 +767,7 @@ async function earlySteerRace(sdk, root, scenario) {
     // Wait via public meantime, not a polling loop, and acknowledge the detached result.
     const task = extension.inspect().tasks.find(t => t.delivery === 'background');
     if (task) {
-      const result = await invoke(session, 'meantime', 'collect', { action: 'wait', id: task.id, timeout: 2 });
+      const result = await invoke(session, 'meantime', 'collect', { action: 'wait', ids: [task.id], timeout: 2 });
       assert.equal(result.structuredContent.result_available, true); assert.equal(result.isError, false);
     }
     assert.equal(requests, 3);

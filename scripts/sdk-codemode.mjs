@@ -168,14 +168,14 @@ try {
   assert(firstSystem.some(m => m.toolsAdded?.some(t => t.name === 'meantime')), 'meantime stays directly declared in only mode');
   assert(!firstSystem.some(m => m.toolsAdded?.some(t => t.name === 'hold')), 'other declarations remain hidden');
   // Interrupt an observer, not the producer.
-  const waiter = new AbortController(); const waiting = control({ action: 'wait', id, timeout: 10 }, waiter.signal);
+  const waiter = new AbortController(); const waiting = control({ action: 'wait', ids: [id], timeout: 10 }, waiter.signal);
   waiter.abort(); await bounded(waiting, 'interrupted observer wait'); assert.equal(signals.get('continue').aborted, false);
   notices.set(id, deferred());
   gates.get('continue').resolve();
   const notice = await bounded(notices.get(id).promise, 'automatic completion');
   assert.match(notice.content, /Automated background completion/);
   assert.equal(session.getSessionStats().tokens.input, 6, 'completion charges before any successful wait');
-  const collected = await bounded(control({ action: 'wait', id, timeout: 10 }), 'collect continuation');
+  const collected = await bounded(control({ action: 'wait', ids: [id], timeout: 10 }), 'collect continuation');
   assert.equal(collected.isError, false);
   const completion = completions().find(c => c.id === id);
   assert.equal(scriptResult(completion).match(/FINALLY_ONCE/g).length, 1);
@@ -191,7 +191,7 @@ try {
   }
   assert.equal(session.sessionManager.getBranch().findLast(e => e.customType === 'codemode-store').data.set.answer, 42);
   for (let i = 0; i < 2; i++) {
-    const repeated = await prompt('meantime', { action: 'wait', id, timeout: 0 }, 'repeat-' + i);
+    const repeated = await prompt('meantime', { action: 'wait', ids: [id], timeout: 0 }, 'repeat-' + i);
     assert.equal(repeated.usage, undefined, 'retrieval cannot charge again');
     assert.equal(repeated.details.usage.input, 6);
   }
@@ -204,7 +204,7 @@ try {
   assert.equal(commanded.details.detachReason, 'shortcut');
   assert.equal((await control({ action: 'list' })).result.structuredContent.tasks.filter(t => t.localRunning).length, 1, 'no child observer/task');
   gates.get('command').resolve();
-  await bounded(control({ action: 'wait', id: taskId(commanded), timeout: 10 }), 'command root completed');
+  await bounded(control({ action: 'wait', ids: [taskId(commanded)], timeout: 10 }), 'command root completed');
   assert.match(scriptResult(completions().find(c => c.id === taskId(commanded))), /41/);
 
   // A foreground producer still uses native message_start for summary/charge.
@@ -249,7 +249,7 @@ try {
   await session.prompt('unrelated after guarded steer');
   await session.abort(); assert.equal(signals.get('steer').aborted, false);
   gates.get('steer').resolve();
-  await bounded(control({ action: 'wait', id: taskId(steered), timeout: 10 }), 'steered root continued');
+  await bounded(control({ action: 'wait', ids: [taskId(steered)], timeout: 10 }), 'steered root continued');
   const steerCompletion = completions().find(c => c.id === taskId(steered));
   assert.match(scriptResult(steerCompletion), /42/);
   assert.equal(scriptResult(steerCompletion).match(/STEER_FINALLY_ONCE/g).length, 1);
@@ -266,7 +266,7 @@ try {
     gate(key);
     const observed = await prompt('codemode', { code: `const h=await tools.child({key:"${key}",__background__:"yes"}); return {child:h.task.id};` }, rootId);
     await bounded(starts.get(key).promise, key + ' child started');
-    const rootResult = key === 'child' ? observed : (await control({ action: 'wait', id: taskId(observed), timeout: 10 })).result;
+    const rootResult = key === 'child' ? observed : (await control({ action: 'wait', ids: [taskId(observed)], timeout: 10 })).result;
     const output = rootResult.content.filter(b => b.type === 'text').map(b => b.text).join('');
     const childId = JSON.parse(output.slice(output.indexOf('Output:\n') + 'Output:\n'.length).split('Non-JSON')[0]).child;
     assert(childId.startsWith('mt_'), 'native script returns child handle BEFORE child gate opens');
@@ -276,7 +276,7 @@ try {
     assert(!completions().some(c => c.toolCallId === rootId && c.lateScope));
     await session.prompt('unrelated while child is detached');
     gates.get(key).resolve();
-    await bounded(control({ action: 'wait', id: childId, timeout: 10 }), key + ' child completed');
+    await bounded(control({ action: 'wait', ids: [childId], timeout: 10 }), key + ' child completed');
     await until(() => completions().some(c => c.toolCallId === rootId && c.lateScope)
       && session._nestedToolCalls.scopes.size === 0, key + ' late scope indexed and drained');
     const explicit = completions().findLast(c => c.toolCallId === rootId && c.lateScope);
@@ -291,7 +291,7 @@ try {
       cost: { input: 0.125, output: 0.25, cacheRead: 0.5, cacheWrite: 1, total: 1.875 },
     }, 'full result includes root-own usage without mutating the nested delta');
     assert.equal(session.getSessionStats().tokens.input, before + (key === 'child' ? 9 : 12));
-    const retrieved = await prompt('meantime', { action: 'wait', id: childId, timeout: 0 }, 'safe-wait-' + key);
+    const retrieved = await prompt('meantime', { action: 'wait', ids: [childId], timeout: 0 }, 'safe-wait-' + key);
     assert.equal(retrieved.usage, undefined);
     if (key !== 'child') {
       assert.deepEqual(retrieved.details.persistenceOmissions, ['details']);
@@ -342,11 +342,11 @@ try {
   assert.equal(third.isError, true); assert.match(JSON.stringify(third.content), /worker limit reached \(2/);
   const list = await prompt('meantime', { action: 'list' }, 'capacity-list');
   const a = list.details.tasks.find(t => t.tool === 'codemode' && t.localRunning && t.id === taskId(session.messages.find(m => m.toolCallId === 'capacity-A' && m.role === 'toolResult')));
-  const cancelled = await prompt('meantime', { action: 'cancel', id: a.id }, 'capacity-cancel');
+  const cancelled = await prompt('meantime', { action: 'cancel', ids: [a.id ]}, 'capacity-cancel');
   assert.equal(cancelled.details.task.state, 'cancelled'); assert.equal(signals.get('A').aborted, true);
   gates.get('B').resolve();
   const bId = taskId(session.messages.find(m => m.toolCallId === 'capacity-B' && m.role === 'toolResult'));
-  await bounded(control({ action: 'wait', id: bId, timeout: 10 }), 'capacity-B completed');
+  await bounded(control({ action: 'wait', ids: [bId], timeout: 10 }), 'capacity-B completed');
   assert(!session.sessionManager.getBranch().some(e => e.customType === 'codemode-store' && e.data.set.A));
 
   // A native abort can settle before its non-cooperative nested pipeline. The
@@ -397,7 +397,7 @@ try {
   ({ session } = await sdk.createAgentSession({ cwd: root, agentDir: root, model, modelRuntime: runtime, resourceLoader: loader, settingsManager: settings, sessionManager: reopened }));
   await session.bindExtensions({ mode: 'rpc', onError: e => errors.push(e) }); bindStream();
   assert.equal(session.getSessionStats().tokens.input, reopenedUsage, 'real reopened SDK session accounting');
-  const recovered = await prompt('meantime', { action: 'wait', id, timeout: 0 }, 'reopened-wait');
+  const recovered = await prompt('meantime', { action: 'wait', ids: [id], timeout: 0 }, 'reopened-wait');
   assert.equal(recovered.details.task.recovered, true);
   assert.deepEqual(recovered.details.nestedCalls, JSON.parse(JSON.stringify(completion.result.nestedCalls)));
   assert.equal(recovered.details.usage.input, 6);
