@@ -59,60 +59,10 @@ if (sdk) {
           name: 'background_probe', label: 'background probe', description: 'Test nested background result retrieval',
           parameters: { type: 'object', properties: {} },
           async execute(_id, _args, _signal, _update, ctx) {
-            assert.ok(ctx.tools.some(t => t.name === 'meantime'), 'meantime must be callable by codemode');
+            assert.ok(!ctx.tools.some(t => t.name === 'meantime'), 'model-only meantime is not callable from nested tools');
             const started = await ctx.executeTool('bash', { command: 'sleep 0.1; printf REAL_BACKGROUND_OK', __background__: 'yes' });
             assert.equal(started.result.structuredContent.result_available, false);
-            const id = started.result.structuredContent.task.id;
-            await new Promise(resolve => setTimeout(resolve, 300));
-            const collected = await ctx.executeTool('meantime', { action: 'wait', timeout: 0, ids: [id] });
-            assert.equal(collected.isError, false);
-            assert.equal(collected.result.structuredContent.result_available, true);
-            assert.equal(collected.result.structuredContent.result.output, 'REAL_BACKGROUND_OK');
-            assert.doesNotMatch(collected.result.content.map(b => b.text).join('\n'), /Output:/);
-            for (const [tool, args] of [
-              ['bash', { command: `sleep 0.1; node -e 'process.stdout.write("B".repeat(60000))'` }],
-              ['mcp__meantime_fixture__slow', { ms: 100, text: largeMcpText }],
-            ]) {
-              const handle = await ctx.executeTool(tool, { ...args, __background__: 'yes' });
-              const id = handle.result.structuredContent.task.id;
-              const result = await ctx.executeTool('meantime', { action: 'wait', ids: [id] });
-              assert.equal(result.isError, false);
-              const task = result.result.structuredContent.task;
-              assert.ok(task.outputPath, JSON.stringify({ tool, task, result: result.result.structuredContent.result }).slice(0, 2000));
-              assert.equal(result.result.details.fullOutputPath, task.outputPath, `${tool}: wait preserves native fullOutputPath`);
-              assert.equal(result.result.details.task.id, task.id);
-              assert.match(result.result.content[0].text, /\nOutput: /);
-              const retained = result.result.structuredContent.result;
-              const text = result.result.content[1].text;
-              if (tool.startsWith('mcp__')) {
-                const native = nativeMcpResults.get('mcp__meantime_fixture__slow');
-                const { task: _task, ...details } = result.result.details;
-                assert.deepEqual(details, native.details);
-                assert.equal(task.outputPath, native.details.fullOutputPath);
-                assert.deepEqual(result.result.content.slice(1), native.content);
-                assert.deepEqual(retained, native.structuredContent);
-                assert.match(text, /^Warning: truncated output/);
-                assert.equal(text.replaceAll(task.outputPath, '<native-path>'),
-                  baseline.content[0].text.replaceAll(baseline.details.fullOutputPath, '<native-path>'));
-                assert.ok(text.includes('\x1b[31m\x00HEAD'), 'native MCP controls must survive');
-                assert.equal(retained.content[0].text, largeMcpText);
-              } else {
-                assert.equal(result.result.details.truncation.truncated, true, 'wait preserves native Bash truncation');
-              }
-              assert.equal(readFileSync(task.outputPath, 'utf8'), tool === 'bash' ? 'B'.repeat(60000) : largeMcpText);
-              outputs.push({ id, path: task.outputPath, text });
-            }
-            assert.equal(outputs[1].path.includes('pi-bash-'), true);
-            assert.equal(outputs[2].path.includes('pi-mcp-'), true);
-            const failed = await ctx.executeTool('mcp__meantime_fixture__fail', { ms: 100, __background__: 'yes' });
-            const failure = await ctx.executeTool('meantime', { action: 'wait', ids: [failed.result.structuredContent.task.id ]});
-            const nativeFailure = nativeMcpResults.get('mcp__meantime_fixture__fail');
-            assert.equal(failure.isError, true);
-            assert.equal(failure.result.structuredContent.task.state, 'failed');
-            assert.deepEqual(failure.result.content.slice(1), nativeFailure.content);
-            assert.deepEqual(failure.result.structuredContent.result, nativeFailure.structuredContent);
-            assert.equal(failure.result.content[1].text, 'fixture failure');
-            return collected.result;
+            return started.result;
           },
         });
         extension = install(pi, {
@@ -154,8 +104,57 @@ if (sdk) {
     assert.equal(shell.structuredContent.exit_code, 0);
     assert.equal(shell.structuredContent.task, undefined);
     assert.equal(manager.getEntries().filter(e => e.customType === 'meantime-index').length, 0);
-    const completed = await invoke(session, 'background_probe', 'background-probe', {});
-    const id = completed.structuredContent.task.id;
+    const probe = await invoke(session, 'background_probe', 'background-probe', { __background__: 'no' });
+    const id = probe.structuredContent.task.id;
+    const collected = await invoke(session, 'meantime', 'probe-real', { action: 'wait', ids: [id] });
+    assert.equal(collected.isError, false);
+    assert.equal(collected.structuredContent.result_available, true);
+    assert.equal(collected.structuredContent.result.output, 'REAL_BACKGROUND_OK');
+    assert.doesNotMatch(collected.content.map(b => b.text).join('\n'), /Output:/);
+    for (const [tool, args] of [
+      ['bash', { command: `sleep 0.1; node -e 'process.stdout.write("B".repeat(60000))'` }],
+      ['mcp__meantime_fixture__slow', { ms: 100, text: largeMcpText }],
+    ]) {
+      const handle = await invoke(session, tool, `probe-start-${tool}`, { ...args, __background__: 'yes' });
+      assert.equal(handle.structuredContent.result_available, false);
+      const id = handle.structuredContent.task.id;
+      const result = await invoke(session, 'meantime', `probe-wait-${tool}`, { action: 'wait', ids: [id] });
+      assert.equal(result.isError, false);
+      const task = result.structuredContent.task;
+      assert.ok(task.outputPath, JSON.stringify({ tool, task, result: result.structuredContent.result }).slice(0, 2000));
+      assert.equal(result.details.fullOutputPath, task.outputPath, `${tool}: wait preserves native fullOutputPath`);
+      assert.equal(result.details.task.id, task.id);
+      assert.match(result.content[0].text, /\nOutput: /);
+      const retained = result.structuredContent.result;
+      const text = result.content[1].text;
+      if (tool.startsWith('mcp__')) {
+        const native = nativeMcpResults.get('mcp__meantime_fixture__slow');
+        const { task: _task, ...details } = result.details;
+        assert.deepEqual(details, native.details);
+        assert.equal(task.outputPath, native.details.fullOutputPath);
+        assert.deepEqual(result.content.slice(1), native.content);
+        assert.deepEqual(retained, native.structuredContent);
+        assert.match(text, /^Warning: truncated output/);
+        assert.equal(text.replaceAll(task.outputPath, '<native-path>'),
+          baseline.content[0].text.replaceAll(baseline.details.fullOutputPath, '<native-path>'));
+        assert.ok(text.includes('\x1b[31m\x00HEAD'), 'native MCP controls must survive');
+        assert.equal(retained.content[0].text, largeMcpText);
+      } else {
+        assert.equal(result.details.truncation.truncated, true, 'wait preserves native Bash truncation');
+      }
+      assert.equal(readFileSync(task.outputPath, 'utf8'), tool === 'bash' ? 'B'.repeat(60000) : largeMcpText);
+      outputs.push({ id, path: task.outputPath, text });
+    }
+    assert.equal(outputs[1].path.includes('pi-bash-'), true);
+    assert.equal(outputs[2].path.includes('pi-mcp-'), true);
+    const failed = await invoke(session, 'mcp__meantime_fixture__fail', 'probe-start-fail', { ms: 100, __background__: 'yes' });
+    const failure = await invoke(session, 'meantime', 'probe-wait-fail', { action: 'wait', ids: [failed.structuredContent.task.id] });
+    const nativeFailure = nativeMcpResults.get('mcp__meantime_fixture__fail');
+    assert.equal(failure.isError, true);
+    assert.equal(failure.structuredContent.task.state, 'failed');
+    assert.deepEqual(failure.content.slice(1), nativeFailure.content);
+    assert.deepEqual(failure.structuredContent.result, nativeFailure.structuredContent);
+    assert.equal(failure.content[1].text, 'fixture failure');
     const sessionFile = manager.getSessionFile();
     const completions = manager.getEntries().filter(e => e.customType === 'meantime-index' && e.data.change.completion);
     assert.equal(completions.length, 4);
@@ -268,15 +267,28 @@ async function batchCodemodeParity(sdk, root) {
         const foreground = await Promise.all([tools.fixture_data({__background__: 'no'}), tools.fixture_text({__background__: 'no'})]);
         const handles = await Promise.all([tools.fixture_data({__background__: 'yes'}), tools.fixture_text({__background__: 'yes'})]);
         if (handles.some(h => typeof h !== 'object' || h.result_available !== false || !h.task.id)) throw new Error('structured handles required, including text-only native tools');
-        const ids = handles.map(h => h.task.id);
-        const singles = await Promise.all(ids.map(id => tools.meantime({action: 'wait', ids: [id]})));
-        const batch = await tools.meantime({action: 'wait', ids, timeout: 0});
-        return {foreground, singles: singles.map(s => s.result), batch};`
+        if ('meantime' in tools || ALL_TOOLS.some(t => t.name === 'meantime')) throw new Error('model-only meantime must not be callable or listed inside scripts');
+        return {foreground, handles};`
         : 'return [await tools.fixture_data({}), await tools.fixture_text({})];';
       const result = await invoke(session, 'codemode', `batch-${managed}`, { code });
       assert.equal(result.isError ?? false, false, JSON.stringify(result));
       const text = result.content.filter(b => b.type === 'text').map(b => b.text).join('');
-      observed.push(JSON.parse(text.slice(text.indexOf('Output:\n') + 'Output:\n'.length)));
+      const output = JSON.parse(text.slice(text.indexOf('Output:\n') + 'Output:\n'.length));
+      if (!managed) observed.push(output);
+      else {
+        const { foreground, handles } = output;
+        assert.ok(handles.every(h => typeof h === 'object' && h.result_available === false && h.task.id));
+        const ids = handles.map(h => h.task.id);
+        const singles = [];
+        for (const [index, id] of ids.entries()) {
+          const waited = await invoke(session, 'meantime', `batch-${index}-single`, { action: 'wait', ids: [id] });
+          assert.equal(waited.isError ?? false, false, JSON.stringify(waited));
+          singles.push(waited.structuredContent.result);
+        }
+        const batch = await invoke(session, 'meantime', 'batch-all', { action: 'wait', ids, timeout: 0 });
+        assert.equal(batch.isError ?? false, false, JSON.stringify(batch));
+        observed.push({ foreground, singles, batch: batch.structuredContent });
+      }
     } finally {
       if (session) await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
       await extension?.dispose(); session?.dispose();

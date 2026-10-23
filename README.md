@@ -1,7 +1,7 @@
 # pi-meantime
 
 让长时间工具调用转到后台，Pi 继续处理其他工作；完成后通知模型，不必反复查询。
-不修改 Pi 核心、不启动第二个 Agent。当前版本 **0.6.2**，面向 **Pi 1.3.0**，需要 **Node.js 22.19+**。
+不修改 Pi 核心、不启动第二个 Agent。当前版本 **0.6.5**，面向 **Pi 1.3.0**，需要 **Node.js 22.19+**。
 
 `bash` 与符合条件的 MCP / 扩展工具都用**原名**调用，只增加可选的 `__background__` 控制字段。没有代理别名或原名阻断；前台返回原生最终结果，后台保留完成原生结果钩子处理后的结果。实现依赖 Pi 1.3.0 的窄宿主 monkeypatch，并非仅使用官方扩展 API；见 [接口边界](docs/API-CONTRACT.md)。
 
@@ -14,7 +14,7 @@
 pi install git:github.com/astrosheep-zero/pi-meantime
 
 # npm（需要该版本已发布；不可用时使用 Git）
-pi install npm:pi-meantime@0.6.2
+pi install npm:pi-meantime@0.6.5
 ```
 
 也可克隆后临时加载，不写入全局安装列表：
@@ -68,6 +68,8 @@ ID 用实际返回值替换；支持唯一前缀，可省略 `mt_`，有歧义�
 
 控制字段在原工具参数准备、校验和权限处理前移除；这些原生步骤各执行一次，全部权限通过后才进入任务运行时。Bash 自身的 `timeout` 仍是命令硬超时，与转后台阈值无关。
 
+`meantime` 声明为 `model-only`：由模型直接调用，即使 `codemode.mode: "only"` 也保留声明，不改写 CodeMode 的工具可见性逻辑。脚本不能调用 `tools.meantime()`；脚本创建的后台任务应返回句柄，再由模型直接调用 `meantime` 管理。
+
 `meantime` 只有三个动作：
 
 - **list**：简短任务列表，默认 10 条；用 `offset`、`limit` 翻页，`limit` 最大 32。
@@ -76,14 +78,18 @@ ID 用实际返回值替换；支持唯一前缀，可省略 `mt_`，有歧义�
 
 `wait` 与 `cancel` 用 `ids` 指定任务，接受 1–32 项；`wait` 省略 `ids` 时等待当前所有未结束任务，`cancel` 必须给出。`mode: "all"`（默认）等全部结束，`"any"` 等任意一项结束；超时也会返回。批量回执含已结束结果及 `pending`，正文共享 32KiB 预算，被省略的结果可单独读取。
 
-原生工具管理 Bash 与通过公开工厂组合的 CodeMode；非原生工具默认全部管理，包括 Square、普通扩展和 MCP（含 IDE MCP）。依据当前工具来源区分原生与扩展，同名扩展覆盖也属于非原生工具；include/exclude 可进一步筛选。原生名称、description、来源与 `direct` / `codemode` / `deferred` 可见性不变；从 Codemode 或 tool_search 发现后仍调用原名，不增加第二个候选。除本扩展组合的原生 CodeMode 外，顺序工具、hidden / model-only 工具、不兼容的根 Schema 及保留字段冲突保持原样；宿主全局顺序执行时不转后台。
+原生工具管理 Bash 与宿主内建的 CodeMode；`codemode` 定义按 `sourceInfo.path === "builtin:codemode"` 识别，meantime 只包装其 execute。非原生工具默认全部管理，包括 Square、普通扩展和 MCP（含 IDE MCP）。依据当前工具来源区分原生与扩展，同名扩展覆盖也属于非原生工具；include/exclude 可进一步筛选。原生名称、description、来源与 `direct` / `codemode` / `deferred` 可见性不变；从 Codemode 或 tool_search 发现后仍调用原名，不增加第二个候选。除上述原生 CodeMode 外，顺序工具、hidden / model-only 工具、不兼容的根 Schema 及保留字段冲突保持原样；宿主全局顺序执行时不转后台。
 
 ## 原生 CodeMode 整段后台执行
 
-`codemode` 保留原名、raw JavaScript grammar、discovery、models、store 和原生 executor。没有第二套 sandbox，也不重写脚本。公开工厂通过注册 facade 组合；宿主桥只在当前实例保留 `_executeNestedToolCall`、原生 runner 的 `takeRecord`/`clear` 及 scope Map 的删除生命周期，drain 后按原 descriptor 归还，不替换全局 registry。它不增加 `__background__` 参数：使用现有计时、Ctrl+Shift+B、steer 或 `/meantime detach` 分离**整段脚本的观察者**。CodeMode 根脚本与普通工具共用上述 3 秒 steer 启动保护，不另起脚本专用计时器。后续 await、局部变量、正常完成时的 `finally` 在同一次执行中继续，不重放脚本。
+`codemode` 保留原名、raw JavaScript grammar、discovery、models、store 和原生 executor。没有第二套 sandbox，也不重写脚本。meantime 通过 facade 调用官方 `createCodemodeExtension`，通过 facade 的 `appendEntry` 加入 store 写入 guard，**不注册同名工具**；官方内建本身没有这个 guard。capture 后 `manageTools` 按 `sourceInfo.path === "builtin:codemode"` 识别真实内置 definition，仅包装其 execute，原 schema、grammar、prepareLoadout、renderers、来源与对象身份均不变。宿主桥只在当前实例保留 `_executeNestedToolCall`、原生 runner 的 `takeRecord`/`clear` 及 scope Map 的删除生命周期，drain 后按原 descriptor 归还，不替换全局 registry；carrier/fence/scope 桥全部保留。它不增加 `__background__` 参数：使用现有计时、Ctrl+Shift+B、steer 或 `/meantime detach` 分离**整段脚本的观察者**。CodeMode 根脚本与普通工具共用上述 3 秒 steer 启动保护，不另起脚本专用计时器。后续 await、局部变量、正常完成时的 `finally` 在同一次执行中继续，不重放脚本。
+
+已知 SDK 限制：capture 使用默认 factory options，不保留 `models:false`；CLI 内置走默认 options，无影响。
+
+若用户禁用 builtin 或 SDK 未加载 `codemode`，meantime 不会自动补一份，尊重现有设置；真实第三方同名替换 warning 照常显示，不隐藏。SDK 需要整段托管时，必须提供命名 `builtin:codemode` 的 InlineExtension（`{ name: "codemode", builtin: true, ... }`）；非命名的自定义 codemode 不会被当作原生定义认领。
 
 - 普通子调用及其后代等待原生最终结果，不因计时、steer 或快捷键独立变成句柄；显式 `tools.someTool({...args, __background__: "yes"})` 仍可独立转后台。**脚本结束立即返回自己的结果**（包括 child handle），不等待独立子 producer，即使 `autoDetachMs: 0`。后代的 scope/记录有独立 drain 生命周期，晚到孙调用仍保留原 ID 和 usage；它们不继续占用已完成根脚本的前台观察者或 runtime admission。
-- 原生限制不变：整个 Pi 进程**最多两个存活或正在退出的 CodeMode worker**。第三次执行立即返回原生容量错误；不排队、不自动重试，也不取消现有任务。`meantime` 在 `codemode.mode: "only"` 中仍直接声明，list/wait/cancel 不需要第三个 worker。
+- 原生限制不变：整个 Pi 进程**最多两个存活或正在退出的 CodeMode worker**。第三次执行立即返回原生容量错误；不排队、不自动重试，也不取消现有任务。`meantime` 保持 `model-only` 声明，在 `codemode.mode: "only"` 中仍由模型直接调用；list/wait/cancel 不需要第三个 worker。
 - 中止 wait 不取消 producer；显式 cancel 中止作业所属 signal 链。原生硬取消可能终止 VM，**不保证执行 JavaScript `finally`**，也不保证远端副作用回滚。
 - 树导航前、会话替换及 reload/shutdown 会请求取消并 drain 原生脚本及其 nested pipeline，再放行生命周期变化。非合作宿主子工具会延迟这个边界；grace timeout 不是已 drain 的证明。不承诺运行中的脚本跨 reload 存活。
 

@@ -156,7 +156,7 @@ test('model cancel returns the single-wait stored result with native payload and
   } finally { await instance.dispose(); }
 });
 
-test('real SDK codemode cancel receives the settled structured result without a completion message', async () => {
+test('real SDK: a script-created task is cancelled directly without a completion message', async () => {
   const root = mkdtempSync(join(tmpdir(), 'meantime-codemode-cancel-'));
   const settingsManager = sdk.SettingsManager.inMemory({ defaultTools: ['codemode', 'fixture', 'meantime'] });
   let instance: ReturnType<typeof install> | undefined;
@@ -178,8 +178,7 @@ test('real SDK codemode cancel receives the settled structured result without a 
   try {
     await loader.reload(); assert.deepEqual(loader.getExtensions().errors, []);
     const modelRuntime = await sdk.ModelRuntime.create({ authPath: join(root, 'auth.json'), modelsPath: join(root, 'models.json') });
-    const code = `const handle = await tools.fixture({__background__: 'yes'});
-      return await tools.meantime({action: 'cancel', ids: [handle.task.id]});`;
+    const code = `return await tools.fixture({__background__: 'yes'});`;
     const manager = sdk.SessionManager.inMemory(root);
     // SDK nested dispatch requires a recorded assistant call as its parent.
     manager.appendMessage({ role: 'assistant', api: 'openai-completions', provider: 'fixture', model: 'fixture',
@@ -192,9 +191,14 @@ test('real SDK codemode cancel receives the settled structured result without a 
     await session.bindExtensions({ mode: 'rpc' });
     session.setActiveToolsByName(['codemode', 'fixture', 'meantime']);
     const codemode = session.agent.state.tools.find(tool => tool.name === 'codemode')!;
-    const result = await codemode.execute('cancel-script', { code }, new AbortController().signal);
+    const script = await codemode.execute('cancel-script', { code }, new AbortController().signal);
+    assert.notEqual(script.isError, true, JSON.stringify(script));
+    const output = script.content.filter(b => b.type === 'text').map(b => b.text).join('');
+    const handle = JSON.parse(output.slice(output.indexOf('Output:\n') + 'Output:\n'.length));
+    const control = session.agent.state.tools.find(tool => tool.name === 'meantime')!;
+    const result = await control.execute('cancel-control', { action: 'cancel', ids: [handle.task.id] }, new AbortController().signal);
     assert.notEqual(result.isError, true, JSON.stringify(result));
-    assert.match(JSON.stringify(result.content), /CODEMODE_CANCELLED_NATIVE/);
+    assert.deepEqual((result.structuredContent as { result: unknown }).result, { marker: 'CODEMODE_CANCELLED_NATIVE' });
     assert.match(JSON.stringify(result.content), /cancelled/);
     const task = (instance!.inspect() as { tasks: Snapshot[] }).tasks[0]!;
     assert.equal(task.state, 'cancelled'); assert.equal(task.notification, 'observed');

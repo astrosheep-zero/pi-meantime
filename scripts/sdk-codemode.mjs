@@ -1,4 +1,4 @@
-/** Actual Pi 1.3 + public factory replacement + native QuickJS workers.
+/** Actual Pi 1.3 + in-place builtin execution wrapper + native QuickJS workers.
  * Offline synthetic provider only. No paid API, install, CLI/TUI or worker patch.
  * Uses the pinned SDK by default; PI_TEST_SDK_MODULES can select installed Pi's
  * node_modules to exercise the bundled host identity as well.
@@ -10,7 +10,7 @@ import { channel } from 'node:diagnostics_channel';
 import { fileURLToPath } from 'node:url';
 import { mock } from 'node:test';
 import { runToolCall } from '@earendil-works/pi-agent-core';
-import { registerCodemode } from '../src/codemode.ts';
+import { captureCodemodeExecute } from '../src/codemode.ts';
 import { install } from '../src/extension.ts';
 import { validateConfig } from '../src/config.ts';
 const base = process.env.PI_TEST_SDK_MODULES;
@@ -53,8 +53,7 @@ const loader = new sdk.DefaultResourceLoader({ cwd: root, agentDir: root, settin
   // SDK's unbundled imports instead use its official inline factory API.
   additionalExtensionPaths: base ? [fileURLToPath(new URL('../index.mjs', import.meta.url))] : [],
   extensionFactories: [{ name: 'codemode', builtin: true, replaceable: true, factory: sdk.createCodemodeExtension() }, ...(!base ? [pi => {
-    registerCodemode(pi, sdk.createCodemodeExtension);
-    install(pi, { config: validateConfig(config) });
+    install(pi, { config: validateConfig(config), codemodeExecute: captureCodemodeExecute(pi, sdk.createCodemodeExtension) });
   }] : []), pi => {
     const ownGeneration = ++generation;
     pi.registerTool({ name: 'hold', label: 'hold', description: 'Held fixture', parameters: { type: 'object', properties: { key: { type: 'string' }, uncooperative: { type: 'boolean' } }, required: ['key'] }, outputSchema: { type: 'object' },
@@ -126,6 +125,9 @@ const taskId = message => message.details.id;
 const completions = () => session.sessionManager.getEntries().filter(e => e.customType === 'meantime-index' && e.data.change.completion).map(e => e.data.change.completion);
 function scriptResult(c) { return c.result.content.filter(b => b.type === 'text').map(b => b.text).join(''); }
 function bindStream() {
+  assert.deepEqual(loader.getExtensions().warnings ?? [], [], 'no replacement warning, including reload/reopen');
+  assert.equal(loader.getExtensions().extensions.filter(e => e.tools.has('codemode')).length, 1, 'only builtin registers codemode');
+  assert.equal(session.getAllTools().find(t => t.name === 'codemode').sourceInfo.path, 'builtin:codemode');
   session.agent.streamFunction = (_model, context) => {
     contexts.push(structuredClone(context));
     const stream = createAssistantMessageEventStream(), plan = plans.shift();
@@ -136,11 +138,14 @@ function bindStream() {
 try {
   await loader.reload();
   assert.deepEqual(loader.getExtensions().errors, []);
-  assert(!loader.getExtensions().extensions.some(e => e.path === 'builtin:codemode'), 'public factory composition replaced builtin');
+  assert(loader.getExtensions().extensions.some(e => e.path === 'builtin:codemode'), 'builtin remains loaded');
+  assert.deepEqual(loader.getExtensions().warnings ?? [], []);
   const runtime = await sdk.ModelRuntime.create({ authPath: root + '/auth.json', modelsPath: root + '/models.json', offline: true });
   await runtime.setRuntimeApiKey('anthropic', 'offline-dummy');
   ({ session } = await sdk.createAgentSession({ cwd: root, agentDir: root, model, modelRuntime: runtime, resourceLoader: loader, settingsManager: settings, sessionManager: sdk.SessionManager.create(root, root + '/sessions') }));
   const errors = [];
+  const originalDefinition = session.getToolDefinition('codemode');
+  const originalDescriptors = Object.getOwnPropertyDescriptors(originalDefinition);
   await session.bindExtensions({ mode: 'rpc', onError: e => errors.push(e) });
   session.subscribe(e => {
     if (e.type.startsWith('tool_execution') || e.type === 'agent_end') events.push(e);
@@ -150,10 +155,16 @@ try {
   });
   bindStream();
   const native = session.getToolDefinition('codemode');
+  assert.equal(native, originalDefinition, 'builtin definition object stays intact');
+  const { execute: managedExecute, ...unchanged } = Object.getOwnPropertyDescriptors(native);
+  const { execute: originalExecute, ...originalMetadata } = originalDescriptors;
+  assert.notEqual(managedExecute.value, originalExecute.value, 'only execute is wrapped');
+  assert.deepEqual(unchanged, originalMetadata, 'loadout, schema, grammar and renderers stay native');
   assert.equal(native.exposure, 'model-only'); assert.equal(native.defaultActive, false);
   assert.equal(native.constrainedSampling.type, 'grammar');
   assert.deepEqual(Object.keys(native.parameters.properties), ['code'], 'raw grammar/schema unchanged');
   assert(native.reachesTools({ code: 'return ALL_TOOLS' }) === 'all');
+  assert.equal(session.getToolDefinition('meantime').exposure, 'model-only');
 
   gate('continue');
   const early = await prompt('codemode', { code: 'let local=1; try { const a=await tools.hold({key:"continue"}); local+=a.value; const b=await tools.second({value:local}); store("answer", b.value); return b.value; } finally { text("FINALLY_ONCE"); }' }, 'continuation');
@@ -211,19 +222,25 @@ try {
   // Disable detachment via Pi's native sequential mode, not a timing guess about
   // worker startup on loaded machines.
   session.agent.toolExecution = 'sequential';
-  const foreground = await prompt('codemode', { code: 'const x=await tools.second({value:6}); return {value:x.value, models:typeof models.getModelsOfType, found:(await describeTool("second"))!==undefined, stored:load("answer")};' }, 'foreground');
+  const foreground = await prompt('codemode', { code: 'const x=await tools.second({value:6}); return {value:x.value, models:typeof models.getModelsOfType, found:(await describeTool("second"))!==undefined, stored:load("answer"), control:"meantime" in tools, controlListed:ALL_TOOLS.some(t=>t.name==="meantime"), controlDescribed:(await describeTool("meantime"))!==undefined};' }, 'foreground');
   session.agent.toolExecution = 'parallel';
-  assert.equal(foreground.isError, false);
+  assert.equal(foreground.isError, false, JSON.stringify(foreground));
   assert.equal(foreground.usage.input, 3);
   assert.deepEqual(foreground.nestedCalls.calls.map(c => c.id), ['foreground/1']);
   assert.match(JSON.stringify(foreground.content), /models.*function/);
   assert.match(JSON.stringify(foreground.content), /stored.*42/);
+  const output = foreground.content.filter(b => b.type === 'text').map(b => b.text).join('');
+  const visibility = JSON.parse(output.slice(output.indexOf('Output:\n') + 'Output:\n'.length));
+  assert.equal(visibility.control, false, 'control is not callable inside scripts');
+  assert.equal(visibility.controlListed, false);
+  assert.equal(visibility.controlDescribed, false);
   assert(!completions().some(c => c.toolCallId === 'foreground'), 'foreground has no linked completion or extra accounting');
   // Explicit child yes is independent even when automatic root detach is OFF.
   // Both unknown-details cases exercise real append-only JSONL and real waits.
   config.autoDetachMs = 0;
   fs.writeFileSync(root + '/settings.json', JSON.stringify({ meantime: config }));
   await bounded(session.reload(), 'reload with automatic detach off'); bindStream();
+  assert.deepEqual(Object.getOwnPropertyDescriptors(originalDefinition), originalDescriptors, 'retired builtin fully restored');
 
   // Exercise the real native root with inherited steer, but advance its common
   // runtime clock/timer deterministically. Worker startup is still a real barrier.
@@ -404,7 +421,7 @@ try {
   assert.equal(session.getSessionStats().tokens.input, reopenedUsage, 'reopened retrieval does not recharge');
   assert.deepEqual(errors, []);
   console.log('NATIVE_CODEMODE_PASS', JSON.stringify({ sessionFile: file, linkedCompletion: id, usageInput: reopenedUsage,
-    verified: ['factory replacement/raw grammar', 'normal continuation/local/finally/post-hook values', 'nested IDs/events/records', 'independent child yes with timer off', 'late grandchildren/scope delta accounting', 'BigInt/cycle preflight/JSONL parent integrity', 'wait interruption', '3s inherited steer/repeated steer/native continuation', 'native two-worker capacity/direct controls/only mode', 'cancel/tree drain/reload including finished roots', 'JSONL/reopened usage/repeated waits'] }));
+    verified: ['in-place builtin/zero replacement warnings/metadata and restoration', 'normal continuation/local/finally/post-hook values', 'nested IDs/events/records', 'independent child yes with timer off', 'late grandchildren/scope delta accounting', 'BigInt/cycle preflight/JSONL parent integrity', 'wait interruption', '3s inherited steer/repeated steer/native continuation', 'native two-worker capacity/direct controls/only mode', 'cancel/tree drain/reload including finished roots', 'JSONL/reopened usage/repeated waits'] }));
 } finally {
   for (const pending of gates.values()) pending.resolve();
   try {

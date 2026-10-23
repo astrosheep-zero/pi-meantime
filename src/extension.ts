@@ -2,7 +2,7 @@ import { keyHint } from '@earendil-works/pi-coding-agent';
 import { Text, getCapabilities, getImageDimensions, imageFallback, stripTerminalSequences,
   matchesKey, SelectList, truncateToWidth, visibleWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
 import type { Config } from './config.ts';
-import type { Context, EventHandler, EventMap, Json, PiHost, Result } from './protocol.ts';
+import type { Context, EventHandler, EventMap, Json, PiHost, Result, Tool } from './protocol.ts';
 import { captureSession, manageTools } from './host.ts';
 import type { HostSession, ManagedCall } from './host.ts';
 import { CONTROL, isRecord, projectResult } from './schema.ts';
@@ -12,7 +12,7 @@ import { CompletionDelivery } from './notifications.ts';
 import type { Snapshot, View, TaskRecord, IndexChange } from './runtime.ts';
 import { truncateUtf8 } from './store.ts';
 
-export interface InstallOptions { config: Config; connect?: (pi: PiHost) => HostSession }
+export interface InstallOptions { config: Config; connect?: (pi: PiHost) => HostSession; codemodeExecute?: Tool['execute'] }
 const RESULT_SCHEMA = {
   type: 'object', properties: { task: { type: 'object' }, result: {}, tasks: { type: 'array', items: { type: 'object' } }, pending: { type: 'array', items: { type: 'object' } }, result_available: { type: 'boolean' } },
 };
@@ -270,7 +270,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   });
 
   pi.registerTool({
-    name: 'meantime', label: 'Background tasks', exposure: 'direct',
+    name: 'meantime', label: 'Background tasks', exposure: 'model-only',
     description: 'Background tasks: list, wait, cancel. wait blocks until settled, user detach or timeout seconds (default 30, no upper limit); timeout: 0 returns current state/result immediately; omit ids to wait for every pending task. cancel requires ids. mode any|all (default all). Never poll in a loop. Unique ID prefixes accepted. Cancellation does not prove rollback.',
     parameters: { type: 'object', properties: {
       action: { type: 'string', enum: ['list', 'wait', 'cancel'] },
@@ -394,7 +394,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
         };
     });
     delivery = boundDelivery;
-    host = manageTools(pi, session, config, run, diagnostic);
+    host = manageTools(session, config, run, diagnostic, options.codemodeExecute);
     updateStatus();
   }
   async function stop(): Promise<void> {
@@ -434,7 +434,6 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   on('ui_prompt_end', () => runtime?.prompt(false));
   on('tool_execution_start', (event, ctx) => {
     if (live && owner(ctx) === currentOwner) {
-      host?.start(event);
       calls.set(event.toolCallId, { parent: event.parentToolCallId });
     }
   });

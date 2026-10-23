@@ -3,27 +3,17 @@ import type { createCodemodeExtension, ExtensionAPI } from '@earendil-works/pi-c
 import type { HostSession } from './host.ts';
 import type { Outcome, Result, ScopeResult, Tool, Update } from './protocol.ts';
 
-const definitions = new WeakSet<object>();
 const storeOwner = new AsyncLocalStorage<() => void>();
 
-/** Compose the public factory. No executor, worker admission or source transform. */
-export function registerCodemode(pi: ExtensionAPI, factory: typeof createCodemodeExtension): void {
+/** Capture the public factory's executor with guarded store writes; register nothing. */
+export function captureCodemodeExecute(pi: ExtensionAPI, factory: typeof createCodemodeExtension): Tool['execute'] {
+  let execute!: Tool['execute'];
   factory()({ ...pi,
     appendEntry(type, data) { storeOwner.getStore()?.(); pi.appendEntry(type, data); },
-    registerTool(native) {
-      const prepare = native.prepareLoadout!;
-      const definition = { ...native,
-        prepareLoadout(loadout: Parameters<typeof prepare>[0]) {
-          const result = prepare(loadout);
-          return result && { ...result, hiddenDeclarations: result.hiddenDeclarations?.filter(name => name !== 'meantime') };
-        },
-      };
-      definitions.add(definition);
-      pi.registerTool(definition);
-    },
+    registerTool(native) { execute = native.execute; },
   });
+  return execute;
 }
-export function isNativeCodemode(definition: Tool): boolean { return definitions.has(definition); }
 export function withStoreOwner<T>(check: () => void, execute: () => T): T { return storeOwner.run(check, execute); }
 
 type Usage = NonNullable<Result['usage']>;
@@ -45,7 +35,7 @@ interface Root {
   late?: Outcome;
 }
 
-function override<T extends object, K extends keyof T>(target: T, key: K, value: T[K]): () => void {
+export function override<T extends object, K extends keyof T>(target: T, key: K, value: T[K]): () => void {
   const saved = Object.getOwnPropertyDescriptor(target, key);
   if (saved?.configurable === false || (!saved && !Object.isExtensible(target))) throw new Error(`Cannot bridge readonly Pi property: ${String(key)}`);
   Object.defineProperty(target, key, { configurable: true, enumerable: saved?.enumerable ?? false, writable: true, value });

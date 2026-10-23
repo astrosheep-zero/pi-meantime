@@ -13,24 +13,24 @@
 | `pi-agent-core.runToolCall` | carrier 执行、原生错误转换及最终结果处理 |
 | `ctx.executeTool()` / `ctx.tools` | job 上下文保留原生嵌套分派和可调用性 |
 | `input` / `registerShortcut` | steer 返回 continue；快捷键请求 detach |
-| `tool_execution_start/end` | 原始参数/父链、临时 start 清理及句柄发布确认 |
-| `tool_call` | 只关联 validated input 的弱身份与代次；不决定权限、不启动任务 |
+| `session._beforeToolCall` | 进入原生权限链前按代次记录 validated args 的弱身份、raw 和 parent；不决定/不重跑权限 |
+| `tool_execution_start/end` | start 记录 steer 父链；end 发布句柄、清理 primitive fallback；不再保存 raw |
 | `ui_prompt_start/end` | 审批期间暂停 detach 和通知 |
 | `session.sendCustomMessage()` / `session.subscribe()` | 请求边界无触发暂存、空闲唤起的 Promise 及公开 message_end 消费确认；不使用可清除的 core steering 队列 |
 | `appendEntry()` | 非模型上下文的任务索引 |
 | before_agent_start、turn_end、settled、compact、tree 事件 | 请求边界交接及受 Stop/失败暂停约束的恢复 |
 
-`registerTool` 仅添加 meantime 控制工具，不替代 Bash 或注册受管工具别名。原 prepareLoadout、exposure、来源与描述保留；builtin Codemode 和 tool_search 不替换。不存在 blockOriginalCalls 路由守卫、注册表轮询配置或旧代理兼容层。
+`registerTool` 仅添加 `model-only` 的 meantime 控制工具，不替代 Bash、不注册受管工具别名，也不注册 `codemode`。meantime 用 facade 调用官方 `createCodemodeExtension`，通过 facade 的 `appendEntry` 加入 store 写入 guard，但 capture 后不真正注册；官方内建本身没有这个 guard。`manageTools` 按 `sourceInfo.path === "builtin:codemode"` 认领真实内置 definition，只包装其 execute，原 prepareLoadout、exposure、schema/grammar、renderers、来源、描述与对象身份保持原语义。builtin 被禁用或 SDK 未加载时不自动补一份，真实第三方同名替换 warning 不隐藏；SDK 需要整段托管时须以命名 `builtin:codemode` 的 InlineExtension（`{ name: "codemode", builtin: true, ... }`）加载，非命名的自定义 codemode 不当原生定义认领。tool_search 不替换。carrier/fence/scope 桥保留。已知 SDK 限制：capture 使用默认 factory options，不保留 `models:false`；CLI 默认无影响。不存在 blockOriginalCalls 路由守卫、注册表轮询配置或旧代理兼容层。
 
 ## 非官方接缝
 
-普通 ExtensionAPI 没有“当前 AgentSession”或围绕原生 producer 的 middleware。因此 adapter 同步临时替换导出的 `AgentSession.prototype.getAllTools`，调用 `pi.getAllTools()`，在 finally 按归属立即恢复；随后只按 session 拦截私有 `_afterToolCall`（不改 `_beforeToolCall`）。包装公开 loader runtime `refreshTools()`、修改真实 ToolDefinition 和挂接私有回调均是 monkeypatch，**不是官方支持的扩展协议**。refresh 包装先让宿主选择获胜定义，再装饰，必要时第二次原生刷新；动作全程同步，无注册表轮询、不修改 runner 方法、不解析私有工具优先级。
+普通 ExtensionAPI 没有“当前 AgentSession”或围绕原生 producer 的 middleware。因此 adapter 同步临时替换导出的 `AgentSession.prototype.getAllTools`，调用 `pi.getAllTools()`，在 finally 按归属立即恢复；随后按代次包装私有 `_beforeToolCall`（权限链前标记，不决定/不重跑权限），并保留每 session 常驻 `_afterToolCall` fence；dispose 按归属恢复 before descriptor/原型 lookup。包装公开 loader runtime `refreshTools()`、修改真实 ToolDefinition 和挂接私有回调均是 monkeypatch，**不是官方支持的扩展协议**。refresh 包装先让宿主选择获胜定义，再装饰，必要时第二次原生刷新；动作全程同步，无注册表轮询、不修改 runner 方法、不解析私有工具优先级。
 
-所有修改只在属性仍为本扩展所有时恢复。入口通过 Pi Jiti `require` 加载宿主及内部模块，并将宿主 AgentSession 传给 captureSession，避免原生 ESM 取得本地开发 SDK 副本。每个 session 复用一个常驻 after fence，不串联退休 adapter；换代只换 token。对象/数组以公开 `tool_call.input`（即 execute / after 的 validated args）为 WeakMap 键，值只含 token 和原始 start 元数据，不持有退休 runner。旧 snapshot handler 即使在 dispose 后恢复也标记旧 token，不向新代次捐赠 admission。after 在原生处理/跳过前消费标记；没有 after 的对象标记随 args 回收。只有未管理的 primitive-root input 使用 ID fallback，after/end 清理；最终 shutdown 后 host 已撤掉的晚到 no-after primitive 标记可留到 session GC，不加常驻订阅。primitive fallback 不支持相同 ID 的重叠复用；对象结果 fence 不依赖 ID 隔离。start 临时表在 tool_call/end/dispose 清除；异常中断 start 且没有 end 的记录最多留到本代 dispose。fence 不卸载，对无标记及当前代次调用透传原 after；这是唯一不按归属恢复的修改。旧执行中子调用仍受 fence 保护；runner / loader runtime 身份及代次检查隔离旧 finalizer、嵌套调用。内部 session 连接端口仅用于确定性测试，不增加用户配置。
+所有修改只在属性仍为本扩展所有时恢复。入口通过 Pi Jiti `require` 加载宿主及内部模块，并将宿主 AgentSession 传给 captureSession，避免原生 ESM 取得本地开发 SDK 副本。before 按代次安装；不再订阅 `tool_call`，也不维护 start 表或 host.start 关联。挂起审批在 reload 后仍带旧 token，execute/after 不接受旧代次，旧 frame 不向新代次捐赠 admission。对象/数组 frame 以 `context.args` 为 WeakMap 键，值为 token/raw/parent；execute 用最终 validated args 取回，不保留完整 ToolCall。未执行的对象 frame 随 validated args 回收；primitive-root 用 ID fallback，after / `tool_execution_end` 清理；最终 shutdown 后 host 已撤掉的晚到 no-after 标记可留到 session GC，不加常驻订阅。primitive fallback 不支持相同 ID 的重叠复用；对象 fence 不依赖 ID 隔离。before 在 dispose 复用现有 override 归属检查恢复原 descriptor/原型 lookup；after fence 常驻，对无标记及当前代次调用透传原 after。旧执行中子调用仍受 fence 保护；runner / loader runtime 身份及代次检查隔离旧 finalizer、嵌套调用。内部 session 连接端口仅用于确定性测试，不增加用户配置。
 
 ## 一次准备，一次执行，一次最终处理
 
-控制字段在原参数 preparer 前移除；原生准备、校验和完整权限链各一次。公开 start 发生在 prepareArguments 之前，保存任何 raw input（包括可由原 preparer 修复的 JSON 字符串）；公开 tool_call 只建立弱身份关联。execute 入口本身证明完整权限链通过，使用最终 validated / mutated args，才读取 raw mode（primitive 默认为 auto，native Codemode 固定 auto）。
+控制字段在原参数 preparer 前移除；原生准备、校验和完整权限链各一次。`_beforeToolCall` 在权限链前读取 `context.toolCall.arguments` 作为 raw（含可由原 preparer 修复的 JSON 字符串），以 `context.args` 弱键关联 token/parent；权限仍由原 hook 完整执行，不决定/不重跑。execute 入口本身证明完整权限链通过，使用最终 validated / mutated args，才读取 raw mode（primitive 默认为 auto，native Codemode 固定 auto）。
 
 官方 runToolCall 使用未注册的同名空参数 carrier，无 before hook / repair。carrier 调用保存的原 execute 和捕获的真实 session after 管线各一次，保留原 name / call ID / parentId；结果完全 finalized 后才交 runtime 保存。成功 admission 时仅跳过外层重复 after；失败 admission、拒绝及无效调用保留外层原生处理。原工具钩子不处理后台句柄。
 

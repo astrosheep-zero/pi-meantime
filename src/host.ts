@@ -1,12 +1,12 @@
 import { AgentSession } from '@earendil-works/pi-coding-agent';
 import type { SessionManager } from '@earendil-works/pi-coding-agent';
-import { codemodeScopes, isNativeCodemode, withStoreOwner } from './codemode.ts';
+import { codemodeScopes, override, withStoreOwner } from './codemode.ts';
 import { runToolCall } from '@earendil-works/pi-agent-core';
-import type { AfterToolCallContext, AfterToolCallResult } from '@earendil-works/pi-agent-core';
+import type { AfterToolCallContext, AfterToolCallResult, BeforeToolCallContext, BeforeToolCallResult } from '@earendil-works/pi-agent-core';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
 import type { Config } from './config.ts';
 import type { DeliveryHost } from './notifications.ts';
-import type { Mode, Outcome, PiHost, Result, ScopeResult, Tool, ToolContext, Update, EventMap } from './protocol.ts';
+import type { Mode, Outcome, PiHost, Result, ScopeResult, Tool, ToolContext, Update } from './protocol.ts';
 import { decorateSchema, isRecord, matches, splitControl } from './schema.ts';
 
 /** Pi 1.3 port. Native CodeMode additionally retains the session's nested scopes. */
@@ -17,6 +17,7 @@ export interface HostSession extends DeliveryHost {
   readonly agent: { toolExecution?: 'parallel' | 'sequential' };
   readonly extensionRunner: object;
   readonly resourceLoader: { getExtensions(): { runtime: { refreshTools(): void } } };
+  _beforeToolCall(context: BeforeToolCallContext, parentId?: string): Promise<BeforeToolCallResult | undefined>;
   _afterToolCall(context: AfterToolCallContext, parentId?: string): Promise<AfterToolCallResult | undefined>;
 }
 export function captureSession(pi: PiHost, Session = AgentSession): HostSession {
@@ -50,8 +51,7 @@ const CARRIER: AssistantMessage = { role: 'assistant', content: [], api: 'openai
 // generation never reach successor result hooks; untagged calls pass through.
 const FENCE = Symbol.for('pi-meantime.result-fence');
 type After = HostSession['_afterToolCall'];
-type Start = EventMap['tool_execution_start'];
-interface Fence { native: After; owner?: object; calls: WeakMap<object, { owner: object; start?: Start }>; primitives: Map<string, object> }
+interface Fence { native: After; owner?: object; calls: WeakMap<object, { owner: object; raw?: unknown; parent?: string }>; primitives: Map<string, object> }
 const objectKey = (value: unknown): value is object => value !== null && typeof value === 'object';
 function resultFence(session: HostSession): Fence {
   const existing = (session._afterToolCall as After & { [FENCE]?: Fence })[FENCE];
@@ -67,18 +67,20 @@ function resultFence(session: HostSession): Fence {
   return fence;
 }
 
-export function manageTools(pi: PiHost, session: HostSession, config: Config, run: (call: ManagedCall) => Promise<Result>, diagnostic: (name: string, message: string) => void) {
+export function manageTools(session: HostSession, config: Config, run: (call: ManagedCall) => Promise<Result>, diagnostic: (name: string, message: string) => void, codemodeExecute?: Tool['execute']) {
   const runner = session.extensionRunner, loaderRuntime = session.resourceLoader.getExtensions().runtime;
   const refresh = loaderRuntime.refreshTools;
   const fence = resultFence(session), token = {}; fence.owner = token;
-  const patches = new Map<Tool, Patch>(), starts = new Map<string, Start>();
+  const patches = new Map<Tool, Patch>();
   let scopes: ReturnType<typeof codemodeScopes> | undefined;
+  let codemode: Tool | undefined;
   let closing = false;
   // Copied definitions may contain our wrappers; unwrap exact identities only.
   const origins = new WeakMap<object, unknown>();
   const active = () => fence.owner === token && session.extensionRunner === runner && session.resourceLoader.getExtensions().runtime === loaderRuntime;
   const assertActive = () => { if (!active()) throw new Error('Managed tool session has retired'); };
-  const eligible = (definition: Tool) => definition.name !== 'meantime' && definition.executionMode !== 'sequential'
+  const isNativeCodemode = (definition: Tool) => definition === codemode;
+  const eligible = (definition: Tool) => definition.name !== 'meantime' && definition.executionMode !== 'sequential' && definition.exposure !== 'hidden'
     && (definition.name === 'bash' || (matches(definition.name, config.include) && !matches(definition.name, config.exclude)))
     && (isNativeCodemode(definition) || ['direct', 'codemode', 'deferred'].includes(definition.exposure ?? 'direct'));
   function restore(definition: Tool, patch: Patch): void {
@@ -102,7 +104,7 @@ export function manageTools(pi: PiHost, session: HostSession, config: Config, ru
       if (descriptor?.configurable === false || (!descriptor && !Object.isExtensible(definition))) throw new Error(`Cannot decorate readonly tool property: ${key}`);
     }
     const parameters = nativeCodemode ? definition.parameters : decorateSchema(definition.parameters);
-    const nativeExecute = definition.execute, prepare = definition.prepareArguments;
+    const nativeExecute = nativeCodemode ? codemodeExecute! : definition.execute, prepare = definition.prepareArguments;
     const patch: Patch = new Map();
     const values = {
       parameters,
@@ -115,14 +117,14 @@ export function manageTools(pi: PiHost, session: HostSession, config: Config, ru
       async execute(id: string, args: Record<string, unknown>, signal: AbortSignal | undefined, update: Update | undefined, ctx: ToolContext): Promise<Result> {
         assertActive();
         if (closing) throw new Error('Managed tool session is closing');
-        const frame = fence.calls.get(args)?.start;
-        if (!frame) throw new Error('Managed tool execution requires the native lifecycle pipeline');
-        // Execute entry proves every permission handler passed; args are their
-        // final validated/mutated input. Start keeps raw intent, even primitives.
-        const mode = !nativeCodemode && isRecord(frame.args) ? splitControl(frame.args).mode : 'auto';
+        const frame = fence.calls.get(args);
+        if (frame?.owner !== token) throw new Error('Managed tool execution requires the native lifecycle pipeline');
+        // Before links raw and validated args; execute proves the whole permission
+        // chain passed. Keep its final mutations without validating again.
+        const mode = !nativeCodemode && isRecord(frame.raw) ? splitControl(frame.raw).mode : 'auto';
         // Ordinary descendants belong to the whole script, not to a second
         // observer. In particular mode:no alone would still detach on steer.
-        const nestedRoot = frame.parentToolCallId && scopes?.rootId(frame.parentToolCallId);
+        const nestedRoot = frame.parent && scopes?.rootId(frame.parent);
         if (nestedRoot && mode !== 'yes') return nativeExecute.call(definition, id, args, signal, update, ctx);
         if (nativeCodemode) scopes ??= codemodeScopes(session);
         const lease = nativeCodemode || nestedRoot ? scopes!.begin(id, nativeCodemode) : undefined;
@@ -151,7 +153,7 @@ export function manageTools(pi: PiHost, session: HostSession, config: Config, ru
                   if (closing || signal?.aborted) throw new Error('Codemode store owner has been cancelled');
                 }, () => nativeExecute.call(definition, id, args, signal, update, jobCtx)) }],
               assistantMessage: CARRIER, context: { messages: [] }, signal: jobSignal, onUpdate,
-              afterToolCall: inner => { assertActive(); return fence.native.call(session, { ...inner, args }, frame.parentToolCallId); },
+              afterToolCall: inner => { assertActive(); return fence.native.call(session, { ...inner, args }, frame.parent); },
             });
           },
         }); } catch (error) { lease?.end(); throw error; } // Failed admission retains native finalization.
@@ -168,8 +170,11 @@ export function manageTools(pi: PiHost, session: HostSession, config: Config, ru
   }
   function reconcile(): boolean {
     if (!active()) return false;
+    const tools = session.getAllTools();
+    codemode = codemodeExecute && tools.some(t => t.name === 'codemode' && t.sourceInfo?.path === 'builtin:codemode')
+      ? session.getToolDefinition('codemode') : undefined;
     // Built-in MCP is a provider of external tools, not a native tool itself.
-    const definitions = new Set(session.getAllTools().filter(t => t.name === 'bash'
+    const definitions = new Set(tools.filter(t => t.name === 'bash' || (t.name === 'codemode' && codemode)
       || !t.sourceInfo?.path?.startsWith('builtin:') || t.sourceInfo.path === 'builtin:mcp')
       .map(t => session.getToolDefinition(t.name)).filter((d): d is Tool => !!d));
     let changed = false;
@@ -188,24 +193,24 @@ export function manageTools(pi: PiHost, session: HostSession, config: Config, ru
     // Select the winner first; rebuild copied AgentTools only if raw fields changed.
     if (reconcile()) refresh.call(loaderRuntime);
   };
-  // Bind the generation, not the mutable extension host: an old permission
-  // snapshot may resume after dispose/reload. Tag even then, but never admit it.
-  const offCall = pi.on('tool_call', event => {
-    if (objectKey(event.input)) fence.calls.set(event.input, { owner: token, start: active() ? starts.get(event.toolCallId) : undefined });
-    else fence.primitives.set(event.toolCallId, token);
-    starts.delete(event.toolCallId);
+  // Tag before entering permissions, so suspended approvals keep their original
+  // generation even after reload. The native hook still owns the entire chain.
+  const before = session._beforeToolCall;
+  const restoreBefore = override(session, '_beforeToolCall', function (this: HostSession, context, parent) {
+    if (objectKey(context.args)) fence.calls.set(context.args, { owner: token, raw: context.toolCall.arguments, parent });
+    else fence.primitives.set(context.toolCall.id, token);
+    return before.call(this, context, parent);
   });
   loaderRuntime.refreshTools = refreshHook;
   refreshHook();
   return {
     refresh: refreshHook,
-    start(event: Start) { if (active()) starts.set(event.toolCallId, event); },
-    end(id: string) { starts.delete(id); fence.primitives.delete(id); },
+    end(id: string) { fence.primitives.delete(id); },
     names: () => [...patches.keys()].map(t => t.name),
     closeAdmission() { closing = true; },
     dispose() {
       scopes?.dispose();
-      offCall(); starts.clear();
+      restoreBefore();
       if (fence.owner === token) fence.owner = undefined;
       if (loaderRuntime.refreshTools === refreshHook) loaderRuntime.refreshTools = refresh;
       for (const [definition, patch] of patches) restore(definition, patch);

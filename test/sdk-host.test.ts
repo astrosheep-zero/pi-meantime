@@ -138,15 +138,15 @@ async function sdk(managed: boolean, maxRunning = 8) {
   if (managed) assert.ok((plugin!.inspect() as any).managed.includes('victim'), 'ordinary session_start captured genuine session');
   const taskIds = new Map<string, string>();
   let serial = 0;
-  async function call(name: string, args: unknown, id = `call-${++serial}`, signal = new AbortController().signal) {
+  async function call(name: string, args: unknown, id = `call-${++serial}`, signal = new AbortController().signal, emitLifecycle = true) {
     const toolCall = { type: 'toolCall', name, id, arguments: args } as ToolCall;
     const assistant = { role: 'assistant', content: [toolCall], stopReason: 'toolUse', timestamp: 0 } as AssistantMessage;
     session.agent.state.messages.push(assistant);
-    await session.extensionRunner.emit({ type: 'tool_execution_start', toolCallId: id, toolName: name, args });
+    if (emitLifecycle) await session.extensionRunner.emit({ type: 'tool_execution_start', toolCallId: id, toolName: name, args });
     const outcome = await runToolCall(toolCall, { tools: session.agent.state.tools, assistantMessage: assistant,
       context: { messages: session.agent.state.messages, tools: session.agent.state.tools }, signal,
       beforeToolCall: session.agent.beforeToolCall, afterToolCall: session.agent.afterToolCall });
-    await session.extensionRunner.emit({ type: 'tool_execution_end', toolCallId: id, toolName: name, result: outcome.result, isError: outcome.isError });
+    if (emitLifecycle) await session.extensionRunner.emit({ type: 'tool_execution_end', toolCallId: id, toolName: name, result: outcome.result, isError: outcome.isError });
     const taskId = (outcome.result.structuredContent as any)?.task?.id;
     if (taskId) taskIds.set(id, taskId);
     return outcome;
@@ -335,6 +335,30 @@ test('real SDK: native baseline = managed foreground = finalized detached output
   } finally { await baseline.close(); await managed.close(); }
 });
 
+test('real SDK: direct runToolCall needs no start event; before bridge restores prototype lookup', async () => {
+  const h = await sdk(true);
+  const host = h.session as unknown as HostSession;
+  const nativeBefore = Object.getPrototypeOf(h.session)._beforeToolCall;
+  const gate = deferred<void>(); h.gates.set('without-start', gate);
+  try {
+    const foreground = await h.call('victim', JSON.stringify({ n: '2', mode: 'normal' }), 'direct-json', undefined, false);
+    assert.match(JSON.stringify(foreground.result), /FINAL REDACTED/);
+    const handle = await h.call('victim', { n: '2', mode: 'normal', __background__: 'yes' }, 'without-start', undefined, false);
+    assert.equal((handle.result.structuredContent as any).result_available, false, 'raw background intent survives validation without a start event');
+    assert.equal(count(h, 'post', 'without-start'), 0);
+    gate.resolve();
+    const saved = await h.retained('without-start');
+    clean(saved.outcome);
+    for (const id of ['direct-json', 'without-start']) {
+      for (const kind of ['pre', 'last-pre', 'execute', 'post', 'last-post']) assert.equal(count(h, kind, id), 1);
+    }
+    await h.plugin!.dispose();
+    assert.equal(Object.hasOwn(host, '_beforeToolCall'), false, 'dispose removes only the owned instance bridge');
+    assert.equal(host._beforeToolCall, nativeBefore);
+    assert.deepEqual(h.errors, []);
+  } finally { gate.resolve(); await h.close(); }
+});
+
 test('real SDK core loop: public starts precede repair; foreground/detached hooks and nested job signals stay native', async () => {
   const h = await sdk(true);
   const events: Array<{ type: string; id: string }> = [];
@@ -355,7 +379,7 @@ test('real SDK core loop: public starts precede repair; foreground/detached hook
   };
   try {
     const before = (h.session as unknown as { _beforeToolCall: unknown })._beforeToolCall;
-    assert.equal(Object.hasOwn(h.session, '_beforeToolCall'), false, 'no before monkeypatch');
+    assert.equal(Object.hasOwn(h.session, '_beforeToolCall'), true, 'one generation-local before bridge');
     for (const [id, raw] of [
       ['core-json', JSON.stringify({ n: '2', mode: 'normal' })],
       ['core-fg', { n: '2', mode: 'nested', __background__: 'no' }],
