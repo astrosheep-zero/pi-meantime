@@ -378,11 +378,30 @@ export class TaskRuntime {
   }
   cancel(id: string): Snapshot {
     const task = this.lookup(id);
-    // Terminal results have nothing left to cancel. Only unfinished recovery
-    // lacks a local controller.
-    if (!task.meta.localRunning && task.meta.endedAt !== undefined) return snap(task);
-    if (task.meta.recovered && !task.controller && task.meta.state === 'outcome_unknown') throw new Error('Recovered task has no live local controller; verify its external state. It will not be replayed.');
+    this.assertCancellable(task);
     this.requestCancel(task); return snap(task);
+  }
+  /** Cancel a batch only after every target resolves, so no valid producer is
+   * aborted on behalf of a sibling that cannot be cancelled. Preflight, not
+   * atomic rollback: once requests begin, outcomes still follow grace/wait. */
+  async cancelMany(ids: string[], timeoutMs: number, signal?: AbortSignal): Promise<{ tasks: { task: Snapshot; result?: Result }[]; pending: Snapshot[] }> {
+    signal?.throwIfAborted();
+    const tasks = [...new Set(ids.map(id => this.lookup(id)))];
+    for (const task of tasks) this.assertCancellable(task);
+    return this.withWaiters(tasks, async () => {
+      for (const task of tasks) this.requestCancel(task);
+      signal?.throwIfAborted();
+      const done = tasks.map(task => task.meta.localRunning ? task.done : undefined);
+      await this.waitUntil(Promise.all(done), timeoutMs, signal);
+      const settled = tasks.map(task => this.result(task.meta.id));
+      return { tasks: settled, pending: settled.filter(pair => pair.result === undefined).map(pair => pair.task) };
+    });
+  }
+  /** Terminal tasks have nothing left to cancel. Only unfinished recovery
+   * lacks a local controller; that must fail before any sibling is aborted. */
+  private assertCancellable(task: Task): void {
+    if (!task.meta.localRunning && task.meta.endedAt !== undefined) return;
+    if (task.meta.recovered && !task.controller && task.meta.state === 'outcome_unknown') throw new Error('Recovered task has no live local controller; verify its external state. It will not be replayed.');
   }
   private requestCancel(task: Task, reason?: unknown): void {
     if (!task.meta.localRunning || !task.controller || task.meta.cancelRequestedAt) return;

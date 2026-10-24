@@ -324,8 +324,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
         };
       }
       const { tasks, pending } = cancel
-        ? await Promise.all(ids.map(id => r.wait(id, config.shutdownGraceMs, signal, true)))
-          .then(pairs => ({ tasks: pairs, pending: pairs.filter(pair => pair.result === undefined).map(pair => pair.task) }))
+        ? await r.cancelMany(ids, config.shutdownGraceMs, signal)
         : await r.waitMany(ids, params.mode === 'any' ? 'any' : 'all', timeout, signal);
       const budget = { remaining: 32 * 1024 };
       const views = tasks.map(({ task, result }) => result ? storedResult(task, result, budget) : textResult(`${receipt(task)}\nResult is not available. Do not relaunch the operation.`));

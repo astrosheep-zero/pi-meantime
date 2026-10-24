@@ -327,3 +327,102 @@ test('/bg cancel of an already completed task is visibly idempotent', async () =
     assert.equal(h.aborts(), 0); assert.match(h.pi.uiMessages.at(-1)!, /completed.*No running local call was cancelled/);
   } finally { await h.close(); }
 });
+
+test('batch cancel validates every target before aborting any of them', async () => {
+  const h = runtimeHarness({ autoDetachMs: 0, shutdownGraceMs: 100, notifyDebounceMs: 0 });
+  const work = deferred<Outcome>(); const native = ok('settled after cancel'); let aborts = 0;
+  try {
+    const view = await h.runtime.run({ tool: 'one', kind: 'tool', callId: 'one', mode: 'yes', canDetach: true,
+      execute: signal => { signal.addEventListener('abort', () => { aborts++; work.resolve(native); }); return work.promise; } });
+    h.runtime.published('one');
+    const before = h.runtime.get(view.task.id);
+    await assert.rejects(h.runtime.cancelMany([view.task.id, 'mt_00000000'], h.config.shutdownGraceMs), /No task with that id/);
+    assert.equal(aborts, 0);
+    assert.deepEqual(h.runtime.get(view.task.id), before, 'an unknown sibling leaves no cancellation or state change');
+    // A fully valid batch still cancels every target and reports the same per-task shape.
+    const second = deferred<Outcome>();
+    const other = await h.runtime.run({ tool: 'two', kind: 'tool', callId: 'two', mode: 'yes', canDetach: true,
+      execute: signal => { signal.addEventListener('abort', () => second.resolve(ok('second settled'))); return second.promise; } });
+    h.runtime.published('two');
+    const batch = await h.runtime.cancelMany([view.task.id, other.task.id.slice(3), view.task.id], h.config.shutdownGraceMs);
+    assert.equal(aborts, 1);
+    assert.deepEqual(batch.tasks.map(pair => pair.task.id), [view.task.id, other.task.id], 'duplicates collapse, order follows the batch');
+    assert.deepEqual(batch.tasks.map(pair => pair.task.state), ['cancelled', 'cancelled']);
+    assert.deepEqual(batch.tasks.map(pair => pair.result?.structuredContent), [native.result.structuredContent, { value: 'second settled' }]);
+    assert.deepEqual(batch.pending, []);
+    assert.equal(h.runtime.get(view.task.id).notification, 'observed');
+  } finally { work.resolve(ok()); await h.close(); }
+});
+
+test('batch cancel rejects an ambiguous prefix without aborting a valid sibling', async () => {
+  const h = runtimeHarness({ autoDetachMs: 0, shutdownGraceMs: 100, notifyDebounceMs: 0 });
+  const work = deferred<Outcome>(); let aborts = 0;
+  // Recovery records share a prefix; resolving it would silently pick one.
+  const runtime = new TaskRuntime(h.config, h.sink, [
+    { id: 'mt_ab120000', tool: 'old', kind: 'tool', mode: 'yes', createdAt: 1 },
+    { id: 'mt_ab120001', tool: 'old', kind: 'tool', mode: 'yes', createdAt: 2 }]);
+  try {
+    const view = await runtime.run({ tool: 'one', kind: 'tool', callId: 'one', mode: 'yes', canDetach: true,
+      execute: signal => { signal.addEventListener('abort', () => { aborts++; work.resolve(ok('settled')); }); return work.promise; } });
+    await assert.rejects(runtime.cancelMany(['ab12', view.task.id], h.config.shutdownGraceMs), /Ambiguous task id prefix ab12/);
+    assert.equal(aborts, 0);
+    assert.equal(runtime.get(view.task.id).state, 'running');
+    const single = await runtime.cancelMany([view.task.id], h.config.shutdownGraceMs);
+    assert.equal(aborts, 1);
+    assert.deepEqual(single.tasks.map(pair => pair.task.state), ['cancelled']);
+  } finally { work.resolve(ok()); await runtime.close(); await h.close(); }
+});
+
+test('batch cancel refuses a recovered outcome_unknown sibling before aborting the producer', async () => {
+  const h = runtimeHarness({ autoDetachMs: 0, shutdownGraceMs: 100, notifyDebounceMs: 0 });
+  const work = deferred<Outcome>(); let aborts = 0;
+  // Unfinished recovery: retained record, no live local controller, no endedAt.
+  const runtime = new TaskRuntime(h.config, h.sink, [{ id: 'mt_ab120002', tool: 'old', kind: 'tool', mode: 'yes', createdAt: 1 }]);
+  const refused = /Recovered task has no live local controller/;
+  try {
+    const view = await runtime.run({ tool: 'one', kind: 'tool', callId: 'one', mode: 'yes', canDetach: true,
+      execute: signal => { signal.addEventListener('abort', () => { aborts++; }); return work.promise; } });
+    const before = runtime.get(view.task.id);
+    assert.equal(runtime.get('ab120002').state, 'outcome_unknown');
+    // Single-ID behavior is unchanged: same refusal, and no producer is touched.
+    assert.throws(() => runtime.cancel('ab120002'), refused);
+    await assert.rejects(runtime.cancelMany([view.task.id, 'ab120002'], h.config.shutdownGraceMs), refused);
+    assert.equal(aborts, 0, 'the refusal lands before the first abort signal');
+    assert.deepEqual(runtime.get(view.task.id), before, 'no abort, cancel request or state change on the valid producer');
+    // The batch still cancels once the un-cancellable sibling is gone.
+    const cancelled = await runtime.cancelMany([view.task.id], h.config.shutdownGraceMs);
+    assert.equal(aborts, 1);
+    assert.deepEqual(cancelled.tasks.map(pair => [pair.task.id, pair.task.state]), [[view.task.id, 'cancel_requested']]);
+    assert.deepEqual(cancelled.pending.map(task => task.id), [view.task.id]);
+  } finally { work.resolve(ok()); await runtime.close(); await h.close(); }
+});
+
+test('model batch cancel refuses an unknown id before cancelling valid producers', async () => {
+  const pi = new FakePi('A', 'rpc');
+  let aborts = 0;
+  pi.registerTool(basicTool('mcp__test__batch', (_id, _args, signal) => new Promise<Result>(resolve => {
+    signal?.addEventListener('abort', () => { aborts++; resolve(ok(`native settled ${aborts}`).result); });
+  })));
+  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, shutdownGraceMs: 100, notifyDebounceMs: 0 }), connect: () => pi });
+  try {
+    await pi.emit('session_start', { type: 'session_start' });
+    const first = await pi.call('mcp__test__batch', { __background__: 'yes' });
+    const id = (first.result.details as Snapshot).id;
+    const invalid = await pi.call('meantime', { action: 'cancel', ids: [id, 'mt_00000000'] });
+    assert.equal(invalid.isError, true);
+    assert.match(JSON.stringify(invalid.result.content), /No task with that id in this session/);
+    assert.equal(aborts, 0);
+    const running = await pi.call('meantime', { action: 'wait', ids: [id], timeout: 0 });
+    assert.equal((running.result.details as Snapshot).state, 'running');
+    const second = await pi.call('mcp__test__batch', { __background__: 'yes' });
+    const other = (second.result.details as Snapshot).id;
+    const batch = await pi.call('meantime', { action: 'cancel', ids: [id, other] });
+    assert.notEqual(batch.isError, true);
+    const page = batch.result.details as { tasks: Snapshot[]; pending: Snapshot[] };
+    assert.deepEqual(page.tasks.map(task => [task.id, task.state]), [[id, 'cancelled'], [other, 'cancelled']]);
+    assert.deepEqual(page.pending, []);
+    assert.equal(aborts, 2);
+    assert.match(JSON.stringify(batch.result.content), /native settled 1/);
+    await sleep(10); assert.equal(pi.notifications.length, 0);
+  } finally { await instance.dispose(); }
+});

@@ -83,3 +83,29 @@ test('waitMany validates all ids before ack and abort only stops the wait', asyn
     assert.notEqual(h.runtime.get(first.task.id).notification, 'observed');
   } finally { a.resolve(ok()); b.resolve(ok()); await h.close(); }
 });
+
+test('cancelMany mirrors waitMany preflight: a bad id aborts nothing and a signal only ends the wait', async () => {
+  const h = runtimeHarness({ autoDetachMs: 0, shutdownGraceMs: 100, notifyDebounceMs: 0 });
+  const stubborn = deferred<Outcome>(), cooperative = deferred<Outcome>();
+  let producerSignal: AbortSignal | undefined, aborts = 0;
+  try {
+    const first = await h.runtime.run({ tool: 'a', kind: 'tool', callId: 'a', mode: 'yes', canDetach: true,
+      execute: signal => { producerSignal = signal; signal.addEventListener('abort', () => { aborts++; }); return stubborn.promise; } });
+    h.runtime.published('a');
+    await assert.rejects(h.runtime.cancelMany([first.task.id, 'missing'], h.config.shutdownGraceMs), /No task/);
+    assert.equal(aborts, 0); assert.equal(producerSignal!.aborted, false);
+    assert.equal(h.runtime.get(first.task.id).state, 'running');
+    const caller = new AbortController();
+    const waiting = h.runtime.cancelMany([first.task.id], h.config.shutdownGraceMs, caller.signal);
+    caller.abort(new Error('stop observing'));
+    await assert.rejects(waiting, /stop observing/);
+    assert.equal(aborts, 1, 'an interrupted observation keeps the cancellation it already requested');
+    assert.equal(h.runtime.get(first.task.id).state, 'cancel_requested');
+    const second = await h.runtime.run({ tool: 'b', kind: 'tool', callId: 'b', mode: 'yes', canDetach: true,
+      execute: signal => { signal.addEventListener('abort', () => cooperative.resolve(ok('B cancelled'))); return cooperative.promise; } });
+    h.runtime.published('b');
+    const settled = await h.runtime.cancelMany([second.task.id, second.task.id.slice(3)], h.config.shutdownGraceMs);
+    assert.deepEqual(settled.tasks.map(view => [view.task.id, view.task.state]), [[second.task.id, 'cancelled']], 'duplicate ids collapse');
+    assert.deepEqual(settled.pending, []);
+  } finally { stubborn.resolve(ok()); cooperative.resolve(ok()); await h.close(); }
+});
