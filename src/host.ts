@@ -74,14 +74,16 @@ export function manageTools(session: HostSession, config: Config, run: (call: Ma
   const patches = new Map<Tool, Patch>();
   let scopes: ReturnType<typeof codemodeScopes> | undefined;
   let codemode: Tool | undefined;
+  let nativeBash: Tool | undefined;
   let closing = false;
   // Copied definitions may contain our wrappers; unwrap exact identities only.
   const origins = new WeakMap<object, unknown>();
   const active = () => fence.owner === token && session.extensionRunner === runner && session.resourceLoader.getExtensions().runtime === loaderRuntime;
   const assertActive = () => { if (!active()) throw new Error('Managed tool session has retired'); };
   const isNativeCodemode = (definition: Tool) => definition === codemode;
+  const isNativeBash = (definition: Tool) => definition === nativeBash;
   const eligible = (definition: Tool) => definition.name !== 'meantime' && definition.executionMode !== 'sequential' && definition.exposure !== 'hidden'
-    && (definition.name === 'bash' || (matches(definition.name, config.include) && !matches(definition.name, config.exclude)))
+    && (isNativeBash(definition) || (matches(definition.name, config.include) && !matches(definition.name, config.exclude)))
     && (isNativeCodemode(definition) || ['direct', 'codemode', 'deferred'].includes(definition.exposure ?? 'direct'));
   function restore(definition: Tool, patch: Patch): void {
     for (const [key, { saved, value }] of patch) if (definition[key] === value) {
@@ -171,10 +173,14 @@ export function manageTools(session: HostSession, config: Config, run: (call: Ma
   function reconcile(): boolean {
     if (!active()) return false;
     const tools = session.getAllTools();
+    // Same-name extension overrides replace the built-in entry in this registry,
+    // so origin is source metadata, never the definition name.
+    nativeBash = tools.some(t => t.name === 'bash' && t.sourceInfo?.path === 'builtin:bash')
+      ? session.getToolDefinition('bash') : undefined;
     codemode = codemodeExecute && tools.some(t => t.name === 'codemode' && t.sourceInfo?.path === 'builtin:codemode')
       ? session.getToolDefinition('codemode') : undefined;
     // Built-in MCP is a provider of external tools, not a native tool itself.
-    const definitions = new Set(tools.filter(t => t.name === 'bash' || (t.name === 'codemode' && codemode)
+    const definitions = new Set(tools.filter(t => t.sourceInfo?.path === 'builtin:bash' || (t.name === 'codemode' && codemode)
       || !t.sourceInfo?.path?.startsWith('builtin:') || t.sourceInfo.path === 'builtin:mcp')
       .map(t => session.getToolDefinition(t.name)).filter((d): d is Tool => !!d));
     let changed = false;

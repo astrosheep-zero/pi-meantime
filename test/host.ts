@@ -195,5 +195,5 @@ export function fixtureBash(cwd: string): Tool {
         else resolve(ok(output).result);
       });
     });
-  }, { parameters: { type: 'object', properties: { command: { type: 'string' }, timeout: { type: 'number' } }, required: ['command'], additionalProperties: false } });
+  }, { sourceInfo: { path: 'builtin:bash' }, parameters: { type: 'object', properties: { command: { type: 'string' }, timeout: { type: 'number' } }, required: ['command'], additionalProperties: false } });
 }

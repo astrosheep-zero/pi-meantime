@@ -266,6 +266,47 @@ test('real SDK: reload drains stale approved/blocked native prehooks behind one 
   }
 });
 
+/** Real SDK session with an extension-owned bash, and optionally the real built-in bash. */
+async function bashSdk(config: Record<string, unknown>, custom: boolean) {
+  const root = mkdtempSync(join(tmpdir(), 'meantime-bash-'));
+  const executions: Record<string, unknown>[] = [], errors: unknown[] = [];
+  const definition = {
+    name: 'bash', label: 'Extension bash', description: 'Extension-owned bash',
+    parameters: { type: 'object', properties: { marker: { type: 'string' } }, required: ['marker'], additionalProperties: false },
+    async execute(_id: string, args: Record<string, unknown>) {
+      executions.push(args);
+      return { content: [{ type: 'text' as const, text: `EXTENSION ${String(args.marker)}` }], details: undefined };
+    },
+  } as unknown as ToolDefinition;
+  const origin = { parameters: definition.parameters, execute: definition.execute };
+  let plugin: ReturnType<typeof install> | undefined;
+  const settings = SettingsManager.inMemory();
+  const loader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings,
+    noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true,
+    extensionFactories: [...(custom ? [(pi: ExtensionAPI) => { pi.registerTool(definition); }] : []),
+      (pi: ExtensionAPI) => { plugin = install(pi as unknown as PiHost, { config: validateConfig({ autoDetachMs: 0, ...config }) }); }],
+  });
+  await loader.reload();
+  const { session } = await createAgentSession({ cwd: root, agentDir: root, resourceLoader: loader, settingsManager: settings,
+    sessionManager: SessionManager.inMemory(root), tools: ['bash', 'meantime'] });
+  await session.bindExtensions({ mode: 'rpc', onError: error => { errors.push(error); } });
+  let serial = 0;
+  async function invoke(args: Record<string, unknown>) {
+    const toolCall = { type: 'toolCall', name: 'bash', id: `bash-${++serial}`, arguments: args } as ToolCall;
+    const assistant = { role: 'assistant', content: [toolCall], stopReason: 'toolUse', timestamp: 0 } as AssistantMessage;
+    session.agent.state.messages.push(assistant);
+    await session.extensionRunner.emit({ type: 'tool_execution_start', toolCallId: toolCall.id, toolName: 'bash', args });
+    const outcome = await runToolCall(toolCall, { tools: session.agent.state.tools, assistantMessage: assistant,
+      context: { messages: session.agent.state.messages, tools: session.agent.state.tools }, signal: new AbortController().signal,
+      beforeToolCall: session.agent.beforeToolCall, afterToolCall: session.agent.afterToolCall });
+    await session.extensionRunner.emit({ type: 'tool_execution_end', toolCallId: toolCall.id, toolName: 'bash', result: outcome.result, isError: outcome.isError });
+    return outcome;
+  }
+  return { session, definition, origin, plugin, executions, errors, invoke,
+    managed: () => (plugin!.inspect() as any).managed as string[],
+    async close() { await plugin?.dispose(); session.dispose(); rmSync(root, { recursive: true, force: true }); } };
+}
+
 function clean(result: unknown) { assert.equal(JSON.stringify(result).includes(SECRET), false); }
 function count(h: Awaited<ReturnType<typeof sdk>>, kind: string, id: string) { return h.trace.filter(t => t.kind === kind && t.id === id).length; }
 
@@ -343,6 +384,43 @@ test('real SDK: native baseline = managed foreground = finalized detached output
     assert.equal(baseline.repairs.length, 6, 'identical native preparation count without plugin');
     assert.deepEqual(managed.errors, []);
   } finally { await baseline.close(); await managed.close(); }
+});
+
+test('real SDK: same-name extension bash follows filters; native bash keeps unconditional identity', async () => {
+  const excluded = await bashSdk({ exclude: ['bash'] }, true);
+  try {
+    assert.equal(excluded.session.getToolDefinition('bash'), excluded.definition);
+    assert.equal(excluded.definition.execute, excluded.origin.execute, 'excluded execute is untouched');
+    assert.equal(excluded.definition.parameters, excluded.origin.parameters, 'excluded schema is untouched');
+    assert.equal(Object.hasOwn((excluded.definition.parameters as any).properties, '__background__'), false);
+    assert.equal(excluded.managed().includes('bash'), false);
+    const result = await excluded.invoke({ marker: 'excluded' });
+    assert.match(JSON.stringify(result.result.content), /EXTENSION excluded/);
+    assert.deepEqual(excluded.executions, [{ marker: 'excluded' }]);
+    assert.deepEqual(excluded.errors, []);
+  } finally { await excluded.close(); }
+
+  const included = await bashSdk({ include: ['bash'] }, true);
+  try {
+    assert.equal(included.session.getToolDefinition('bash'), included.definition);
+    assert.notEqual(included.definition.execute, included.origin.execute);
+    assert.notEqual(included.definition.parameters, included.origin.parameters);
+    assert.deepEqual((included.definition.parameters as any).properties.__background__, { type: 'string', enum: ['auto', 'yes', 'no'] });
+    assert.ok(included.managed().includes('bash'));
+    const result = await included.invoke({ marker: 'included', __background__: 'no' });
+    assert.match(JSON.stringify(result.result.content), /EXTENSION included/);
+    assert.deepEqual(included.executions, [{ marker: 'included' }], 'business args keep control outside the definition');
+    assert.deepEqual(included.errors, []);
+  } finally { await included.close(); }
+
+  const native = await bashSdk({ exclude: ['bash'] }, false);
+  try {
+    const info = native.session.getAllTools().find(t => t.name === 'bash')!;
+    assert.equal(info.sourceInfo?.path, 'builtin:bash');
+    assert.ok(native.managed().includes('bash'), 'native bash is unconditional');
+    assert.ok(Object.hasOwn((native.session.getToolDefinition('bash')!.parameters as any).properties, '__background__'));
+    assert.deepEqual(native.errors, []);
+  } finally { await native.close(); }
 });
 
 test('real SDK: wait keeps array, string, primitive and task-bearing native details behind one control envelope', async () => {
