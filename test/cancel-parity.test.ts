@@ -147,7 +147,7 @@ test('model cancel returns the single-wait stored result with native payload and
     const wait = await pi.call('meantime', { action: 'wait', ids: [id], timeout: 0 });
     assert.deepEqual(cancelled.result, wait.result);
     assert.deepEqual(cancelled.result.content.slice(1), native.content);
-    assert.deepEqual(cancelled.result.details, { ...native.details!, task: (wait.result.details as { task: Snapshot }).task });
+    assert.deepEqual(cancelled.result.details, { nativeDetails: native.details!, task: (wait.result.details as { task: Snapshot }).task });
     assert.deepEqual((cancelled.result.structuredContent as { result: unknown }).result, native.structuredContent);
     assert.equal(cancelled.isError, true);
     const task = (cancelled.result.details as { task: Snapshot }).task;

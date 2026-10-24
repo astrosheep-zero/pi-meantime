@@ -4,6 +4,7 @@ import { Text, stripTerminalSequences } from '@earendil-works/pi-tui';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { install } from '../src/extension.ts';
+import { renderTaskResult } from '../src/render.ts';
 import { validateConfig } from '../src/config.ts';
 import type { Config } from '../src/config.ts';
 import type { Content, Outcome, Result, Tool } from '../src/protocol.ts';
@@ -294,6 +295,33 @@ test('wait previews show native single and batch bodies, while handle cards reta
     }
     assert.equal(TaskRuntime.liveProducerCount(), 0);
   } finally { await h.close(); }
+});
+
+test('wait keeps every JSON-valid native details value behind one control envelope', async () => {
+  const shapes: [shape: string, native: unknown][] = [['array', ['a', { b: 1 }]], ['string', 'NATIVE_DETAIL'],
+    ['object', { task: { nativeJob: 'job-7' }, other: 'kept' }], ['empty', ''], ['false', false], ['none', undefined]];
+  const gates = new Map<string, ReturnType<typeof deferred<Result>>>();
+  const h = await setup([basicTool('mcp__t__shape', (_id, args) => gates.get(String(args.shape))!.promise,
+    { parameters: { type: 'object', properties: { shape: { type: 'string' } }, required: ['shape'], additionalProperties: false } })]);
+  const theme = { fg: (_color: string, value: string) => value } as Parameters<typeof renderTaskResult>[2];
+  try {
+    for (const [shape, native] of shapes) {
+      const gate = deferred<Result>(); gates.set(shape, gate);
+      const task = snapshot(await h.pi.call('mcp__t__shape', { shape, __background__: 'yes' }));
+      gate.resolve({ content: [{ type: 'text', text: `SHAPE ${shape}` }], details: native });
+      const wait = await h.pi.call('meantime', { action: 'wait', ids: [task.id], timeout: 1000 });
+      const details = wait.result.details as Record<string, unknown>;
+      assert.equal(Object.hasOwn(details, 'nativeDetails'), native !== undefined, `${shape}: undefined stays distinguishable`);
+      if (native !== undefined) assert.deepEqual(details.nativeDetails, native, `${shape}: native details survive whole`);
+      assert.equal((details.task as Snapshot).id, task.id, `${shape}: control task is not replaced`);
+      assert.equal((details.task as Snapshot).state, 'completed');
+      assert.equal(Object.hasOwn(details, 'usage'), false);
+      const card = renderTaskResult(wait.result, { expanded: false }, theme, { args: { action: 'wait' } }, false)
+        .render(200).map(line => line.trimEnd()).join('\n');
+      assert.match(card, new RegExp(`✓ mcp__t__shape · \\d+s · ${task.id}`), `${shape}: the renderer reads control details`);
+      assert.doesNotMatch(card, /job-7|NATIVE_DETAIL|kept/, `${shape}: native details are not control metadata`);
+    }
+  } finally { for (const gate of gates.values()) gate.resolve(ok().result); await h.close(); }
 });
 
 test('one user detach releases simultaneous batch and cancel grace waits with timeout-shaped results', async () => {

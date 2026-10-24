@@ -75,6 +75,16 @@ async function sdk(managed: boolean, maxRunning = 8) {
           trace.push({ kind: 'child-settled', id });
           return { content: [], details: undefined, usage };
         } });
+      // Native details keep legal non-object shapes; no result hook touches this tool.
+      const nativeDetails: Record<string, unknown> = { array: [1, 'two', { three: 3 }], string: 'NATIVE_DETAIL',
+        object: { task: { nativeJob: 'job-7' }, other: 'kept' }, empty: '', false: false, zero: 0, none: undefined };
+      pi.registerTool({ name: 'shapes', label: 'Native details shapes', description: 'Native details fixture',
+        parameters: { type: 'object', properties: { shape: { type: 'string' } }, required: ['shape'], additionalProperties: false },
+        async execute(id, args) {
+          if (gates.has(id)) await gates.get(id)!.promise;
+          const text = `SHAPE ${String(args.shape)}`;
+          return { content: [{ type: 'text' as const, text }], details: nativeDetails[String(args.shape)] };
+        } });
       for (const [name, parameters] of [
         ['unmanaged', { type: 'object', properties: { __background__: { type: 'string' } } }],
         ['primitive', { type: 'string' }], ['array', { type: 'array', items: { type: 'number' } }],
@@ -111,7 +121,7 @@ async function sdk(managed: boolean, maxRunning = 8) {
       // Capture delivery, not native finalization. All registration and session
       // capture still use the actual factory API, without a test connect port.
       plugin = install(pi as unknown as PiHost,
-        { config: validateConfig({ include: ['victim'], autoDetachMs: 0, maxRunning, shutdownGraceMs: 1, notifyDebounceMs: 1 }) });
+        { config: validateConfig({ include: ['victim', 'shapes'], autoDetachMs: 0, maxRunning, shutdownGraceMs: 1, notifyDebounceMs: 1 }) });
     }] : []), (pi: ExtensionAPI) => {
       // Registered AFTER meantime: admission must wait for this whole chain,
       // including late denial and mutations forbidden by the original schema.
@@ -125,7 +135,7 @@ async function sdk(managed: boolean, maxRunning = 8) {
   });
   await loader.reload();
   ({ session } = await createAgentSession({ cwd: root, agentDir: root, resourceLoader: loader, settingsManager: settings,
-    sessionManager: SessionManager.inMemory(root), tools: ['bash', 'victim', 'child', 'unmanaged', 'primitive', 'array', ...(managed ? ['meantime'] : [])] }));
+    sessionManager: SessionManager.inMemory(root), tools: ['bash', 'victim', 'child', 'shapes', 'unmanaged', 'primitive', 'array', ...(managed ? ['meantime'] : [])] }));
   if (managed) {
     const persist = session.sendCustomMessage.bind(session);
     session.sendCustomMessage = async message => {
@@ -287,7 +297,7 @@ test('real SDK: native baseline = managed foreground = finalized detached output
       assert.equal(stored.task.isError, native.isError);
       assert.equal(stored.outcome.isError, native.isError);
       assert.match(JSON.stringify(stored.outcome.result.content), /FINAL REDACTED/);
-      assert.deepEqual((stored.outcome.result.details as any).safe, true);
+      assert.deepEqual((stored.outcome.result.details as any).nativeDetails.safe, true);
       clean(stored.outcome.result);
       for (const kind of ['pre', 'last-pre', 'execute', 'post', 'last-post']) assert.equal(count(managed, kind, detachedId), 1, `${detachedId}/${kind}`);
     }
@@ -333,6 +343,37 @@ test('real SDK: native baseline = managed foreground = finalized detached output
     assert.equal(baseline.repairs.length, 6, 'identical native preparation count without plugin');
     assert.deepEqual(managed.errors, []);
   } finally { await baseline.close(); await managed.close(); }
+});
+
+test('real SDK: wait keeps array, string, primitive and task-bearing native details behind one control envelope', async () => {
+  const h = await sdk(true);
+  try {
+    const cases: [shape: string, native: unknown][] = [['array', [1, 'two', { three: 3 }]], ['string', 'NATIVE_DETAIL'],
+      ['object', { task: { nativeJob: 'job-7' }, other: 'kept' }], ['empty', ''],
+      ['false', false], ['zero', 0], ['none', undefined]];
+    for (const [shape, native] of cases) {
+      const foreground = await h.call('shapes', { shape }, `fg-${shape}`);
+      assert.deepEqual(foreground.result.details, native, `${shape}: native details are legal JSON`);
+      const gate = deferred<void>(); h.gates.set(`bg-${shape}`, gate);
+      const handle = await h.call('shapes', { shape, __background__: 'yes' }, `bg-${shape}`);
+      assert.equal(handle.isError, false);
+      assert.equal((handle.result.structuredContent as { result_available: boolean }).result_available, false);
+      gate.resolve();
+      const { task, outcome } = await h.retained(`bg-${shape}`);
+      const details = outcome.result.details as Record<string, unknown>;
+      assert.equal(Object.hasOwn(details, 'nativeDetails'), native !== undefined, `${shape}: undefined stays distinguishable`);
+      if (native !== undefined) assert.deepEqual(details.nativeDetails, foreground.result.details, `${shape}: foreground/background parity`);
+      assert.equal((details.task as { id: string }).id, task.id, `${shape}: control task survives`);
+      assert.equal((details.task as { state: string }).state, 'completed');
+      assert.equal(Object.hasOwn(details, 'usage'), false);
+      assert.deepEqual(outcome.result.content.slice(1), foreground.result.content, `${shape}: content parity`);
+      assert.equal((outcome.result.structuredContent as { task: { id: string } }).task.id, task.id);
+      assert.equal((outcome.result.structuredContent as { result_available: boolean }).result_available, true);
+      if (shape === 'object') assert.deepEqual((details.nativeDetails as { task: unknown }).task, { nativeJob: 'job-7' },
+        'a native task field is no longer overwritten');
+    }
+    assert.deepEqual(h.errors, []);
+  } finally { for (const gate of h.gates.values()) gate.resolve(); await h.close(); }
 });
 
 test('real SDK: direct runToolCall needs no start event; before bridge restores prototype lookup', async () => {

@@ -122,15 +122,14 @@ if (sdk) {
       assert.equal(result.isError, false);
       const task = result.structuredContent.task;
       assert.ok(task.outputPath, JSON.stringify({ tool, task, result: result.structuredContent.result }).slice(0, 2000));
-      assert.equal(result.details.fullOutputPath, task.outputPath, `${tool}: wait preserves native fullOutputPath`);
-      assert.equal(result.details.task.id, task.id);
+      assert.equal(result.details.nativeDetails.fullOutputPath, task.outputPath, `${tool}: wait preserves native fullOutputPath`);
+      assert.equal(result.details.task.id, task.id, `${tool}: control task stays beside the native envelope`);
       assert.match(result.content[0].text, /\nOutput: /);
       const retained = result.structuredContent.result;
       const text = result.content[1].text;
       if (tool.startsWith('mcp__')) {
         const native = nativeMcpResults.get('mcp__meantime_fixture__slow');
-        const { task: _task, ...details } = result.details;
-        assert.deepEqual(details, native.details);
+        assert.deepEqual(result.details.nativeDetails, native.details);
         assert.equal(task.outputPath, native.details.fullOutputPath);
         assert.deepEqual(result.content.slice(1), native.content);
         assert.deepEqual(retained, native.structuredContent);
@@ -140,7 +139,7 @@ if (sdk) {
         assert.ok(text.includes('\x1b[31m\x00HEAD'), 'native MCP controls must survive');
         assert.equal(retained.content[0].text, largeMcpText);
       } else {
-        assert.equal(result.details.truncation.truncated, true, 'wait preserves native Bash truncation');
+        assert.equal(result.details.nativeDetails.truncation.truncated, true, 'wait preserves native Bash truncation');
       }
       assert.equal(readFileSync(task.outputPath, 'utf8'), tool === 'bash' ? 'B'.repeat(60000) : largeMcpText);
       outputs.push({ id, path: task.outputPath, text });

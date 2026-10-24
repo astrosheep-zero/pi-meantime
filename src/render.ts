@@ -85,7 +85,8 @@ export function renderCompletion(message: { details?: unknown }, options: Render
   return new Text(blocks.join('\n'), 0, 0);
 }
 
-/** Extract task snapshots from a tool result's details, in display order. */
+/** Extract task snapshots from a result's control details, in display order.
+ * Native details live under `nativeDetails`, so no native key reads as a task. */
 function resultTasks(details: unknown): { tasks: TaskDisplay[]; page: boolean } {
   if (!isRecord(details)) return { tasks: [], page: false };
   if (Array.isArray(details.tasks)) return { tasks: details.tasks.filter(isRecord) as unknown as TaskDisplay[], page: true };

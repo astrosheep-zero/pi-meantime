@@ -87,8 +87,12 @@ function storedResult(task: Snapshot, source: Result, budget?: { remaining: numb
       ...(source.persistenceOmissions?.length ? [{ type: 'text' as const, text: `Non-JSON fields omitted from persistence/receipt: ${source.persistenceOmissions.join(', ')}. The original live result is retained in memory.` }] : []),
     ],
     // Retrieval is not another execution: expose retained usage as metadata,
-    // never as top-level usage that Pi would charge on every wait.
-    details: { ...(isRecord(source.details) ? source.details : {}), task,
+    // never as top-level usage that Pi would charge on every wait. Native
+    // details stay whole under one envelope: spreading them drops legal arrays
+    // and strings and let a native `task` field overwrite this receipt's own.
+    details: {
+      task,
+      ...(source.details !== undefined ? { nativeDetails: source.details } : {}),
       ...(source.usage ? { usage: source.usage } : {}), ...(source.nestedCalls ? { nestedCalls: source.nestedCalls } : {}),
       ...(source.persistenceOmissions ? { persistenceOmissions: source.persistenceOmissions } : {}),
     },
