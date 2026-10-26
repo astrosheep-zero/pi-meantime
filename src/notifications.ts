@@ -16,15 +16,14 @@ export interface DeliveryHost {
 
 /** One outbox bridge: use steering as a volatile fast path, stage at request
  * boundaries, and acknowledge only message_end consumption, never enqueue
- * success. Unconsumed fast-path messages return to the outbox at settlement.
- * Stop recovery appends without starting a run. Receipts are not disk durability
- * (idle sends emit before persistence). */
+ * success. Unconsumed fast-path messages return once the host queue is empty.
+ * Stop and failed wakeups suppress only automatic turns; idle delivery remains
+ * append-only. Receipts are not disk durability (idle sends emit before persistence). */
 export class CompletionDelivery {
   private boundaries = 0;
   private staged = 0;
-  private paused = false;
+  private wakePaused = false;
   private closed = false;
-  private appendOnly = 0;
   private fastQueued = new Set<string>();
   private ready?: ReturnType<typeof setImmediate>;
   private unsubscribe: () => void;
@@ -51,29 +50,33 @@ export class CompletionDelivery {
 
   send(tasks: Snapshot[]): void | false {
     const boundary = this.boundaries > 0;
-    const passive = boundary || this.appendOnly > 0;
-    const streaming = !passive && this.host.isStreaming;
-    if (this.closed || (!passive && (this.paused || (!streaming && !this.isIdle())))) return false;
-    // Recovery after Stop must never start a turn or race a new explicit run.
-    if (this.appendOnly > 0 && (this.host.isStreaming || !this.isIdle())) return false;
+    const streaming = !boundary && this.host.isStreaming;
+    if (this.closed) return false;
+    if (!boundary) {
+      if (streaming) {
+        if (this.wakePaused) return false;
+      } else if (!this.isIdle()) return false;
+    }
     const ids = tasks.map(task => task.id);
     // Add before calling the host: a test/host double may acknowledge synchronously.
     if (streaming) for (const id of ids) this.fastQueued.add(id);
-    const pending = this.host.sendCustomMessage(this.message(tasks), { deliverAs: 'steer', triggerTurn: !passive });
+    // Pausing wakeups must not pause safe delivery: idle recovery is append-only.
+    const triggerTurn = !boundary && !this.wakePaused;
+    const pending = this.host.sendCustomMessage(this.message(tasks), { deliverAs: 'steer', triggerTurn });
     if (boundary) this.staged += tasks.length;
     void pending.catch(() => {
       if (streaming) for (const id of ids) this.fastQueued.delete(id);
       if (this.closed) return;
-      // Failed preparation is not delivery. Keep the result for the next legal
-      // request, without an automatic restart loop or undoing the user's Stop.
-      this.paused = true;
+      // Failed preparation is not delivery. Suppress automatic wakeups; a safe
+      // idle flush or the next legal request can retry without a restart loop.
+      this.wakePaused = true;
       this.runtime.notificationFailed(ids);
     });
   }
 
   async atBoundary(): Promise<boolean> {
     if (this.closed) return false;
-    this.paused = false;
+    this.wakePaused = false;
     const before = this.staged;
     this.boundaries++;
     try {
@@ -84,19 +87,8 @@ export class CompletionDelivery {
 
   settled(aborted = false): void {
     this.returnFastPath();
-    if (!aborted) { this.hostReady(); return; }
-    this.paused = true;
-    clearImmediate(this.ready);
-    // Agent.settled listeners run before the host becomes idle. Append after
-    // that dispatch, but do not trigger a run and undo the user's Stop.
-    this.ready = setImmediate(() => {
-      this.ready = undefined;
-      if (this.closed) return;
-      // An explicit request may have rearmed delivery before this callback.
-      if (!this.paused) { this.runtime.flushNotifications(); return; }
-      this.appendOnly++;
-      try { this.runtime.flushNotifications(); } finally { this.appendOnly--; }
-    });
+    if (aborted) this.wakePaused = true;
+    this.hostReady();
   }
 
   private returnFastPath(): void {
@@ -110,12 +102,12 @@ export class CompletionDelivery {
   }
 
   hostReady(): void {
-    if (this.closed || this.paused || this.ready) return;
-    // Leave the host's busy/settled dispatch before starting an idle run. This
-    // also retains sendCustomMessage's real rejection, not a deferred void API.
+    if (this.closed || this.ready) return;
+    // Leave the host's busy/settled dispatch before flushing. send() alone
+    // decides whether the host state permits steering, a wakeup or append-only.
     this.ready = setImmediate(() => {
       this.ready = undefined;
-      if (!this.closed && !this.paused) this.runtime.flushNotifications();
+      if (!this.closed) this.runtime.flushNotifications();
     });
   }
 

@@ -5,16 +5,18 @@ import { join } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { test } from 'node:test';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
-import type { BeforeAgentStartEvent, ExtensionContext } from '@earendil-works/pi-coding-agent';
+import type { BeforeAgentStartEvent, ExtensionContext, SessionBeforeCompactEvent, SessionBeforeCompactResult } from '@earendil-works/pi-coding-agent';
 import type { AssistantMessage, ToolCall } from '@earendil-works/pi-ai';
 import { createAssistantMessageEventStream } from '@earendil-works/pi-ai/compat';
 import { install } from '../src/extension.ts';
 import { validateConfig } from '../src/config.ts';
 import type { Snapshot } from '../src/runtime.ts';
-import { deferred } from './helpers.ts';
+import { deferred, until } from './helpers.ts';
 
 interface Hooks {
   request?(number: number, signal?: AbortSignal): Promise<void>;
+  work?(number: number): Promise<void>;
+  beforeCompact?(event: SessionBeforeCompactEvent): SessionBeforeCompactResult | undefined | Promise<SessionBeforeCompactResult | undefined>;
   front?(ctx: ExtensionContext): Promise<void>;
   beforeStart?(event: BeforeAgentStartEvent): void;
   turnEnd?(): void;
@@ -27,9 +29,11 @@ async function fixture(workCount = 1, hooks: Hooks = {}) {
   const expected = new Set<string>(), indexed = new Set<string>();
   const requests: string[][] = [], errors: unknown[] = [];
   let plugin: ReturnType<typeof install> | undefined;
+  let workCalls = 0;
   let session: Awaited<ReturnType<typeof createAgentSession>>['session'] | undefined;
   let unsubscribe: (() => void) | undefined;
-  const settings = SettingsManager.inMemory({ defaultTools: ['notification_work', 'notification_front'], compaction: { enabled: false } });
+  const settings = SettingsManager.inMemory({ defaultTools: ['notification_work', 'notification_front'],
+    compaction: { enabled: false, keepRecentTokens: 1, reserveTokens: 1024 } });
   const loader = new DefaultResourceLoader({
     cwd: root, agentDir: root, settingsManager: settings,
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true,
@@ -71,7 +75,10 @@ async function fixture(workCount = 1, hooks: Hooks = {}) {
       });
       pi.registerTool({ name: 'notification_work', label: 'Work', description: 'Deferred offline producer',
         parameters: { type: 'object', properties: {} },
-        async execute() { await release.promise; return { content: [{ type: 'text', text: 'background done' }], details: undefined }; },
+        async execute() {
+          await (hooks.work ? hooks.work(++workCalls) : release.promise);
+          return { content: [{ type: 'text', text: 'background done' }], details: undefined };
+        },
       });
       pi.registerTool({ name: 'notification_front', label: 'Front', description: 'Immediate foreground result',
         parameters: { type: 'object', properties: {} },
@@ -90,6 +97,7 @@ async function fixture(workCount = 1, hooks: Hooks = {}) {
         }
       });
       plugin = install(pi, { config: validateConfig({ autoDetachMs: 0, maxRunning: 32, notifyDebounceMs: 5000 }) });
+      pi.on('session_before_compact', event => hooks.beforeCompact?.(event));
       pi.on('before_agent_start', event => hooks.beforeStart?.(event));
       pi.on('turn_end', () => hooks.turnEnd?.());
     }],
@@ -123,7 +131,7 @@ async function fixture(workCount = 1, hooks: Hooks = {}) {
       assert.ok(batches().every(ids => ids.length > 0 && ids.length <= 16));
       assert.ok(tasks().every(task => task.notification === 'delivered'));
     };
-    return { session, release, completed, expected, requests, tasks, batches, assertConsumedOnce, close };
+    return { session, release, completed, expected, indexed, requests, tasks, batches, assertConsumedOnce, close };
   } catch (error) { await close(); throw error; }
 }
 
@@ -218,6 +226,86 @@ test('SDK: abort without queue clearing keeps the original fast-path copy', { ti
     await h.session.prompt('resume explicitly');
     h.assertConsumedOnce();
   } finally { interrupted.resolve(); await h.close(); }
+});
+
+test('SDK: later idle completions after Stop remain append-only', { timeout: 15_000 }, async t => {
+  const first = deferred<void>(), second = deferred<void>();
+  const streaming = deferred<void>(), interrupted = deferred<void>();
+  const h = await fixture(2, {
+    work(number) { return number === 1 ? first.promise : second.promise; },
+    async request(number, signal) {
+      if (number !== 2) return;
+      signal!.addEventListener('abort', () => interrupted.resolve(), { once: true });
+      streaming.resolve(); await interrupted.promise;
+    },
+  });
+  try {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const run = h.session.prompt('stop one completion, finish another later');
+    await streaming.promise;
+    first.resolve(); await until(() => h.indexed.size === 1);
+    t.mock.timers.tick(5000); await nextTurn();
+    assert.equal(h.session.agent.hasQueuedMessages(), true);
+    h.session.clearQueue();
+    const stopping = h.session.abort();
+    await run; await stopping; await nextTurn();
+    assert.equal(h.requests.length, 2);
+    assert.equal(h.batches().length, 1, 'Stop recovers the first completion without a new turn');
+
+    second.resolve(); await until(() => h.indexed.size === 2);
+    t.mock.timers.tick(5000); await nextTurn();
+    assert.equal(h.requests.length, 2, 'a later idle completion cannot wake the model after Stop');
+    assert.equal(h.batches().length, 2, 'the later completion is appended immediately');
+    h.assertConsumedOnce();
+    t.mock.timers.tick(10_000); await nextTurn();
+    assert.equal(h.requests.length, 2);
+    assert.equal(h.batches().length, 2, 'both completions remain exactly once');
+  } finally {
+    first.resolve(); second.resolve(); interrupted.resolve();
+    await h.close();
+  }
+});
+
+test('SDK: compact completion after Stop flushes append-only without a new request', { timeout: 15_000 }, async t => {
+  const work = deferred<void>(), streaming = deferred<void>(), interrupted = deferred<void>();
+  const hooks: Hooks = {
+    work() { return work.promise; },
+    async request(number, signal) {
+      if (number !== 2) return;
+      signal!.addEventListener('abort', () => interrupted.resolve(), { once: true });
+      streaming.resolve(); await interrupted.promise;
+    },
+  };
+  const h = await fixture(1, hooks);
+  try {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    h.session.sessionManager.appendMessage({ role: 'user', content: 'older turn '.repeat(100), timestamp: Date.now() });
+    const run = h.session.prompt('Stop, then finish during compact');
+    await streaming.promise;
+    h.session.clearQueue();
+    const stopping = h.session.abort();
+    await run; await stopping; await nextTurn();
+    assert.equal(h.requests.length, 2);
+    assert.equal(h.batches().length, 0);
+    assert.equal(h.tasks()[0]!.localRunning, true);
+
+    hooks.beforeCompact = async event => {
+      work.resolve(); await h.completed.promise;
+      const task = h.tasks()[0]!;
+      assert.equal(task.localRunning, false);
+      assert.equal(task.notification, 'pending', 'compact itself is not an idle delivery boundary');
+      return { compaction: { summary: 'fixture compact after Stop',
+        firstKeptEntryId: event.preparation.firstKeptEntryId,
+        tokensBefore: event.preparation.tokensBefore } };
+    };
+    await h.session.compact(); await nextTurn();
+    assert.equal(h.requests.length, 2, 'host recovery cannot wake the model after Stop');
+    assert.equal(h.batches().length, 1, 'compact completion flushes the pending notice append-only');
+    h.assertConsumedOnce();
+    t.mock.timers.tick(10_000); await nextTurn();
+    assert.equal(h.requests.length, 2);
+    assert.equal(h.batches().length, 1);
+  } finally { work.resolve(); interrupted.resolve(); await h.close(); }
 });
 
 // Observe the real public Promise without replacing delivery or the SDK runner.
