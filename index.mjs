@@ -1,11 +1,12 @@
 // @ts-check
-// Pi's Jiti require resolves virtual host modules before native ESM can pick a
-// second local SDK copy. Session identity must come from the running host.
-const { AgentSession, createCodemodeExtension } = require('@earendil-works/pi-coding-agent');
-const { captureCodemodeExecute } = require('./src/codemode.ts');
-const { install } = require('./src/extension.ts');
-const { captureSession } = require('./src/host.ts');
-const { loadConfig } = require('./src/config.ts');
+// Keep host imports in native ESM. Besides avoiding a second local SDK copy,
+// this bypasses Jiti's unbundled-SDK prefix aliases, which otherwise resolve
+// pi-ai/utils/* below dist/compat.js while loading the coding-agent root.
+const { AgentSession, createCodemodeExtension } = await import('@earendil-works/pi-coding-agent');
+const { captureCodemodeExecute } = await import('./src/codemode.ts');
+const { install } = await import('./src/extension.ts');
+const { captureSession } = await import('./src/host.ts');
+const { loadConfig } = await import('./src/config.ts');
 
 /** @param {import('@earendil-works/pi-coding-agent').ExtensionAPI} pi */
 export default function backgroundPoc(pi) {

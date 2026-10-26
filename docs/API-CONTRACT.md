@@ -16,7 +16,7 @@
 | `session._beforeToolCall` | 进入原生权限链前按代次记录 validated args 的弱身份、raw 和 parent；不决定/不重跑权限 |
 | `tool_execution_start/end` | start 记录 steer 父链；end 发布句柄、清理 primitive fallback；不再保存 raw |
 | `ui_prompt_start/end` | 审批期间暂停 detach 和通知 |
-| `session.sendCustomMessage()` / `session.subscribe()` | 请求边界无触发暂存、空闲唤起的 Promise 及公开 message_end 消费确认；不使用可清除的 core steering 队列 |
+| `session.sendCustomMessage()` / `session.subscribe()` / `agent.hasQueuedMessages()` | 活动 run steering 快速投递、请求边界无触发暂存、Stop 后 idle append-only 及空闲唤起；公开 message_end 确认消费，队列排空后回收未消费副本 |
 | `appendEntry()` | 非模型上下文的任务索引 |
 | before_agent_start、turn_end、settled、compact、tree 事件 | 请求边界交接及受 Stop/失败暂停约束的恢复 |
 

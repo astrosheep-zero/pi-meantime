@@ -65,7 +65,7 @@ export class FakePi implements PiHost, HostSession {
     this.refresh();
   }
   isStreaming = false;
-  get agent() { return { toolExecution: this.sequentialNested ? 'sequential' as const : 'parallel' as const }; }
+  get agent() { return { toolExecution: this.sequentialNested ? 'sequential' as const : 'parallel' as const, hasQueuedMessages: () => false }; }
   readonly extensionRunner = { createToolContext: (id: string, signal?: AbortSignal): ToolContext => {
     let child = 0;
     return Object.defineProperties({ ...this.ctx, signal }, {

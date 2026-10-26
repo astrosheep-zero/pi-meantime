@@ -442,6 +442,16 @@ export class TaskRuntime {
     }
     this.prune(); this.changed();
   }
+  /** Return notices discarded with a volatile host queue. Queue removal is not
+   * a send failure and must not consume the asynchronous retry budget. */
+  notificationReturned(ids: readonly string[]): void {
+    if (!this.open) return;
+    for (const id of ids) {
+      const task = this.tasks.get(id);
+      if (task?.meta.notification === 'queued') task.meta.notification = 'pending';
+    }
+    this.prune(); this.changed();
+  }
   notificationFailed(ids: readonly string[]): void {
     if (!this.open) return;
     for (const id of ids) {

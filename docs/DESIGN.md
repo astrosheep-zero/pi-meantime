@@ -50,8 +50,8 @@ runtime 行为不因同名适配改变：
 
 - 只有实际 detach 才保存任务索引并返回句柄；普通索引写入失败留在前台。关闭请求取消并在有限 grace 后释放等待，停止旧会话通知。不承诺 reload 保活。
 - 后台结果已落定、句柄已被宿主确认、结果未读且没有该任务的 waiter 时才 eligible。`CompletionDelivery` 集中处理交接、消费确认和宿主恢复；runtime 在调用 sink 前原子预留 `pending → queued`，宿主公开 `message_end` 才将仍 queued 的任务改为 `delivered`。queued 不参与保留裁剪；已读/已确认任务不因迟到失败回滚。
-- `before_agent_start` / `turn_end` 等待审批 continuation 后交接所有 eligible 批次，每条最多 16 项。活动 run 用公开 `session.sendCustomMessage(triggerTurn:false)` 暂存，不进入会被 Stop 清除的 core steering 队列，也不受 steeringMode 限制。`turn_end` 新暂存通知且 outcome 非 aborted/error 时请求一次 continuation；不使用暂存前的 canContinue 快照。wait 只抑制正在等的任务；已交接的通知不能撤回。
-- 空闲时使用 `session.sendCustomMessage(triggerTurn:true)` 的实际 Promise 唤起；准备失败只回退尚未消费的 queued 任务，并暂停自动唤起，等下一合法请求重试。Stop 后同样暂停，不能因结果待通知自动复活模型。普通 settled、压缩完成/失败和导航成功统一经一个可取消的 setImmediate 重查宿主状态，再尝试空闲投递。关闭取消恢复回调并解除消费订阅，不重试旧代次。
+- 活动 run 的普通完成通知经公开 `session.sendCustomMessage(deliverAs:'steer', triggerTurn:true)` 进入 steering 快速通道；`before_agent_start` / `turn_end` 等待审批 continuation 后以 `triggerTurn:false` 暂存所有 eligible 批次，每条最多 16 项。`turn_end` 新暂存通知且 outcome 非 aborted/error 时请求一次 continuation；不使用暂存前的 canContinue 快照。wait 只抑制正在等的任务；已交接的通知不能撤回。
+- settled 时只有宿主队列已空，才把未消费的快速通道通知退回 pending；队列未空说明原副本仍可能被后续 run 消费，不能重复补投。队列移除不消耗发送失败重试预算。空闲时使用 `session.sendCustomMessage(triggerTurn:true)` 的实际 Promise 唤起；准备失败只回退尚未消费的 queued 任务，并暂停自动唤起，等下一合法请求重试。Stop 后在宿主转为 idle 的 setImmediate 以 `triggerTurn:false` append-only 补写未消费通知，不自动复活模型；若用户已启动新 run，则由正常边界/快速通道接管。普通 settled、压缩完成/失败和导航成功统一经一个可取消的 setImmediate 重查宿主状态，再尝试空闲投递。关闭取消恢复回调并解除消费订阅，不重试旧代次。
 - `delivered` 表示宿主消费，不是磁盘持久化回执：idle trigger 的公开 message_end 早于 session persistence；边界暂存路径则先 append 再 emit。不承诺崩溃 exactly-once 或严格 FIFO（idle trigger 准备期间暂存的新通知可能先显示）。
 - 通知仅含状态、可选输出路径和约 1KiB 不可信文本尾部。单任务 wait 不另截断原生文本；批量 wait 共用 32KiB 正文预算；回执不内联图片。这些展示限制不修改保留结果。
 - task / completion / removed 自定义 session 条目保留任务和最终错误位、文本、路径。同会话树导航共享任务；fork/clone 不接管旧作业。恢复只有文本与元数据，缺少 completion 时为 outcome_unknown，不重放业务、不补发历史通知。

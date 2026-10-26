@@ -338,6 +338,24 @@ test('async notification failure waits for a boundary and shares the synchronous
   } finally { await h.close(); }
 });
 
+test('returned volatile notifications retry without consuming the failure budget', async () => {
+  const h = await notificationBatch(1); const id = h.ids[0]!;
+  try {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      h.runtime.flushNotifications();
+      assert.equal(h.runtime.get(id).notification, 'queued');
+      h.runtime.notificationReturned([id, 'missing']);
+      assert.equal(h.runtime.get(id).notification, 'pending');
+      assert.equal(h.runtime.tasks.get(id)!.notifyAttempts, 0);
+    }
+    h.runtime.notificationConsumed([id]);
+    assert.equal(h.runtime.get(id).notification, 'pending', 'a stale receipt cannot consume a returned retry');
+    h.sink.notify = tasks => h.runtime.notificationConsumed(tasks.map(task => task.id));
+    h.runtime.flushNotifications();
+    assert.equal(h.runtime.get(id).notification, 'delivered');
+  } finally { await h.close(); }
+});
+
 test('boundary drains bounded batches without claiming unconfirmed delivery', async () => {
   const h = await notificationBatch(17);
   try {

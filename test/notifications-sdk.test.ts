@@ -149,7 +149,7 @@ for (const approval of [true, false]) test(approval
 
 for (const staged of [false, true]) test(staged
   ? 'SDK: Stop after staging and clearQueue does not lose a completion or restart'
-  : 'SDK: Stop with a pending completion does not lose it or restart', { timeout: 15_000 }, async t => {
+  : 'SDK: Stop clears a fast-path completion and append-only recovers without restart', { timeout: 15_000 }, async t => {
   const streaming = deferred<void>(), interrupted = deferred<void>();
   let stopping: Promise<void> | undefined;
   const h = await fixture(1, staged ? {
@@ -173,17 +173,49 @@ for (const staged of [false, true]) test(staged
       await streaming.promise;
       h.release.resolve(); await h.completed.promise;
       t.mock.timers.tick(5000); await nextTurn();
-      assert.equal(h.tasks()[0]!.notification, 'pending');
+      assert.equal(h.tasks()[0]!.notification, 'queued', 'streaming hands off immediately');
+      assert.ok(h.session.agent.peekQueuedMessages().some(message => message.role === 'custom'
+        && message.customType === 'meantime-completion'), 'the completion is in the volatile steering queue');
+      assert.deepEqual(h.session.clearQueue(), { steering: [], followUp: [] }, 'custom steering is not returned as user input');
+      assert.equal(h.session.agent.hasQueuedMessages(), false, 'Stop discards the volatile copy');
       stopping = h.session.abort();
     }
-    await run; await stopping;
+    await run; await stopping; await nextTurn();
     assert.ok(stopping, 'Stop was exercised');
     assert.equal(h.requests.length, 2, 'Stop prevents a notification answer');
+    assert.equal(h.batches().length, 1, 'idle recovery appends the unconsumed completion');
+    assert.equal(h.tasks()[0]!.notification, 'delivered');
     t.mock.timers.tick(10_000); await nextTurn();
-    assert.equal(h.requests.length, 2, 'pending timers cannot automatically resurrect the run');
+    assert.equal(h.requests.length, 2, 'append-only recovery cannot resurrect the run');
+    assert.equal(h.batches().length, 1, 'recovery is not duplicated');
     await h.session.prompt('resume explicitly');
     assert.equal(h.requests.length, 3);
     assert.deepEqual(h.requests[2], [...h.expected]);
+    h.assertConsumedOnce();
+  } finally { interrupted.resolve(); await h.close(); }
+});
+
+test('SDK: abort without queue clearing keeps the original fast-path copy', { timeout: 15_000 }, async t => {
+  const streaming = deferred<void>(), interrupted = deferred<void>();
+  const h = await fixture(1, { async request(number, signal) {
+    if (number !== 2) return;
+    signal!.addEventListener('abort', () => interrupted.resolve(), { once: true });
+    streaming.resolve(); await interrupted.promise;
+  } });
+  try {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const run = h.session.prompt('start work, then abort only');
+    await streaming.promise;
+    h.release.resolve(); await h.completed.promise;
+    t.mock.timers.tick(5000); await nextTurn();
+    assert.equal(h.tasks()[0]!.notification, 'queued');
+    assert.equal(h.session.agent.hasQueuedMessages(), true);
+    const stopping = h.session.abort(); // Unlike Paseo Stop, raw abort retains queues.
+    await run; await stopping; await nextTurn();
+    assert.equal(h.requests.length, 2, 'abort did not start a notification answer');
+    assert.equal(h.batches().length, 0, 'the retained host copy is not duplicated append-only');
+    assert.equal(h.tasks()[0]!.notification, 'queued');
+    await h.session.prompt('resume explicitly');
     h.assertConsumedOnce();
   } finally { interrupted.resolve(); await h.close(); }
 });

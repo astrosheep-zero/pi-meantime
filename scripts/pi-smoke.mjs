@@ -452,7 +452,7 @@ async function completionRace(sdk, root, scenario) {
           assert.equal(event.result.structuredContent?.task?.detachReason, 'timeout');
         }
         if (event.toolName === 'meantime') {
-          if (scenario === 'partial') assert.equal(extension.inspect().tasks.find(t => t.command?.includes('RACE_B')).notification, 'pending', 'B waits for the next request boundary while wait(A) is in progress');
+          if (scenario === 'partial') assert.equal(extension.inspect().tasks.find(t => t.command?.includes('RACE_B')).notification, 'queued', 'B uses the fast path while wait(A) suppresses only A');
           waitResults.push(event.result);
           trace.push(`wait returned: available=${event.result.structuredContent?.result_available}`);
         }
@@ -508,7 +508,9 @@ async function completionRace(sdk, root, scenario) {
       assert.equal(waitResults[0].structuredContent.result_available, true);
       assert.equal(waitResults[0].structuredContent.result.output, 'RACE_A');
     }
-    assert.equal(messages.length, observed && scenario !== 'partial' ? 0 : 1);
+    // A wait acknowledges its task, but cannot retract a completion already
+    // handed off through the fast path (before-wait and partial/B).
+    assert.equal(messages.length, observed && !['partial', 'before-wait'].includes(scenario) ? 0 : 1);
     if (scenario === 'active-tool' || scenario === 'batch-boundary') {
       const nextRequest = trace.indexOf('request 3: completion visible=1');
       assert.ok(nextRequest >= 0 && nextRequest < trace.indexOf('agent_settled'),
