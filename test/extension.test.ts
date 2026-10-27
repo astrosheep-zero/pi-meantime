@@ -22,12 +22,12 @@ const LONG_COMMAND = `echo first\necho second\necho ${'x'.repeat(200)}`;
 const normalized = (command: string) => command.replace(/\s+/g, ' ').trim();
 function assertPreview(command: string | undefined, raw: string, what: string): void {
   assert.ok(command, `${what}: command is present`);
-  assert.equal(command!.includes('\n'), false, `${what}: command is a single line`);
   assert.ok(Buffer.byteLength(command!) <= 123, `${what}: preview stays within 120 UTF-8 bytes plus ellipsis`);
   assert.notEqual(command, raw, `${what}: the raw command is not leaked wholesale`);
-  const expected = normalized(raw);
-  assert.ok(expected.startsWith(command!.replace(/…$/, '')), `${what}: preview is the normalised command prefix`);
   assert.ok(command!.endsWith('…'), `${what}: truncation is visible`);
+  const kept = command!.slice(0, -1);
+  assert.ok(raw.startsWith(kept), `${what}: preview is the raw command prefix, line breaks intact`);
+  if (kept.includes('\n')) assert.notEqual(normalized(kept), kept, `${what}: multi-line preview is not flattened`);
 }
 
 test('background handles carry the truncated command in details and structuredContent', async () => {
@@ -39,6 +39,7 @@ test('background handles carry the truncated command in details and structuredCo
     assert.equal(task.delivery, 'background');
     const details = handle.result.details as Snapshot;
     assertPreview(details.command, LONG_COMMAND, 'handle details.command');
+    assert.ok(details.command!.includes('\n'), 'multi-line preview keeps its line breaks');
     const structured = handle.result.structuredContent as unknown as { task: { command?: string } };
     assert.equal(structured.task.command, details.command, 'structuredContent mirrors the same preview');
   } finally { await h.close(); }
@@ -50,8 +51,9 @@ test('meantime wait streams an immediate partial snapshot of its targets', async
     const handle = await h.pi.call('bash', { command: LONG_COMMAND.replace('echo second', 'sleep 0.4 && echo second'), __background__: 'yes' });
     const task = snapshot(handle);
     const waiting = h.pi.call('meantime', { action: 'wait', ids: [task.id], timeout: 2 });
-    await until(() => h.pi.updates.length > 0, 1000);
-    const partial = h.pi.updates.at(-1)!.details as unknown as { tasks?: { id: string; tool: string; state: string; command?: string; createdAt?: number }[] };
+    await until(() => h.pi.updates.some(update => Array.isArray((update.details as { tasks?: unknown } | undefined)?.tasks)), 1000);
+    const partial = h.pi.updates.map(update => update.details as { tasks?: { id: string; tool: string; state: string; command?: string; createdAt?: number }[] } | undefined)
+      .find(details => Array.isArray(details?.tasks))!;
     assert.ok(Array.isArray(partial.tasks), 'the partial update carries task snapshots');
     const preview = partial.tasks![0]!;
     assert.equal(preview.id, task.id);
@@ -96,7 +98,7 @@ test('completion notices carry the truncated command in details.tasks', async ()
   } finally { await h.close(); }
 });
 
-test('list page previews stay single-line while the runtime keeps the raw command', async () => {
+test('list page details previews keep line breaks while the runtime keeps the raw command', async () => {
   const h = await setup();
   try {
     const handle = await h.pi.call('bash', { command: LONG_COMMAND, __background__: 'yes' });
@@ -108,5 +110,7 @@ test('list page previews stay single-line while the runtime keeps the raw comman
     assert.equal(raw.command, LONG_COMMAND, 'truncation is a projection, not a runtime mutation');
     const structured = (listed.result.structuredContent as unknown as { tasks: Snapshot[] }).tasks;
     assert.equal(structured.find(task => task.id === entry.id)!.command, entry.command, 'structuredContent mirrors the previews');
+    const row = listed.result.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n').split('\n').find(line => line.includes(entry.id))!;
+    assert.match(row, /echo first echo second/, 'list receipts flatten the preview onto one line');
   } finally { await h.close(); }
 });

@@ -37,17 +37,22 @@ function foregroundOrHandle(view: View): Result {
   if (view.thrown) throw view.thrown.error;
   return { ...view.result, isError: view.isError ?? view.result.isError ?? false };
 }
+/** Display preview for details payloads: line breaks inside the budget survive for multi-line views. */
 function commandPreview(command: string): string {
-  const line = stripTerminalSequences(command).replace(/\s+/g, ' ').trim();
-  const preview = truncateUtf8(line, 120);
-  return preview === line ? line : `${preview}…`;
+  const cleaned = stripTerminalSequences(command).trim();
+  const preview = truncateUtf8(cleaned, 120);
+  return preview === cleaned ? cleaned : `${preview}…`;
+}
+/** Same preview flattened for single-line surfaces (receipts and TUI list rows). */
+function commandOneLine(command: string): string {
+  return commandPreview(command).replace(/\s+/g, ' ');
 }
 /** Details payloads carry display-safe snapshots; the full command stays in the runtime/index. */
 function withCommandPreview<T extends { command?: string }>(task: T): T {
   return task.command === undefined ? task : { ...task, command: commandPreview(task.command) };
 }
 function taskLabel(task: Snapshot): string {
-  return `${task.id} | ${task.tool} | ${task.state}${task.command !== undefined ? ` | ${commandPreview(task.command)}` : ''}`;
+  return `${task.id} | ${task.tool} | ${task.state}${task.command !== undefined ? ` | ${commandOneLine(task.command)}` : ''}`;
 }
 function elapsed(task: Snapshot): string {
   return `${Math.max(0, Math.floor(((task.endedAt ?? Date.now()) - task.createdAt) / 1000))}s`;
@@ -153,7 +158,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       const refresh = () => {
         tasks = r.list().sort((a, b) => Number(b.localRunning) - Number(a.localRunning) || b.createdAt - a.createdAt);
         list = new SelectList(tasks.map(task => ({ value: task.id,
-          label: `${stateGlyph(theme, task.state)} ${task.command !== undefined ? commandPreview(task.command) : task.tool} · ${Math.max(0, Math.floor(((task.endedAt ?? Date.now()) - task.createdAt) / 1000))}s · ${task.id}` })), 10, {
+          label: `${stateGlyph(theme, task.state)} ${task.command !== undefined ? commandOneLine(task.command) : task.tool} · ${Math.max(0, Math.floor(((task.endedAt ?? Date.now()) - task.createdAt) / 1000))}s · ${task.id}` })), 10, {
           selectedPrefix: text => theme.fg('accent', text), selectedText: text => theme.fg('accent', text),
           description: text => theme.fg('muted', text), scrollInfo: text => theme.fg('dim', text), noMatch: text => theme.fg('muted', text),
         }, {
