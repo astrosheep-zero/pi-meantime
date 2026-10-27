@@ -5,7 +5,7 @@ import { build } from "esbuild";
 // Resolve the client's .js imports as TypeScript, as the plugin bundler does.
 const bundle = await build({ entryPoints: [new URL("../client/rows.ts", import.meta.url).pathname],
   bundle: true, write: false, platform: "node", format: "esm" });
-const { formatElapsed, completionResult, stateCode, stateLabel, stateColor, doneColor, taskStateCode, taskStateLabel, secondaryColor, frameColor, readableColor } =
+const { formatElapsed, completionResult, stateLabel, stateColor, doneColor, taskStateLabel, secondaryColor, frameColor, readableColor } =
   await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0]!.text).toString("base64")}`);
 
 test("elapsed is a fixed snapshot, never inferred from a start alone", () => {
@@ -17,9 +17,7 @@ test("elapsed is a fixed snapshot, never inferred from a start alone", () => {
   assert.equal(formatElapsed({ id: task.id, state: "completed", endedAt: 46000 }), undefined);
 });
 
-test("states remain distinct and only observed running is R", () => {
-  const states = ["running", "started", "queued", "cancel_requested", "cancelled", "outcome_unknown", ""];
-  assert.equal(new Set(states.map(stateCode)).size, states.length);
+test("state labels and colors stay distinct", () => {
   assert.equal(stateLabel("started"), "STARTED");
   assert.equal(stateLabel(""), "MISSING STATE");
   const colors = { statusDanger: "danger", statusWarning: "amber", statusSuccess: "green", foregroundMuted: "muted" };
@@ -31,14 +29,12 @@ test("states remain distinct and only observed running is R", () => {
   assert.equal(doneColor({ foregroundMuted: "muted" }), "#7fb26a");
 });
 
-test("terminal table cells keep supplied exit codes compact and accessible", () => {
+test("terminal table labels keep supplied exit codes compact and accessible", () => {
   const task = { state: "completed", exitCode: 0 };
-  assert.equal(taskStateCode(task), "X0");
   assert.equal(taskStateLabel(task), "COMPLETED · exit 0");
-  assert.equal(taskStateCode({ state: "failed", exitCode: 1 }), "E1");
-  assert.equal(taskStateCode({ state: "failed", exitCode: 127 }), "E127");
+  assert.equal(taskStateLabel({ state: "failed", exitCode: 1 }), "FAILED · exit 1");
   assert.equal(taskStateLabel({ state: "failed", exitCode: 127 }), "FAILED · exit 127");
-  assert.equal(taskStateCode({ state: "failed" }), "E");
+  assert.equal(taskStateLabel({ state: "failed" }), "FAILED");
 });
 
 test("washed-out host tokens gain contrast without using border or a fixed palette", () => {
@@ -58,9 +54,12 @@ test("washed-out host tokens gain contrast without using border or a fixed palet
   assert.equal(readableColor("#e9b45a", dark), "#e9b45a");
 });
 
-test("sparse receipts never invent an exit code", () => {
-  assert.equal(completionResult({ state: "completed" }), "completed");
+test("completion receipts never invent an exit code", () => {
+  assert.equal(completionResult({ state: "completed" }), "done");
   assert.equal(completionResult({ state: "failed" }), "failed");
-  assert.equal(completionResult({ state: "completed", exitCode: 0 }), "completed · exit 0");
+  assert.equal(completionResult({ state: "completed", exitCode: 0 }), "done");
+  assert.equal(completionResult({ state: "completed", exitCode: 2 }), "done · exit 2");
+  assert.equal(completionResult({ state: "failed", exitCode: 1 }), "failed · exit 1");
   assert.equal(completionResult({ state: "cancelled" }), "cancelled");
+  assert.equal(completionResult({ state: "outcome_unknown" }), "status unknown");
 });

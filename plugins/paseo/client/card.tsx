@@ -12,6 +12,7 @@ export function Card({ colors, children }: { colors: PluginTheme["colors"]; chil
   return (
     <View style={{
       borderRadius: 10,
+      overflow: "hidden",
       borderWidth: 1,
       borderColor: mixColor(secondaryColor(colors), colors.surface0, 0.88),
       backgroundColor: mixColor(colors.surface1, colors.surface0, 0.45),

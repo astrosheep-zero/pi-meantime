@@ -2,7 +2,7 @@ import { usePaseo, type PluginTimelineItemProps } from "@getpaseo/plugin/client"
 import { useEffect, useState } from "react";
 import { Text, View } from "react-native";
 import type { MeantimeCardData, TaskSummary } from "../shared/tasks.js";
-import { foldItem } from "../shared/tasks.js";
+import { foldItem, resolveWaitTask } from "../shared/tasks.js";
 import { completionResult, monoFont, secondaryColor } from "./rows.js";
 import { TaskTable } from "./task-view.js";
 import { WaitCard } from "./wait-card.js";
@@ -39,7 +39,7 @@ export function ConnectedMeantimeTaskCard(props: PluginTimelineItemProps<Meantim
   const paseo = usePaseo();
   const { agentId, item } = props;
   const data = item.data;
-  const [resolved, setResolved] = useState<Readonly<Record<string, TaskSummary>>>({});
+  const [resolved, setResolved] = useState<ReadonlyMap<string, TaskSummary>>(new Map());
   const unresolvedWait = data.source === "meantime" && data.action === "wait"
     ? data.tasks.filter(task => task.command === undefined).map(task => task.id)
     : [];
@@ -52,22 +52,12 @@ export function ConnectedMeantimeTaskCard(props: PluginTimelineItemProps<Meantim
       if (cancelled) return;
       const byId = new Map<string, TaskSummary>();
       for (const entry of page.entries) foldItem(byId, entry.item);
-      const next: Record<string, TaskSummary> = {};
-      for (const id of unresolvedWait) {
-        const found = byId.get(id);
-        if (found) next[id] = found;
-      }
-      setResolved(next);
+      setResolved(byId);
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [agentId, paseo, waitKey]);
 
   if (unresolvedWait.length === 0) return <MeantimeTaskCard {...props} />;
-  const tasks = data.tasks.map(task => {
-    const found = resolved[task.id];
-    if (!found) return task;
-    // Resolve identity only: later timeline results must not rewrite this receipt.
-    return { ...task, command: task.command ?? found.command, tool: task.tool ?? found.tool };
-  });
+  const tasks = data.tasks.map(task => resolveWaitTask(task, resolved));
   return <MeantimeTaskCard {...props} item={{ ...item, data: { ...data, tasks } }} />;
 }

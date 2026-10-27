@@ -94,22 +94,6 @@ export function stateText(state: string): string {
   }
 }
 
-/** Distinct process-table codes; the accessible label retains the full state. */
-export function stateCode(state: string): string {
-  switch (state) {
-    case "running": return "R";
-    case "started": return "S";
-    case "waiting": return "W";
-    case "queued": return "Q";
-    case "completed": return "X";
-    case "failed": return "E";
-    case "cancel_requested": return "C?";
-    case "cancelled": return "C";
-    case "outcome_unknown": return "?";
-    default: return state ? "?" : "—";
-  }
-}
-
 /** Cross-platform monospace: iOS has no generic "monospace" alias. */
 export function monoFont(platform: "ios" | "android" | "web"): string {
   return platform === "ios" ? "Menlo" : "monospace";
@@ -130,17 +114,14 @@ export function formatElapsed(task: TaskSummary): string | undefined {
 }
 
 export function completionResult(task: TaskSummary): string {
-  // Never manufacture exit 0 from a successful state (or exit 1 from failure).
-  const state = stateLabel(task.state).toLowerCase();
-  return task.exitCode === undefined ? state : `${state} · exit ${task.exitCode}`;
+  // A clean success is just "done"; never manufacture exit 0 from a state,
+  // and never invent an exit code a sparse receipt never carried.
+  const state = stateText(task.state);
+  const exitCode = task.exitCode;
+  return exitCode !== undefined && (exitCode !== 0 || task.state !== "completed")
+    ? `${state} · exit ${exitCode}` : state;
 }
 
 export function taskStateLabel(task: TaskSummary): string {
   return task.exitCode === undefined ? stateLabel(task.state) : `${stateLabel(task.state)} · exit ${task.exitCode}`;
-}
-
-export function taskStateCode(task: TaskSummary): string {
-  const code = stateCode(task.state);
-  return task.exitCode !== undefined && (task.state === "completed" || task.state === "failed")
-    ? `${code}${task.exitCode}` : code;
 }

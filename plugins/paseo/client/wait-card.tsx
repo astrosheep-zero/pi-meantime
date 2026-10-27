@@ -1,26 +1,49 @@
 import type { PluginTimelineItemProps } from "@getpaseo/plugin/client";
-import { View } from "react-native";
-import type { MeantimeCardData } from "../shared/tasks.js";
+import { Text, View } from "react-native";
+import type { MeantimeCardData, TaskSummary } from "../shared/tasks.js";
 import { Card } from "./card.js";
-import { completionResult } from "./rows.js";
-import { TaskLine } from "./task-view.js";
+import { CODE_FONT_SIZE, CODE_LINE_HEIGHT, completionResult, dividerColor, monoFont, secondaryColor, stateText } from "./rows.js";
+import { TaskGlyph, TaskLine } from "./task-view.js";
 
-/** Wait status belongs to this call; task status is a returned snapshot.
- * Same card, same task rows as every other meantime surface — the wait
- * outcome is just the row's status and one note line. */
+/** The wait outcome is the row's own status: "waiting", "done", "still
+ * running". No second-line prose narrating what the wait did. */
+function waitStatus(task: TaskSummary): string {
+  const state = task.state;
+  if (state === "waiting") return "waiting";
+  if (["completed", "failed", "cancelled"].includes(state)) return completionResult(task);
+  if (state === "running") return "still running";
+  if (state === "cancel_requested") return "cancel requested";
+  return stateText(state);
+}
+
 export function WaitCard({ item, theme, layout }: PluginTimelineItemProps<MeantimeCardData>) {
   const { colors } = theme;
-  return <View style={{ gap: 6, marginTop: 4 }}>{item.data.tasks.map(task => {
-    const waiting = task.state === "waiting";
-    const terminal = ["completed", "failed", "cancelled"].includes(task.state);
-    const title = waiting ? "Waiting" : terminal ? "Finished waiting" : "Wait ended";
-    // "Waiting" needs no footnote; notes only carry information the title can't.
-    const note = waiting ? undefined : terminal ? completionResult(task)
-      : task.state === "running" ? "Still running when wait ended"
-      : task.state === "cancel_requested" ? "Cancellation requested"
-      : "Status unavailable";
-    return <Card key={task.id} colors={colors}>
-      <TaskLine task={task} colors={colors} layout={layout} status={title} note={note} waitStatus={title} />
-    </Card>;
-  })}</View>;
+  if (item.data.tasks.length === 0) return (
+    <View style={{ marginTop: 4 }}>
+      <Card colors={colors}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 12, paddingVertical: 9 }}>
+          <TaskGlyph task={{ state: "waiting" }} colors={colors} />
+          <Text style={{ flex: 1, color: colors.foreground, fontFamily: monoFont(layout.platform),
+            fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>All pending tasks</Text>
+          <Text style={{ color: secondaryColor(colors), fontSize: 12, lineHeight: 16 }}>{stateText("waiting")}</Text>
+        </View>
+      </Card>
+    </View>
+  );
+  const tasks = item.data.tasks;
+  const divider = dividerColor(colors);
+  return (
+    <View style={{ marginTop: 4 }}>
+      <Card colors={colors}>
+        {tasks.map((task, index) => {
+          const status = waitStatus(task);
+          return (
+            <View key={task.id} style={index > 0 ? { borderTopWidth: 1, borderTopColor: divider } : undefined}>
+              <TaskLine task={task} colors={colors} layout={layout} status={status} waitStatus={status} />
+            </View>
+          );
+        })}
+      </Card>
+    </View>
+  );
 }

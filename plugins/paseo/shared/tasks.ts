@@ -7,8 +7,8 @@ import { z } from "zod";
  * - The `meantime` tool returns details with `tasks` (list), `task`
  *   (wait/cancel), or a bare snapshot with `id` (handle), plus optional
  *   `next_offset` pagination.
- * - `<tool>_mt` proxies return the task snapshot as details with
- *   `delivery: "background"` when detached.
+ * - Managed tools (and historical `<tool>_mt` proxies) return the task
+ *   snapshot as details with `delivery: "background"` when detached.
  * - Completion messages carry structured snapshots in `details.tasks`
  *   (pi-meantime extension.ts). Paseo's pi provider preserves message
  *   details under `metadata.details`, so cards are built from that, never
@@ -116,15 +116,28 @@ export function recognizeToolCall(item: ToolCallItemLike): Omit<MeantimeCardData
   if (name === "meantime") {
     const input = isRecord(detail.input) ? detail.input : undefined;
     const action = input ? text(input.action) : undefined;
-    // A running wait has no output yet. Recognize it from its input so the
-    // timeline can show what is being awaited; the card resolves the id to
-    // the originating command from earlier handle/_mt snapshots.
+    // Running waits have no final result yet, but the tool publishes partial
+    // details as it observes: real ids, tools and commands beat bare ids.
     if (item.status === "running") {
-      const id = input ? text(input.id) : undefined;
-      if (action === "wait" && id && TASK_ID.test(id)) {
-        return { source: "meantime", action, tasks: [{ id, state: "waiting" }] };
-      }
-      return undefined;
+      if (action !== "wait") return undefined;
+      const details = unknownDetails(detail);
+      const raws = details === undefined ? []
+        : Array.isArray(details.tasks) ? details.tasks
+        : details.task !== undefined ? [details.task]
+        : [];
+      // A wait only observes; nothing it reports has finished.
+      const observed = raws.map(simplifySnapshot)
+        .filter((task): task is TaskSummary => task !== undefined)
+        .map(task => ({ ...task, state: "waiting" }));
+      if (observed.length > 0) return { source: "meantime", action, tasks: observed };
+      // No partial snapshot yet. Current calls use ids (including prefixes);
+      // keep id for historical timelines. No ids means wait-all, not an
+      // inferred set of tasks from a later client-side snapshot.
+      const ids = input?.ids ?? (input?.id !== undefined ? [input.id] : undefined);
+      if (ids === undefined) return { source: "meantime", action, tasks: [] };
+      if (!Array.isArray(ids) || ids.length === 0 || ids.length > 32
+        || !ids.every(id => typeof id === "string" && /^(?:mt_)?[a-f0-9]{1,8}$/.test(id))) return undefined;
+      return { source: "meantime", action, tasks: [...new Set<string>(ids)].map(id => ({ id, state: "waiting" })) };
     }
     const details = unknownDetails(detail);
     if (!details) return undefined;
@@ -140,10 +153,10 @@ export function recognizeToolCall(item: ToolCallItemLike): Omit<MeantimeCardData
     return { source: "meantime", ...(action ? { action } : {}), tasks, ...(moreOffset !== undefined ? { moreOffset } : {}) };
   }
 
-  if (name.endsWith("_mt")) {
-    const details = unknownDetails(detail);
-    if (!details || details.delivery !== "background") return undefined;
-    const task = simplifySnapshot(details);
+  // Managed tools now retain their original names; old _mt rows still work.
+  const handle = unknownDetails(detail);
+  if (handle?.delivery === "background") {
+    const task = simplifySnapshot(handle);
     return task ? { source: "handle", tasks: [task] } : undefined;
   }
 
@@ -192,9 +205,17 @@ export function recognizeTimelineToolCall(item: ToolCallItemLike): Omit<Meantime
   return data?.source === "completion" || data?.source === "meantime" ? data : undefined;
 }
 
+/** Resolve identity only: later results must not rewrite a wait's snapshot. */
+export function resolveWaitTask(task: TaskSummary, known: ReadonlyMap<string, TaskSummary>): TaskSummary {
+  const prefix = task.id.startsWith("mt_") ? task.id : `mt_${task.id}`;
+  const matches = [...known.values()].filter(candidate => candidate.id.startsWith(prefix));
+  const found = known.get(task.id) ?? (matches.length === 1 ? matches[0] : undefined);
+  return found ? { ...task, id: found.id, command: task.command ?? found.command, tool: task.tool ?? found.tool } : task;
+}
+
 const ACTIVE_STATES = new Set(["running", "cancel_requested", "started", "waiting"]);
 
-export function isActiveTask(task: TaskSummary): boolean {
+export function isActiveTask(task: Pick<TaskSummary, "state">): boolean {
   return ACTIVE_STATES.has(task.state);
 }
 

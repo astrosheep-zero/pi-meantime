@@ -1,7 +1,7 @@
 import type { PluginTheme } from "@getpaseo/plugin";
-import { Modal } from "@getpaseo/plugin/client/react-native";
-import { useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import type { ComponentType } from "react";
+import { Animated, Pressable, Text, View } from "react-native";
 import type { TaskSummary } from "../shared/tasks.js";
 import { isActiveTask } from "../shared/tasks.js";
 import { Card } from "./card.js";
@@ -10,12 +10,46 @@ import { CODE_FONT_SIZE, CODE_LINE_HEIGHT, dividerColor, doneColor, formatElapse
 type Colors = PluginTheme["colors"];
 type Layout = { compact: boolean; platform: "ios" | "android" | "web" };
 
+type PulseAnimation = { start(): void; stop(): void };
+type PulseValue = { setValue(value: number): void };
+type AnimatedRuntime = {
+  View?: ComponentType<{ style?: unknown }>;
+  Value?: new (value: number) => PulseValue;
+  timing?: (value: PulseValue, config: { toValue: number; duration: number; useNativeDriver: boolean }) => PulseAnimation;
+  loop?: (animation: PulseAnimation) => PulseAnimation;
+};
+
+/** The host injects `Animated`; keep it optional so a stub without
+ * `Animated.View` / `Animated.loop` still renders the dot as static ink. */
+const ANIMATED = Animated as unknown as AnimatedRuntime;
+const PulseView = ANIMATED.View;
+const CAN_PULSE = PulseView !== undefined && typeof ANIMATED.Value === "function"
+  && typeof ANIMATED.timing === "function" && typeof ANIMATED.loop === "function";
+
+/** Breathing opacity while a task is live. Created during render so the dot
+ * owns its value from the first frame; the effect only decides whether it moves. */
+function usePulse(active: boolean): PulseValue | undefined {
+  const value = useRef<PulseValue | undefined>(undefined);
+  const Value = ANIMATED.Value;
+  if (active && CAN_PULSE && Value !== undefined && value.current === undefined) value.current = new Value(1);
+  useEffect(() => {
+    const target = value.current;
+    const { timing, loop } = ANIMATED;
+    if (!active || target === undefined || timing === undefined || loop === undefined) return;
+    const breathe = loop(timing(target, { toValue: 0.4, duration: 900, useNativeDriver: false }));
+    breathe.start();
+    return () => { breathe.stop(); target.setValue(1); };
+  }, [active]);
+  return value.current;
+}
+
 /**
  * Status glyph: semantic marks instead of one anonymous dot. Solid dot for a
  * live process, hollow ring when parked (waiting/queued), check and cross for
  * terminal outcomes. Fixed slot keeps every row's command edge aligned.
  */
-export function TaskGlyph({ task, colors }: { task: TaskSummary; colors: Colors }) {
+export function TaskGlyph({ task, colors }: { task: Pick<TaskSummary, "state">; colors: Colors }) {
+  const pulse = usePulse(isActiveTask(task));
   const slot = { width: 12, height: CODE_LINE_HEIGHT, alignItems: "center" as const, justifyContent: "center" as const };
   const mark = (glyph: string, color: string) => (
     <View style={slot}><Text style={{ fontSize: 10, lineHeight: CODE_LINE_HEIGHT, color }}>{glyph}</Text></View>
@@ -28,19 +62,22 @@ export function TaskGlyph({ task, colors }: { task: TaskSummary; colors: Colors 
   const parked = task.state === "waiting" || task.state === "queued" || task.state === "cancel_requested";
   const glow = !parked && isDarkSurface(colors)
     ? { shadowColor: accent, shadowOpacity: 0.9, shadowRadius: 4, shadowOffset: { width: 0, height: 0 } } : null;
+  const dot = { width: 6, height: 6, borderRadius: 3, borderWidth: parked ? 1.5 : 0,
+    borderColor: accent, backgroundColor: parked ? "transparent" : accent, ...glow };
   return (
     <View style={slot}>
-      <View style={{ width: 6, height: 6, borderRadius: 3, borderWidth: parked ? 1.5 : 0,
-        borderColor: accent, backgroundColor: parked ? "transparent" : accent, ...glow }} />
+      {pulse !== undefined && PulseView !== undefined
+        ? <PulseView style={{ ...dot, opacity: pulse }} />
+        : <View style={dot} />}
     </View>
   );
 }
 
 export function TaskCommand({ task, colors, layout }: { task: TaskSummary; colors: Colors; layout: Layout }) {
   const command = task.command;
-  const split = command?.search(/\s/);
-  const head = command && split !== undefined && split >= 0 ? command.slice(0, split) : command;
-  const tail = command && split !== undefined && split >= 0 ? command.slice(split) : "";
+  // Env assignments belong with the command word; only arguments stay muted.
+  const head = command === undefined ? undefined : /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*\S+/.exec(command)?.[0];
+  const tail = command === undefined ? "" : command.slice(head?.length ?? 0);
   return (
     <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, color: colors.foreground,
       fontFamily: monoFont(layout.platform), fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>
@@ -53,9 +90,11 @@ export function TaskCommand({ task, colors, layout }: { task: TaskSummary; color
 /**
  * Command first; status and elapsed are trailing facts. Task ids are shown only
  * where the user can act on them (the board), not as timeline decoration.
+ * Details expand in place under the row — a press never covers the timeline.
  */
-export function TaskLine({ task, colors, layout, showId, status = stateText(task.state), note, waitStatus }: {
-  task: TaskSummary; colors: Colors; layout: Layout; showId?: boolean; status?: string; note?: string; waitStatus?: string;
+export function TaskLine({ task, colors, layout, showId, status = stateText(task.state), note, waitStatus, defaultOpen = false }: {
+  task: TaskSummary; colors: Colors; layout: Layout; showId?: boolean; status?: string; note?: string;
+  waitStatus?: string; defaultOpen?: boolean;
 }) {
   const mono = monoFont(layout.platform);
   const muted = secondaryColor(colors);
@@ -63,13 +102,13 @@ export function TaskLine({ task, colors, layout, showId, status = stateText(task
   // channel, so status and elapsed stay quiet neutrals.
   const meta = { fontSize: 12, lineHeight: 16, color: muted };
   const elapsed = formatElapsed(task);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const hasNotes = note !== undefined || [task.progress, task.outputPath,
     task.cancelRequested && task.state !== "cancel_requested",
     task.recovered, task.isError && task.state !== "failed"].some(Boolean);
   return (
     <View>
-      <Pressable onPress={() => setOpen(true)} accessibilityRole="button" accessibilityLabel={taskStateLabel(task)}
+      <Pressable onPress={() => setOpen(prev => !prev)} accessibilityRole="button" accessibilityLabel={taskStateLabel(task)}
         style={state => {
           const hovered = (state as { hovered?: boolean }).hovered;
           return { backgroundColor: hovered ? mixColor(colors.surface1, colors.surface0, 0.25) : "transparent",
@@ -96,15 +135,15 @@ export function TaskLine({ task, colors, layout, showId, status = stateText(task
         </View>
       ) : null}
       </Pressable>
-      {open ? <TaskDetailModal task={task} colors={colors} layout={layout} waitStatus={waitStatus} onClose={() => setOpen(false)} /> : null}
+      {open ? <TaskDetailInline task={task} colors={colors} layout={layout} waitStatus={waitStatus} /> : null}
     </View>
   );
 }
 
-/** v12 / A Terminal replay: one block tells the story — `$ command` in,
- * output out. State lives in the sheet title, bookkeeping in one dim line. */
-export function TaskDetailModal({ task, colors, layout, waitStatus, onClose }: {
-  task: TaskSummary; colors: Colors; layout: Layout; waitStatus?: string; onClose(): void;
+/** Inset drawer under the row: one block tells the story — command in,
+ * output out, bookkeeping in one dim line. Same card, no overlay. */
+export function TaskDetailInline({ task, colors, layout, waitStatus }: {
+  task: TaskSummary; colors: Colors; layout: Layout; waitStatus?: string;
 }) {
   const mono = monoFont(layout.platform);
   const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour12: false });
@@ -117,37 +156,28 @@ export function TaskDetailModal({ task, colors, layout, waitStatus, onClose }: {
     task.recovered ? "recovered" : undefined,
     task.isError && task.state !== "failed" ? "error reported" : undefined,
   ].filter(Boolean).join(" · ");
+  const tail = task.outputTail?.trimEnd();
   return (
-    <Modal title={waitStatus === "Waiting" ? "Waiting for task" : "Task snapshot"} open onOpenChange={next => { if (!next) onClose(); }}>
-      <Modal.Content contentContainerStyle={{ padding: 20, gap: 20 }}>
-        <View style={{ gap: 20 }}>
-          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-            <Text style={{ fontSize: 12, color: secondaryColor(colors) }}>Meantime</Text>
-            <Text style={{ fontSize: 12, color: secondaryColor(colors) }}>{waitStatus ?? stateText(task.state)}</Text>
-          </View>
-          <View style={{ backgroundColor: colors.surface0, borderRadius: 8, borderWidth: 1, borderColor: colors.border, padding: 16, gap: 8 }}>
-            <Text style={{ color: secondaryColor(colors), fontSize: 11 }}>Command</Text>
-            <Text selectable style={{ color: colors.foreground, fontFamily: mono, fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>
-              {task.command ?? task.tool ?? task.id}
-            </Text>
-          </View>
-          <View style={{ gap: 8 }}>
-            <Text style={{ color: secondaryColor(colors), fontSize: 11 }}>Output tail</Text>
-            <Text selectable style={{ color: task.outputTail ? colors.foreground : secondaryColor(colors),
-              fontFamily: mono, fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>{task.outputTail?.trimEnd() || "No output included"}</Text>
-          </View>
-          <View style={{ borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 16, gap: 8 }}>
-            {waitStatus !== "Waiting" ? <Text style={{ color: secondaryColor(colors), fontSize: 12 }}>As reported at the time</Text> : null}
-            <Text selectable style={{ color: secondaryColor(colors), fontFamily: mono, fontSize: 11,
-              lineHeight: 18 }}>{meta}</Text>
-            {task.outputPath ? <View style={{ gap: 4 }}>
-              <Text style={{ color: secondaryColor(colors), fontSize: 11 }}>Output file</Text>
-              <Text selectable style={{ color: colors.foreground, fontFamily: mono, fontSize: 11, lineHeight: 18 }}>{task.outputPath}</Text>
-            </View> : null}
-          </View>
-        </View>
-      </Modal.Content>
-    </Modal>
+    <View style={{ borderTopWidth: 1, borderTopColor: dividerColor(colors), backgroundColor: colors.surface0,
+      paddingHorizontal: 12, paddingVertical: 10, gap: 8 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <Text style={{ color: secondaryColor(colors), fontSize: 11 }}>Command</Text>
+        {waitStatus ? <Text style={{ color: secondaryColor(colors), fontSize: 11 }}>{waitStatus}</Text> : null}
+      </View>
+      <Text selectable style={{ color: colors.foreground, fontFamily: mono, fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>
+        {task.command ?? task.tool ?? task.id}
+      </Text>
+      {tail ? <>
+        <Text style={{ color: secondaryColor(colors), fontSize: 11 }}>Output tail</Text>
+        <Text selectable style={{ color: colors.foreground, fontFamily: mono, fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>{tail}</Text>
+      </> : null}
+      {meta ? <Text selectable style={{ color: secondaryColor(colors), fontFamily: mono, fontSize: 11, lineHeight: 18 }}>{meta}</Text> : null}
+      {task.outputPath ? (
+        <Text selectable style={{ color: colors.foreground, fontFamily: mono, fontSize: 11, lineHeight: 18 }}>
+          Output file: {task.outputPath}
+        </Text>
+      ) : null}
+    </View>
   );
 }
 

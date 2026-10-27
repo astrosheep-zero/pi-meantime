@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { build } from "esbuild";
 
@@ -6,8 +7,16 @@ const bundle = await build({ stdin: { contents: `
 import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {MeantimeTaskCard} from './client/task-card.tsx';
+import {TaskLine} from './client/task-view.tsx';
+const theme = {colors:{surface0:'#fff',surface1:'#f4f5f4',foreground:'#111',foregroundMuted:'#777',border:'#ccc',statusWarning:'#b7791f',statusDanger:'#c2412d'}};
+const layout = {compact:true,platform:'web'};
 export function render(data) {
- return renderToStaticMarkup(<MeantimeTaskCard item={{data}} theme={{colors:{surface0:'#fff',surface1:'#f4f5f4',foreground:'#111',foregroundMuted:'#777',border:'#ccc',statusWarning:'#b7791f',statusDanger:'#c2412d'}}} layout={{compact:true,platform:'web'}}/>);
+ return renderToStaticMarkup(<MeantimeTaskCard item={{data}} theme={theme} layout={layout}/>);
+}
+// Node renders statically: no press can be dispatched, so the same row is
+// rendered in its expanded state to exercise the inline drawer.
+export function renderLine(task) {
+ return renderToStaticMarkup(<TaskLine task={task} colors={theme.colors} layout={layout} defaultOpen/>);
 }`, loader: "tsx", resolveDir: new URL("..", import.meta.url).pathname },
   bundle: true, write: false, platform: "node", format: "cjs", alias: { "react-native": "react-native-web" },
   plugins: [{ name: "host-rn-stub", setup(b) {
@@ -16,19 +25,44 @@ export function render(data) {
   define: { "process.env.NODE_ENV": '"production"' } });
 // Bundled CJS keeps React's node builtins available without writing build artifacts.
 const { createRequire } = await import("node:module");
-const module = { exports: {} as { render?: (data: unknown) => string } };
+const module = { exports: {} as {
+  render?: (data: unknown) => string;
+  renderLine?: (task: unknown) => string;
+} };
 new Function("require", "module", "exports", bundle.outputFiles[0]!.text)(createRequire(import.meta.url), module, module.exports);
 const render = module.exports.render!;
+const renderLine = module.exports.renderLine!;
 
-test("wait panel separates waiting from a returned running snapshot", () => {
+test("wait rows show the observed status directly, without wait prose", () => {
   const base = { source: "meantime", action: "wait", phase: "complete" };
-  for (const [state, label] of [["waiting", "Waiting"], ["running", "Wait ended"], ["completed", "Finished waiting"]]) {
-    const html = render({ ...base, tasks: [{ id: "mt_a1b2c3d4", state, command: "sleep 60" }] });
-    assert.match(html, new RegExp(label));
+  for (const [task, status] of [
+    [{ id: "mt_a1b2c3d4", state: "waiting", command: "sleep 60" }, />waiting</],
+    [{ id: "mt_a1b2c3d4", state: "running", command: "sleep 60" }, />still running</],
+    [{ id: "mt_a1b2c3d4", state: "completed", command: "sleep 60", exitCode: 0 }, />done</],
+    [{ id: "mt_a1b2c3d4", state: "failed", command: "sleep 60", exitCode: 2 }, />failed · exit 2</],
+  ] as const) {
+    const html = render({ ...base, tasks: [task] });
+    assert.match(html, status);
     assert.match(html, /sleep.*60/);
-    assert.doesNotMatch(html, /exit 0|steer|[\u3400-\u9fff]/);
-    if (state === "running") assert.match(html, /Still running when wait ended/);
+    assert.doesNotMatch(html, /Wait ended|Finished waiting|Still running when wait ended|steer|[\u3400-\u9fff]/);
   }
+});
+
+test("wait-all renders a waiting card without inventing task identities", () => {
+  const html = render({ source: "meantime", action: "wait", phase: "streaming", tasks: [] });
+  assert.match(html, /All pending tasks/);
+  assert.match(html, />waiting</);
+  assert.doesNotMatch(html, /mt_|No output|Finished waiting/);
+});
+
+test("batch wait renders every target", () => {
+  const html = render({ source: "meantime", action: "wait", phase: "streaming", tasks: [
+    { id: "mt_a1b2c3d4", state: "waiting", command: "sleep 60" },
+    { id: "dead", state: "waiting" },
+  ] });
+  assert.match(html, /sleep.*60/);
+  assert.match(html, /dead/);
+  assert.equal(html.match(/>waiting</g)?.length, 2);
 });
 
 test("actual handle card says started even if launch snapshot said running", () => {
@@ -56,4 +90,54 @@ test("timeline tables lead with commands and keep bookkeeping out of the way", (
   assert.match(html, />done<\/div>/);
   assert.match(html, />failed<\/div>/);
   assert.doesNotMatch(html, />X0<\/div>|>E1<\/div>|meantime|snapshots|mt_a1b2c3d4|mt_deadbeef/);
+});
+
+test("command highlighting keeps env assignments with the executable word", () => {
+  const html = render({ source: "meantime", phase: "complete", tasks: [
+    { id: "mt_a1b2c3d4", state: "running", command: "FOO=bar BAZ=2 npm test -- --watch" },
+  ] });
+  // The whole prefix stays foreground; only the arguments recede.
+  assert.match(html, />FOO=bar BAZ=2 npm<span[^>]*style="color:[^"]*"> test -- --watch<\/span>/);
+  assert.doesNotMatch(html, />FOO=bar<span/);
+});
+
+test("batch wait shares one card and divides rows with a hairline", () => {
+  const html = render({ source: "meantime", action: "wait", phase: "streaming", tasks: [
+    { id: "mt_a1b2c3d4", state: "waiting", command: "sleep 60" },
+    { id: "dead", state: "waiting", command: "npm run watch" },
+  ] });
+  assert.equal(html.match(/border-top-left-radius:10px/g)?.length, 1);
+  assert.equal(html.match(/style="border-top-width:1px;border-top-color:/g)?.length, 1);
+  assert.equal(html.match(/>waiting</g)?.length, 2);
+  assert.match(html, /npm<span[^>]*> run watch<\/span>/);
+});
+
+test("task rows keep their details closed until pressed", () => {
+  const html = render({ source: "meantime", phase: "complete", tasks: [
+    { id: "mt_a1b2c3d4", state: "running", command: "npm test", outputTail: "108 passing" },
+  ] });
+  assert.match(html, /npm/);
+  assert.doesNotMatch(html, /Output tail|Output file|role="dialog"/);
+});
+
+test("pressing a row expands details inline instead of opening a modal", async () => {
+  const html = renderLine({ id: "mt_a1b2c3d4", state: "running", command: "npm test -- --watch",
+    outputTail: "108 passing\n", outputPath: "/tmp/mt_a1b2c3d4.log", createdAt: 1_700_000_000_000 });
+  assert.match(html, />Command</);
+  assert.match(html, /npm test -- --watch/);
+  assert.match(html, />Output tail</);
+  assert.match(html, /108 passing/);
+  assert.match(html, /mt_a1b2c3d4/);
+  assert.match(html, /Output file: .*mt_a1b2c3d4\.log/);
+  assert.doesNotMatch(html, /role="dialog"/);
+  // The host Modal renders null everywhere the tests can run, so the source
+  // is what proves the row owns a drawer rather than an overlay.
+  const source = await readFile(new URL("../client/task-view.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /Modal/);
+});
+
+test("inline details leave an empty output tail out entirely", () => {
+  const html = renderLine({ id: "mt_a1b2c3d4", state: "running", command: "sleep 60", outputTail: "  \n" });
+  assert.match(html, />Command</);
+  assert.doesNotMatch(html, /Output tail|Output file/);
 });
