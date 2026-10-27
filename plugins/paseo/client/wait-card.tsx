@@ -19,31 +19,27 @@ function waitStatus(task: TaskSummary): string {
 export function WaitCard({ item, theme, layout }: PluginTimelineItemProps<MeantimeCardData>) {
   const { colors } = theme;
   if (item.data.tasks.length === 0) return (
-    <View style={{ marginTop: 4 }}>
-      <Card colors={colors}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 12, paddingVertical: 9 }}>
-          <TaskGlyph task={{ state: "waiting" }} colors={colors} />
-          <Text style={{ flex: 1, color: colors.foreground, fontFamily: monoFont(layout.platform),
-            fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>All pending tasks</Text>
-          <Text style={{ color: secondaryColor(colors), fontSize: 12, lineHeight: 16 }}>{stateText("waiting")}</Text>
-        </View>
-      </Card>
-    </View>
+    <Card colors={colors}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, paddingVertical: 10 }}>
+        <TaskGlyph task={{ state: "waiting" }} colors={colors} />
+        <Text style={{ flex: 1, color: colors.foreground, fontFamily: monoFont(layout.platform),
+          fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>All pending tasks</Text>
+        <Text style={{ color: secondaryColor(colors), fontSize: 12, lineHeight: 16 }}>{stateText("waiting")}</Text>
+      </View>
+    </Card>
   );
   const tasks = item.data.tasks;
   const divider = dividerColor(colors);
   return (
-    <View style={{ marginTop: 4 }}>
-      <Card colors={colors}>
-        {tasks.map((task, index) => {
-          const status = waitStatus(task);
-          return (
-            <View key={task.id} style={index > 0 ? { borderTopWidth: 1, borderTopColor: divider } : undefined}>
-              <TaskLine task={task} colors={colors} layout={layout} status={status} waitStatus={status} />
-            </View>
-          );
-        })}
-      </Card>
-    </View>
+    <Card colors={colors}>
+      {tasks.map((task, index) => {
+        const status = waitStatus(task);
+        return (
+          <View key={task.id} style={index > 0 ? { borderTopWidth: 1, borderTopColor: divider } : undefined}>
+            <TaskLine task={task} colors={colors} layout={layout} status={status} waitStatus={status} />
+          </View>
+        );
+      })}
+    </Card>
   );
 }

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { build } from "esbuild";
 
@@ -7,6 +8,36 @@ const bundle = await build({ entryPoints: [new URL("../client/rows.ts", import.m
   bundle: true, write: false, platform: "node", format: "esm" });
 const { formatElapsed, completionResult, stateLabel, stateColor, doneColor, taskStateLabel, secondaryColor, frameColor, readableColor } =
   await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0]!.text).toString("base64")}`);
+
+// Cards render through react-native-web so the markup the timeline receives —
+// paddings, opacity, bounded boxes — is what the assertions below read.
+const surfaces = await build({ stdin: { contents: `
+import React from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {TaskDetailInline, TaskGlyph, TaskLine, TaskTable} from './client/task-view.tsx';
+import {WaitCard} from './client/wait-card.tsx';
+const theme = {colors:{surface0:'#fff',surface1:'#f4f5f4',foreground:'#111',foregroundMuted:'#777',border:'#ccc',statusWarning:'#b7791f',statusDanger:'#c2412d'}};
+const layout = {compact:true,platform:'web'};
+const draw = (element) => renderToStaticMarkup(element);
+export const glyph = (state) => draw(<TaskGlyph task={{state}} colors={theme.colors}/>);
+export const row = (task) => draw(<TaskLine task={task} colors={theme.colors} layout={layout}/>);
+export const detail = (task) => draw(<TaskDetailInline task={task} colors={theme.colors} layout={layout}/>);
+export const table = (tasks) => draw(<TaskTable tasks={tasks} colors={theme.colors} layout={layout}/>);
+export const emptyWait = () => draw(<WaitCard item={{data:{source:'meantime',action:'wait',phase:'streaming',tasks:[]}}} theme={theme} layout={layout}/>);`,
+  loader: "tsx", resolveDir: new URL("..", import.meta.url).pathname },
+  bundle: true, write: false, platform: "node", format: "cjs", alias: { "react-native": "react-native-web" },
+  define: { "process.env.NODE_ENV": '"production"' } });
+const ui = { exports: {} as {
+  glyph: (state: string) => string;
+  row: (task: unknown) => string;
+  detail: (task: unknown) => string;
+  table: (tasks: unknown[]) => string;
+  emptyWait: () => string;
+} };
+// Bundled CJS keeps React's node builtins available without writing build artifacts.
+const { createRequire } = await import("node:module");
+new Function("require", "module", "exports", surfaces.outputFiles[0]!.text)(createRequire(import.meta.url), ui, ui.exports);
+const { glyph, row, detail, table, emptyWait } = ui.exports;
 
 test("elapsed is a fixed snapshot, never inferred from a start alone", () => {
   const task = { id: "mt_a1b2c3d4", state: "running", createdAt: 1000 };
@@ -52,6 +83,57 @@ test("washed-out host tokens gain contrast without using border or a fixed palet
   assert.notEqual(frameColor(colors), colors.border);
   const dark = { ...colors, surface0: "#0f1114", foreground: "#e4e7ec" };
   assert.equal(readableColor("#e9b45a", dark), "#e9b45a");
+});
+
+test("a collapsed row flattens preserved newlines while the drawer keeps them", () => {
+  const task = { id: "mt_a1b2c3d4", state: "running", command: "npm test\n  --  --watch" };
+  const collapsed = row(task);
+  assert.match(collapsed, /npm<span[^>]*> test -- --watch<\/span>/);
+  assert.doesNotMatch(collapsed, /npm test\n/);
+  const drawer = detail(task);
+  assert.match(drawer, /npm test\n  --  --watch/);
+});
+
+test("live dots breathe while parked rings hold steady ink", async () => {
+  for (const state of ["running", "started"]) {
+    assert.match(glyph(state), /opacity:/, `${state} dot carries the pulse value`);
+  }
+  for (const state of ["waiting", "queued", "cancel_requested"]) {
+    const ring = glyph(state);
+    assert.doesNotMatch(ring, /opacity:/, `${state} ring must not pulse`);
+    assert.match(ring, /border-top-width:1\.5px/, `${state} is a hollow ring`);
+  }
+  // Node cannot run effects, so the shape of the cycle is pinned from source:
+  // two legs at 1000ms each, one loop, no sawtooth snap back to full ink.
+  const source = await readFile(new URL("../client/task-view.tsx", import.meta.url), "utf8");
+  assert.match(source, /sequence\(\[leg\(target, 0\.35\), leg\(target, 1\)\]\)/);
+  assert.match(source, /const BREATHE_MS = 1000;/);
+  assert.match(source, /loop\(cycle\)/);
+  assert.match(source, /EASING\.inOut\(EASING\.sin\)/);
+  assert.doesNotMatch(source, /toValue: 0\.4/);
+});
+
+test("the output tail is bounded and each label sits with its block", () => {
+  const drawer = detail({ id: "mt_a1b2c3d4", state: "running", command: "npm test", outputTail: "108 passing\n" });
+  assert.match(drawer, /gap:12px/);
+  assert.match(drawer, /gap:4px/);
+  assert.match(drawer, /Output tail<\/div><div[^>]*max-height:220px/);
+  assert.match(drawer, /108 passing/);
+  assert.match(drawer, /border-bottom-left-radius:9px/);
+  assert.match(drawer, /border-bottom-right-radius:9px/);
+});
+
+test("cards and rows drop the jump triggers and align notes in the command column", () => {
+  const html = table([{ id: "mt_a1b2c3d4", state: "running", command: "npm test", progress: "2/5" }]);
+  assert.doesNotMatch(html, /overflow/);
+  assert.doesNotMatch(html, /margin-top:4px/);
+  assert.doesNotMatch(html, /padding-left:34px/);
+  assert.match(html, /padding-right:14px;padding-left:14px;padding-top:10px;padding-bottom:10px/);
+  // Notes share the command's column, so they inherit its left edge.
+  assert.match(html, /flex:1;min-width:0px;gap:3px">[\s\S]*?2\/5/);
+  const empty = emptyWait();
+  assert.doesNotMatch(empty, /margin-top:4px/);
+  assert.match(empty, /padding-right:14px;padding-left:14px;padding-top:10px;padding-bottom:10px/);
 });
 
 test("completion receipts never invent an exit code", () => {
