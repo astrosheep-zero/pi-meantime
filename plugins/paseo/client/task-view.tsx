@@ -1,9 +1,10 @@
 import type { PluginTheme } from "@getpaseo/plugin";
+import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useRef, useState } from "react";
 import type { ComponentType, ReactNode } from "react";
 import { Animated, Easing, Pressable, ScrollView, Text, View } from "react-native";
 import type { TaskSummary } from "../shared/tasks.js";
-import { isActiveTask } from "../shared/tasks.js";
+import { isActiveTask, outputPreview } from "../shared/tasks.js";
 import { Card } from "./card.js";
 import { CODE_FONT_SIZE, CODE_LINE_HEIGHT, dividerColor, doneColor, formatElapsed, frameColor, isDarkSurface, mixColor, monoFont, secondaryColor, stateColor, stateText, taskStateLabel } from "./rows.js";
 
@@ -26,9 +27,8 @@ type AnimatedRuntime = {
  * `Animated.View` / `Animated.loop` still renders the dot as static ink. */
 const ANIMATED = Animated as unknown as AnimatedRuntime;
 const PulseView = ANIMATED.View;
-const CAN_ANIMATE = PulseView !== undefined && typeof ANIMATED.Value === "function"
-  && typeof ANIMATED.timing === "function";
-const CAN_PULSE = CAN_ANIMATE && typeof ANIMATED.loop === "function";
+const CAN_PULSE = PulseView !== undefined && typeof ANIMATED.Value === "function"
+  && typeof ANIMATED.timing === "function" && typeof ANIMATED.loop === "function";
 const EASING = Easing as unknown as EasingRuntime | undefined;
 /** Smooth in/out when the host ships an easing curve; linear otherwise. */
 const BREATHE_EASING = typeof EASING?.inOut === "function" && EASING.sin !== undefined
@@ -59,23 +59,6 @@ function usePulse(active: boolean): AnimatedValue | undefined {
     breathe.start();
     return () => { breathe.stop(); target.setValue(1); };
   }, [active]);
-  return value.current;
-}
-
-/** Fade the drawer in on mount. Height is never animated: the drawer settles
- * in one layout pass and only its ink fades, so the timeline cannot jump. */
-function useFadeIn(): AnimatedValue | undefined {
-  const value = useRef<AnimatedValue | undefined>(undefined);
-  const Value = ANIMATED.Value;
-  if (value.current === undefined && CAN_ANIMATE && Value !== undefined) value.current = new Value(0);
-  useEffect(() => {
-    const target = value.current;
-    const { timing } = ANIMATED;
-    if (target === undefined || timing === undefined) return;
-    const fade = timing(target, { toValue: 1, duration: 140, useNativeDriver: false });
-    fade.start();
-    return () => fade.stop();
-  }, []);
   return value.current;
 }
 
@@ -135,9 +118,8 @@ export function TaskCommand({ task, colors, layout }: { task: TaskSummary; color
  * Notes sit in the command column so they share its left edge without an
  * indent constant.
  */
-export function TaskLine({ task, colors, layout, showId, status = stateText(task.state), note, waitStatus, defaultOpen = false }: {
-  task: TaskSummary; colors: Colors; layout: Layout; showId?: boolean; status?: string; note?: string;
-  waitStatus?: string; defaultOpen?: boolean;
+export function TaskLine({ task, colors, layout, showId, status = stateText(task.state), defaultOpen = false }: {
+  task: TaskSummary; colors: Colors; layout: Layout; showId?: boolean; status?: string; defaultOpen?: boolean;
 }) {
   const mono = monoFont(layout.platform);
   const muted = secondaryColor(colors);
@@ -146,9 +128,10 @@ export function TaskLine({ task, colors, layout, showId, status = stateText(task
   const meta = { fontSize: 12, lineHeight: 16, color: muted };
   const elapsed = formatElapsed(task);
   const [open, setOpen] = useState(defaultOpen);
-  const hasNotes = note !== undefined || [task.progress, task.outputPath,
-    task.cancelRequested && task.state !== "cancel_requested",
-    task.recovered, task.isError && task.state !== "failed"].some(Boolean);
+  const notes = [task.progress, task.outputPath,
+    task.cancelRequested && task.state !== "cancel_requested" ? "cancel requested" : undefined,
+    task.recovered ? "recovered" : undefined,
+    task.isError && task.state !== "failed" ? "error reported" : undefined].filter(Boolean);
   return (
     <View>
       <Pressable onPress={() => setOpen(prev => !prev)} accessibilityRole="button" accessibilityLabel={taskStateLabel(task)}
@@ -161,8 +144,9 @@ export function TaskLine({ task, colors, layout, showId, status = stateText(task
         <TaskGlyph task={task} colors={colors} />
         <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
           <TaskCommand task={task} colors={colors} layout={layout} />
-          {note ? <Text numberOfLines={1} style={{ ...meta, fontFamily: mono, fontSize: 11 }}>{note}</Text> : null}
-          {hasNotes ? <TaskNotes task={task} colors={colors} layout={layout} /> : null}
+          {notes.map((note, index) => (
+            <Text key={index} numberOfLines={1} style={{ ...meta, fontFamily: mono, fontSize: 11 }}>{note}</Text>
+          ))}
         </View>
         {showId ? (
           <Text accessibilityLabel={task.id} selectable style={{ ...meta, fontFamily: mono, fontSize: 11, opacity: 0.7 }} numberOfLines={1}>
@@ -173,9 +157,10 @@ export function TaskLine({ task, colors, layout, showId, status = stateText(task
         <Text accessibilityLabel={taskStateLabel(task)} style={{ ...meta, letterSpacing: 0.2 }} numberOfLines={1}>
           {status}
         </Text>
+        <Icon name={open ? "ChevronUp" : "ChevronDown"} size={16} color={muted} />
       </View>
       </Pressable>
-      {open ? <TaskDetailInline task={task} colors={colors} layout={layout} waitStatus={waitStatus} /> : null}
+      {open ? <TaskDetailInline task={task} colors={colors} layout={layout} /> : null}
     </View>
   );
 }
@@ -188,10 +173,9 @@ function codeSurface(colors: Colors) {
 
 /** Inset drawer under the row: one block tells the story — command in,
  * output out, bookkeeping in one dim line. Same card, no overlay. Labels sit
- * tight to their block and sections are separated by air; the output tail
- * scrolls inside a bounded box so a noisy log cannot grow the timeline. */
-export function TaskDetailInline({ task, colors, layout, waitStatus }: {
-  task: TaskSummary; colors: Colors; layout: Layout; waitStatus?: string;
+ * tight to their block; the whole drawer scrolls within one bounded box. */
+export function TaskDetailInline({ task, colors, layout }: {
+  task: TaskSummary; colors: Colors; layout: Layout;
 }) {
   const mono = monoFont(layout.platform);
   const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour12: false });
@@ -204,28 +188,24 @@ export function TaskDetailInline({ task, colors, layout, waitStatus }: {
     task.recovered ? "recovered" : undefined,
     task.isError && task.state !== "failed" ? "error reported" : undefined,
   ].filter(Boolean).join(" · ");
-  const tail = task.outputTail?.trimEnd();
-  const fade = useFadeIn();
+  const output = outputPreview(task.output ?? task.outputTail ?? "");
   const drawer = { borderTopWidth: 1, borderTopColor: dividerColor(colors), backgroundColor: colors.surface0,
     borderBottomLeftRadius: 9, borderBottomRightRadius: 9,
-    paddingHorizontal: 14, paddingVertical: 12, gap: 12 };
-  const body = <>
+    maxHeight: layout.compact ? 280 : 400 };
+  return <ScrollView style={drawer} contentContainerStyle={{ paddingHorizontal: 14, paddingVertical: 12, gap: 12 }} nestedScrollEnabled>
     <View style={{ gap: 4 }}>
-      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-        <Text style={{ color: secondaryColor(colors), fontSize: 11 }}>Command</Text>
-        {waitStatus ? <Text style={{ color: secondaryColor(colors), fontSize: 11 }}>{waitStatus}</Text> : null}
-      </View>
+      <Text style={{ color: secondaryColor(colors), fontSize: 11 }}>Command</Text>
       <View style={codeSurface(colors)}>
         <Text selectable style={{ color: colors.foreground, fontFamily: mono, fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>
           {task.command ?? task.tool ?? task.id}
         </Text>
       </View>
     </View>
-    {tail ? <View style={{ gap: 4 }}>
-      <Text style={{ color: secondaryColor(colors), fontSize: 11 }}>Output tail</Text>
-      <ScrollView style={{ ...codeSurface(colors), maxHeight: 220 }}>
-        <Text selectable style={{ color: colors.foreground, fontFamily: mono, fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>{tail}</Text>
-      </ScrollView>
+    {output.trim() ? <View style={{ gap: 4 }}>
+      <Text style={{ color: secondaryColor(colors), fontSize: 11 }}>{task.output !== undefined ? "Output" : "Output tail"}</Text>
+      <View style={codeSurface(colors)}>
+        <Text selectable style={{ color: colors.foreground, fontFamily: mono, fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>{output}</Text>
+      </View>
     </View> : null}
     {meta ? <Text selectable style={{ color: secondaryColor(colors), fontFamily: mono, fontSize: 11, lineHeight: 18 }}>{meta}</Text> : null}
     {task.outputPath ? (
@@ -233,22 +213,7 @@ export function TaskDetailInline({ task, colors, layout, waitStatus }: {
         Output file: {task.outputPath}
       </Text>
     ) : null}
-  </>;
-  return fade !== undefined && PulseView !== undefined
-    ? <PulseView style={{ ...drawer, opacity: fade }}>{body}</PulseView>
-    : <View style={drawer}>{body}</View>;
-}
-
-/** Preserve real task annotations without displacing the command. No synthetic progress. */
-export function TaskNotes({ task, colors, layout }: { task: TaskSummary; colors: Colors; layout: Layout }) {
-  const notes = [task.progress, task.outputPath,
-    task.cancelRequested && task.state !== "cancel_requested" ? "cancel requested" : undefined,
-    task.recovered ? "recovered" : undefined,
-    task.isError && task.state !== "failed" ? "error reported" : undefined];
-  return <>{notes.filter(Boolean).map((note, index) => (
-    <Text key={index} numberOfLines={1} style={{ color: secondaryColor(colors), fontSize: 11,
-      lineHeight: 16, fontFamily: monoFont(layout.platform) }}>{note}</Text>
-  ))}</>;
+  </ScrollView>;
 }
 
 export function TaskTable({ tasks, colors, layout, showId, status }: {

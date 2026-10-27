@@ -2,6 +2,7 @@
 // package ships an empty module; the host app injects the real runtime.
 // Used by tests and the local preview only.
 export { ScrollView } from "react-native";
+export function Icon() { return null; }
 export function Modal() { return null; }
 Modal.Content = function ModalContent() { return null; };
 export async function copyText() {}

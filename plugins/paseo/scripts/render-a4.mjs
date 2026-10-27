@@ -32,7 +32,7 @@ const colors=dark?{surface0:'#0f1114',foreground:'#e4e7ec',foregroundMuted:'#899
  {surface0:'#ffffff',foreground:'#202124',foregroundMuted:'#b6b9be',border:'#f1f2f3',statusWarning:'#f1d9a4',statusDanger:'#eeb4ad'};
 const theme={colors};
 document.body.style.cssText='margin:0;background:'+colors.surface0+';color:'+colors.foreground+';font:10px monospace';
-const card=(source,ts)=><MeantimeTaskCard item={{data:{source,tasks:ts,phase:'complete'}}} theme={theme} layout={layout}/>;
+const card=(source,ts)=><MeantimeTaskCard item={{data:{source,tasks:ts}}} theme={theme} layout={layout}/>;
 createRoot(document.getElementById('root')).render(<div style={{width:390,boxSizing:'border-box',padding:'24px'}}>
  <p>A4 · explicit meantime query</p>{card('meantime',tasks)}
  <p>B5 · completion cards</p>{card('completion',tasks.slice(1,3))}
@@ -48,6 +48,7 @@ await build({ stdin: { contents: fixture, loader: "tsx", resolveDir: root },
     b.onResolve({ filter: /^@getpaseo\/plugin\/client(?:\/react-native)?$/ }, args => ({ path: args.path, namespace: "preview" }));
     b.onLoad({ filter: /.*/, namespace: "preview" }, args => ({ loader: "js", resolveDir: root,
       contents: args.path.endsWith("react-native") ? `export {ScrollView} from 'react-native-web';
+export function Icon(){ return null; }
 export function Modal(){ return null; }
 Modal.Content = function ModalContent(){ return null; }
 export async function copyText(){}` : `

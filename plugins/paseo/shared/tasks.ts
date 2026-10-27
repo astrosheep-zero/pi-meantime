@@ -25,6 +25,17 @@ import { z } from "zod";
 export const TASK_ID = /^mt_[a-f0-9]{8}$/;
 /** First line of the background handle text (pi-meantime src/extension.ts). */
 const HANDLE_TEXT = /^Meantime (mt_[a-f0-9]{8}) running in background/;
+/** Client display budget, including the omission line; never changes the retained result. */
+export const OUTPUT_DISPLAY_MAX_CHARS = 32_000;
+export function outputPreview(text: string): string {
+  if (text.length <= OUTPUT_DISPLAY_MAX_CHARS) return text;
+  const middle = "\n\n… Showing the beginning and end; the middle is hidden in this preview. …\n\n";
+  const headChars = Math.floor((OUTPUT_DISPLAY_MAX_CHARS - middle.length) / 2);
+  // Budget in UTF-16 units, but never cut an emoji's surrogate pair in half.
+  const head = text.slice(0, headChars).replace(/[\uD800-\uDBFF]$/, "");
+  const tail = text.slice(-(OUTPUT_DISPLAY_MAX_CHARS - middle.length - headChars)).replace(/^[\uDC00-\uDFFF]/, "");
+  return head + middle + tail;
+}
 export const taskSummarySchema = z.object({
   id: z.string(),
   tool: z.string().optional(),
@@ -32,6 +43,8 @@ export const taskSummarySchema = z.object({
   command: z.string().optional(),
   progress: z.string().optional(),
   outputTail: z.string().optional(),
+  // Client-only projection of an existing wait/cancel result, never stored again.
+  output: z.string().optional(),
   outputPath: z.string().optional(),
   exitCode: z.number().optional(),
   isError: z.boolean().optional(),
@@ -47,7 +60,6 @@ export const cardDataSchema = z.object({
   action: z.string().optional(),
   tasks: z.array(taskSummarySchema),
   moreOffset: z.number().optional(),
-  phase: z.enum(["streaming", "complete"]),
 });
 export type MeantimeCardData = z.output<typeof cardDataSchema>;
 
@@ -105,11 +117,27 @@ function unknownDetails(detail: Record<string, unknown>): Record<string, unknown
   return output && isRecord(output.details) ? output.details : undefined;
 }
 
+/** Receipt headers are separate content blocks; derive a bounded display without changing history. */
+function projectOutputs(detail: Record<string, unknown>, tasks: TaskSummary[]): TaskSummary[] {
+  const output = isRecord(detail.output) ? detail.output : undefined;
+  if (!Array.isArray(output?.content)) return tasks;
+  const blocks = output.content.flatMap(block => isRecord(block) && block.type === "text" && typeof block.text === "string" ? [block.text] : []);
+  if (isRecord(output.details) && Array.isArray(output.details.tasks) && blocks.at(-1)?.startsWith("Pending: ")) blocks.pop();
+  const starts = tasks.map(task => blocks.findIndex(block => block.startsWith(`Meantime ${task.id} ${task.state}`)));
+  return tasks.map((task, index) => {
+    const start = starts[index]!;
+    if (start < 0) return task;
+    const end = starts.slice(index + 1).find(next => next > start) ?? blocks.length;
+    const body = blocks.slice(start + 1, end);
+    return body.length > 0 ? { ...task, output: outputPreview(body.join("\n")) } : task;
+  });
+}
+
 /**
  * Recognize a tool_call timeline item as meantime-related. Returns undefined
  * to leave the entry on Paseo's native renderer.
  */
-export function recognizeToolCall(item: ToolCallItemLike): Omit<MeantimeCardData, "phase"> | undefined {
+export function recognizeToolCall(item: ToolCallItemLike): MeantimeCardData | undefined {
   const { name, detail } = item;
   if (!isRecord(detail)) return undefined;
 
@@ -147,7 +175,8 @@ export function recognizeToolCall(item: ToolCallItemLike): Omit<MeantimeCardData
       : undefined;
     if (!raws) return undefined;
     const pending = Array.isArray(details.pending) ? details.pending : [];
-    const tasks = [...raws, ...pending].map(simplifySnapshot).filter((task): task is TaskSummary => task !== undefined);
+    const snapshots = [...raws, ...pending].map(simplifySnapshot).filter((task): task is TaskSummary => task !== undefined);
+    const tasks = action === "wait" || action === "cancel" ? projectOutputs(detail, snapshots) : snapshots;
     if (tasks.length === 0) return undefined;
     const moreOffset = typeof details.next_offset === "number" ? details.next_offset : undefined;
     return { source: "meantime", ...(action ? { action } : {}), tasks, ...(moreOffset !== undefined ? { moreOffset } : {}) };
@@ -200,7 +229,7 @@ export function recognizeToolCall(item: ToolCallItemLike): Omit<MeantimeCardData
  * folding still uses recognizeToolCall so handles/list/wait snapshots retain
  * task context.
  */
-export function recognizeTimelineToolCall(item: ToolCallItemLike): Omit<MeantimeCardData, "phase"> | undefined {
+export function recognizeTimelineToolCall(item: ToolCallItemLike): MeantimeCardData | undefined {
   const data = recognizeToolCall(item);
   return data?.source === "completion" || data?.source === "meantime" ? data : undefined;
 }

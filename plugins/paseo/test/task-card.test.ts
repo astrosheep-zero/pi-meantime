@@ -34,7 +34,7 @@ const render = module.exports.render!;
 const renderLine = module.exports.renderLine!;
 
 test("wait rows show the observed status directly, without wait prose", () => {
-  const base = { source: "meantime", action: "wait", phase: "complete" };
+  const base = { source: "meantime", action: "wait" };
   for (const [task, status] of [
     [{ id: "mt_a1b2c3d4", state: "waiting", command: "sleep 60" }, />waiting</],
     [{ id: "mt_a1b2c3d4", state: "running", command: "sleep 60" }, />still running</],
@@ -49,14 +49,14 @@ test("wait rows show the observed status directly, without wait prose", () => {
 });
 
 test("wait-all renders a waiting card without inventing task identities", () => {
-  const html = render({ source: "meantime", action: "wait", phase: "streaming", tasks: [] });
+  const html = render({ source: "meantime", action: "wait", tasks: [] });
   assert.match(html, /All pending tasks/);
   assert.match(html, />waiting</);
   assert.doesNotMatch(html, /mt_|No output|Finished waiting/);
 });
 
 test("batch wait renders every target", () => {
-  const html = render({ source: "meantime", action: "wait", phase: "streaming", tasks: [
+  const html = render({ source: "meantime", action: "wait", tasks: [
     { id: "mt_a1b2c3d4", state: "waiting", command: "sleep 60" },
     { id: "dead", state: "waiting" },
   ] });
@@ -66,14 +66,14 @@ test("batch wait renders every target", () => {
 });
 
 test("actual handle card says started even if launch snapshot said running", () => {
-  const html = render({ source: "handle", phase: "complete", tasks: [{ id: "mt_a1b2c3d4", state: "running", command: "npm test", createdAt: 1000 }] });
+  const html = render({ source: "handle", tasks: [{ id: "mt_a1b2c3d4", state: "running", command: "npm test", createdAt: 1000 }] });
   assert.match(html, />started</);
   assert.doesNotMatch(html, /RUNNING|1 R|seen |LIVE|00:01|meantime|snapshots|mt_a1b2c3d4/);
   assert.match(html, /npm/);
 });
 
 test("actual sparse completion renders id and only the supplied result", () => {
-  const html = render({ source: "completion", phase: "complete", tasks: [{ id: "mt_deadbeef", state: "failed" }] });
+  const html = render({ source: "completion", tasks: [{ id: "mt_deadbeef", state: "failed" }] });
   assert.match(html, /mt_deadbeef/);
   assert.equal(html.match(/mt_deadbeef/g)?.length, 1);
   assert.match(html, /failed/);
@@ -81,7 +81,7 @@ test("actual sparse completion renders id and only the supplied result", () => {
 });
 
 test("timeline tables lead with commands and keep bookkeeping out of the way", () => {
-  const html = render({ source: "meantime", phase: "complete", tasks: [
+  const html = render({ source: "meantime", tasks: [
     { id: "mt_a1b2c3d4", state: "completed", command: "npm test", exitCode: 0 },
     { id: "mt_deadbeef", state: "failed", command: "make test", exitCode: 1 },
   ] });
@@ -93,7 +93,7 @@ test("timeline tables lead with commands and keep bookkeeping out of the way", (
 });
 
 test("command highlighting keeps env assignments with the executable word", () => {
-  const html = render({ source: "meantime", phase: "complete", tasks: [
+  const html = render({ source: "meantime", tasks: [
     { id: "mt_a1b2c3d4", state: "running", command: "FOO=bar BAZ=2 npm test -- --watch" },
   ] });
   // The whole prefix stays foreground; only the arguments recede.
@@ -102,7 +102,7 @@ test("command highlighting keeps env assignments with the executable word", () =
 });
 
 test("batch wait shares one card and divides rows with a hairline", () => {
-  const html = render({ source: "meantime", action: "wait", phase: "streaming", tasks: [
+  const html = render({ source: "meantime", action: "wait", tasks: [
     { id: "mt_a1b2c3d4", state: "waiting", command: "sleep 60" },
     { id: "dead", state: "waiting", command: "npm run watch" },
   ] });
@@ -113,7 +113,7 @@ test("batch wait shares one card and divides rows with a hairline", () => {
 });
 
 test("task rows keep their details closed until pressed", () => {
-  const html = render({ source: "meantime", phase: "complete", tasks: [
+  const html = render({ source: "meantime", tasks: [
     { id: "mt_a1b2c3d4", state: "running", command: "npm test", outputTail: "108 passing" },
   ] });
   assert.match(html, /npm/);

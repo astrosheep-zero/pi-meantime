@@ -11,7 +11,7 @@ Non-goals (v1): no cancel/control channel, no `setStatus`/`setWidget`/`custom()`
 
 ## Display
 
-Completion cards and the board use compact task rows with static status lamps. Press a row to open a detail sheet showing its command, retained output tail, timing and output path. States and elapsed durations are snapshots, not live liveness indicators: elapsed appears only when both start and end are known. Completion data comes from structured message metadata, not parsed receipt prose. No progress meter or client-side ticking is inferred.
+Completion cards and the board use compact task rows with breathing live dots and steady parked/terminal marks. Press a row to expand a bounded, scrollable inline drawer showing its command, output, timing and output path. Wait/cancel output is projected from existing tool-result content, not persisted again. Display text is capped at 32,000 UTF-16 units (omission line included), keeping the head and tail without splitting surrogate pairs; the original result and history are unchanged; completion-only snapshots retain their output tail. Upstream wait-budget omission notices remain visible. States and elapsed durations are snapshots, not live liveness indicators: elapsed appears only when both start and end are known. Completion data comes from structured message metadata, not parsed receipt prose. No progress meter or client-side ticking is inferred.
 
 ## Develop
 

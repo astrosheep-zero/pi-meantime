@@ -3,7 +3,7 @@ import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import type { TaskSummary } from "../shared/tasks.js";
-import { foldItem, sortTasks } from "../shared/tasks.js";
+import { foldItem, foldTimeline, sortTasks } from "../shared/tasks.js";
 import { Card } from "./card.js";
 import { dividerColor, secondaryColor, stateColor } from "./rows.js";
 import { TaskLine } from "./task-view.js";
@@ -29,9 +29,7 @@ export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps)
     const load = () => {
       handle.timeline.refetch({ direction: "tail", limit: PAGE_LIMIT }).then(page => {
         if (cancelled) return;
-        const byId = new Map<string, TaskSummary>();
-        for (const entry of page.entries) foldItem(byId, entry.item);
-        setTasks(sortTasks([...byId.values()]));
+        setTasks(foldTimeline(page.entries));
         setHasOlder(page.hasOlder);
         setError(page.error);
       }).catch((cause: unknown) => {
@@ -67,10 +65,9 @@ export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps)
       alignSelf: "center" as const,
     },
     title: { color: colors.foreground, fontSize: 13, lineHeight: 16, fontWeight: "500" as const, letterSpacing: -0.2 },
-    summary: { color: secondaryColor(colors), fontSize: 12, lineHeight: 16 },
     muted: { color: secondaryColor(colors), fontSize: 12, lineHeight: 16 },
     error: { color: stateColor("failed", colors), fontSize: 12 },
-  }), [colors, layout.compact, layout.platform]);
+  }), [colors, layout.compact]);
 
   return (
     <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.screen}>
@@ -79,7 +76,7 @@ export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps)
           paddingHorizontal: 12, paddingVertical: 9,
           borderBottomWidth: tasks.length > 0 ? 1 : 0, borderBottomColor: dividerColor(colors) }}>
           <Text style={styles.title}>Background tasks</Text>
-          <Text style={styles.summary}>
+          <Text style={styles.muted}>
             {tasks.length === 0 ? "None" : `${tasks.length} task${tasks.length === 1 ? "" : "s"}`}
           </Text>
         </View>

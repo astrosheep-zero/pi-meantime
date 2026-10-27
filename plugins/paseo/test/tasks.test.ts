@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ToolCallItemLike } from "../shared/tasks.ts";
-import { elapsedSeconds, foldTimeline, recognizeTimelineToolCall, recognizeToolCall, resolveWaitTask, sortTasks } from "../shared/tasks.ts";
+import { OUTPUT_DISPLAY_MAX_CHARS, elapsedSeconds, foldTimeline, outputPreview, recognizeTimelineToolCall, recognizeToolCall, resolveWaitTask, sortTasks } from "../shared/tasks.ts";
 
 const SNAPSHOT = {
   id: "mt_a1b2c3d4",
@@ -44,6 +44,48 @@ describe("recognizeToolCall: meantime tool", () => {
     assert.equal(data?.tasks[0]?.state, "completed");
     assert.equal(data?.tasks[0]?.exitCode, 0);
     assert.equal(elapsedSeconds(data!.tasks[0]!), 60);
+  });
+
+  it("projects the entire single wait output from persisted content, without details duplication", () => {
+    const body = "line🦈\n".repeat(3000) + "Pending: this is actual output";
+    const output = { details: { task: { ...SNAPSHOT, state: "completed", outputTail: "tail" } },
+      content: [{ type: "text", text: `Meantime ${SNAPSHOT.id} completed — sleep 60` }, { type: "text", text: body }] };
+    const before = JSON.stringify(output);
+    const data = recognizeToolCall(unknownItem("meantime", { action: "wait" }, output));
+    assert.equal(data?.tasks[0]?.output, body);
+    assert.equal(JSON.stringify(output), before);
+    assert.equal(foldTimeline([{ item: unknownItem("meantime", { action: "wait" }, output) }])[0]?.output, body);
+  });
+
+  it("caps oversized wait output to head and tail without changing the original result", () => {
+    const body = "START\n" + "🦈".repeat(500_000) + "\nEND";
+    const output = { details: { task: { ...SNAPSHOT, state: "completed" } },
+      content: [{ type: "text", text: `Meantime ${SNAPSHOT.id} completed` }, { type: "text", text: body }] };
+    const preview = recognizeToolCall(unknownItem("meantime", { action: "wait" }, output))!.tasks[0]!.output!;
+    assert.ok(preview.length <= OUTPUT_DISPLAY_MAX_CHARS);
+    assert.ok(preview.startsWith("START\n") && preview.endsWith("\nEND"));
+    assert.match(preview, /middle is hidden/);
+    assert.equal(Buffer.from(preview).toString("utf8"), preview, "no split surrogate pairs");
+    assert.equal(output.content[1]!.text, body);
+    assert.equal(outputPreview(preview), preview, "already bounded text is unchanged");
+    assert.equal(outputPreview("x".repeat(OUTPUT_DISPLAY_MAX_CHARS)).length, OUTPUT_DISPLAY_MAX_CHARS);
+  });
+
+  it("keeps batch output, omission notices and pending tasks separate", () => {
+    const done = { ...SNAPSHOT, state: "completed" };
+    const second = { ...done, id: "mt_deadbeef" };
+    const pending = { ...SNAPSHOT, id: "mt_12345678" };
+    const warning = "Inline text omitted by the shared wait budget. Retrieve this task singly.";
+    const data = recognizeToolCall(unknownItem("meantime", { action: "wait" }, {
+      details: { tasks: [done, second], pending: [pending] },
+      content: [
+        { type: "text", text: `Meantime ${done.id} completed` }, { type: "text", text: "first\n" },
+        { type: "text", text: `Meantime ${second.id} completed` },
+        { type: "text", text: "second" }, { type: "text", text: warning },
+        { type: "text", text: `Pending: ${pending.id}` },
+      ],
+    }));
+    assert.deepEqual(data?.tasks.map(task => task.output), ["first\n", `second\n${warning}`, undefined]);
   });
 
   it("recognizes a running wait from its input before any output exists", () => {
