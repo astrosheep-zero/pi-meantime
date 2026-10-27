@@ -13,11 +13,12 @@ export interface TaskDisplay {
 }
 export type RenderTheme = Pick<Theme, 'fg'>;
 interface ResultLike { content: { type: string; text?: string }[] }
-interface RenderOptions { expanded?: boolean }
+interface RenderOptions { expanded?: boolean; isPartial?: boolean }
 
 // One semantic channel: the glyph carries state, color only supports it.
 const GLYPHS: Record<string, [glyph: string, color: ThemeColor]> = {
   running: ['●', 'accent'],
+  waiting: ['●', 'accent'],
   cancel_requested: ['●', 'warning'],
   completed: ['✓', 'success'],
   failed: ['✕', 'error'],
@@ -58,7 +59,7 @@ function tailLines(tail: string): string[] {
 }
 function detailBlock(task: TaskDisplay, theme: RenderTheme, tail: string[] | undefined, tailBudget: number): string[] {
   const lines = [taskLine(task, theme),
-    theme.fg('dim', `  ${[task.tool, task.id].join(' · ')}`)];
+    theme.fg('dim', `  ${task.tool}`)];
   if (task.outputPath) lines.push(theme.fg('muted', `  Output: ${task.outputPath}`));
   if (task.cancelRequestedAt !== undefined) lines.push(theme.fg('warning', '  Cancellation was requested; the native outcome may not be settled.'));
   if (tail?.length) lines.push(...tail.slice(-tailBudget).map(line => theme.fg('toolOutput', `  ${truncateUtf8(line, 200)}`)));
@@ -94,11 +95,18 @@ function resultTasks(details: unknown): { tasks: TaskDisplay[]; page: boolean } 
   if (typeof details.id === 'string' && typeof details.state === 'string') return { tasks: [details as unknown as TaskDisplay], page: false };
   return { tasks: [], page: false };
 }
-/** Remove the machine receipt line; the glyph header replaces it visually. */
+/** Remove machine receipt lines, model-only directives and untrusted-data fences;
+ * the glyph header replaces the receipt visually. */
 function resultBody(result: ResultLike): string[] {
   const text = result.content.filter(block => block.type === 'text' && typeof block.text === 'string')
     .map(block => clean(block.text!)).join('\n');
-  return text.replace(/^Meantime mt_[a-f0-9]{8}[^\n]*(\n)?/, '').split('\n').filter(line => line.trim().length > 0);
+  return text
+    .replace(/^Meantime mt_[a-f0-9]{8}[^\n]*$/gm, '')
+    .replace(/^Result is not available\. Do not relaunch the operation\.$/gm, '')
+    .replace(/^Pending: .*$/gm, '')
+    .replace(/^<\/?untrusted-output-tail[^>]*>$/gm, '')
+    .split('\n')
+    .filter(line => line.trim().length > 0);
 }
 
 /** Result rendering for meantime itself and for managed tools that returned a
@@ -109,19 +117,23 @@ export function renderTaskResult(result: ResultLike & { details?: unknown }, opt
   const { tasks, page } = resultTasks(details);
   if (isHandle && tasks[0]) {
     const task = tasks[0];
-    const line = `${taskLine(task, theme)}\n${theme.fg('dim', '  background — /meantime to inspect')}`;
-    if (!options.expanded) return new Text(line, 0, 0);
+    // The native call header already renders the command; don't repeat it here.
+    if (!options.expanded) return new Text(`${stateGlyph(theme, task.state)} ${theme.fg('dim', `background · ${task.id} — /meantime to inspect`)}`, 0, 0);
     return new Text(detailBlock(task, theme, undefined, 0).join('\n'), 0, 0);
   }
   const isWait = isRecord(context.args) && context.args.action === 'wait';
   const lines: string[] = [];
   if (isWait && tasks.length) {
     for (const task of tasks) lines.push(taskLine(task, theme));
-    const body = resultBody(result);
-    const shown = options.expanded ? body : body.slice(0, 10);
-    lines.push(...shown.map(line => theme.fg('toolOutput', line)));
-    const remaining = body.length - shown.length;
-    if (remaining > 0) lines.push(theme.fg('muted', `… ${remaining} more lines, ${keyHint('app.tools.expand', 'to expand')}`));
+    // A streaming update has no new body yet; showing the receipt prose would
+    // duplicate the task rows above it.
+    if (!options.isPartial) {
+      const body = resultBody(result);
+      const shown = options.expanded ? body : body.slice(0, 10);
+      lines.push(...shown.map(line => theme.fg('toolOutput', line)));
+      const remaining = body.length - shown.length;
+      if (remaining > 0) lines.push(theme.fg('muted', `… ${remaining} more lines, ${keyHint('app.tools.expand', 'to expand')}`));
+    }
   } else if (page && tasks.length) {
     lines.push(...tasks.map(task => taskLine(task, theme)));
     if (options.expanded) for (const task of tasks) lines.push(theme.fg('dim', `  ${task.tool}${task.outputPath ? ` · Output: ${task.outputPath}` : ''}`));

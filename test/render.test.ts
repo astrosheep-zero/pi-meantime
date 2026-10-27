@@ -28,6 +28,7 @@ test('glyphs are the single state channel with semantic colors', () => {
   assert.equal(stateGlyph(theme, 'failed'), '[error]✕');
   assert.equal(stateGlyph(theme, 'cancelled'), '[muted]⊘');
   assert.equal(stateGlyph(theme, 'running'), '[accent]●');
+  assert.equal(stateGlyph(theme, 'waiting'), '[accent]●');
   assert.equal(stateGlyph(theme, 'cancel_requested'), '[warning]●');
   assert.equal(stateGlyph(theme, 'outcome_unknown'), '[warning]?');
 });
@@ -44,7 +45,8 @@ test('completion card answers what finished, how it ended and what it produced',
   assert.doesNotMatch(collapsed, /Output:/, 'collapsed card omits the output path');
 
   const expanded = render(renderCompletion(message, { expanded: true }, plain));
-  assert.match(expanded, /bash · mt_a1b2c3d4/);
+  assert.match(expanded, /^  bash$/m, 'the detail line names the tool once, without repeating the id');
+  assert.doesNotMatch(expanded, /bash · mt_a1b2c3d4/);
   assert.match(expanded, /Output: \/tmp\/out\.txt/);
 });
 
@@ -83,7 +85,11 @@ test('handle and list results keep one scannable line per task', () => {
   const handle = renderTaskResult({ content: [{ type: 'text', text: 'Meantime mt_a1b2c3d4 running in background…' }],
     details: { id: done.id, tool: done.tool, state: 'running', command: done.command,
       delivery: 'background', createdAt: Date.now() - 12_000 } }, { expanded: false }, plain, {}, true);
-  assert.match(render(handle), /● npm test · \d+s · mt_a1b2c3d4\n +background — \/meantime to inspect/);
+  assert.equal(render(handle), '● background · mt_a1b2c3d4 — /meantime to inspect',
+    'the native call header already shows the command');
+  const expanded = renderTaskResult({ content: [], details: { id: done.id, tool: done.tool, state: 'running',
+    command: done.command, delivery: 'background', createdAt: Date.now() - 12_000 } }, { expanded: true }, plain, {}, true);
+  assert.match(render(expanded), /● npm test · \d+s · mt_a1b2c3d4\n +bash/, 'expanding still reveals the command');
 
   const list = renderTaskResult({ content: [{ type: 'text', text: 'Current session tasks…' }],
     details: { tasks: [done, failed], pending: [], next_offset: 40 } }, { expanded: false }, plain, {}, false);
@@ -102,6 +108,27 @@ test('wait results show the glyph header plus the result body without the receip
   assert.match(text, /✓ npm test · exit 0 · 12s · mt_a1b2c3d4/);
   assert.match(text, /✓ 42 passing/);
   assert.doesNotMatch(text, /Meantime mt_a1b2c3d4 completed/, 'the receipt sentence is replaced by the header');
+});
+
+test('multi-task waits strip every machine receipt, directive and untrusted fence', () => {
+  const wait = renderTaskResult({ content: [
+    { type: 'text', text: 'Meantime mt_a1b2c3d4 completed (exit 0) — npm test\n✓ 42 passing' },
+    { type: 'text', text: 'Meantime mt_e5f60718 failed (exit 2) — make release\nResult is not available. Do not relaunch the operation.' },
+    { type: 'text', text: '\n<untrusted-output-tail>\nFINAL\n</untrusted-output-tail>\nPending: (none)' },
+  ], details: { tasks: [{ ...done }, { ...failed }, { ...cancelled }], pending: [] } },
+  { expanded: false }, plain, { args: { action: 'wait' } }, false);
+  const text = render(wait);
+  assert.equal(text, ['✓ npm test · exit 0 · 12s · mt_a1b2c3d4', '✕ make release · exit 2 · 61s · mt_e5f60718',
+    '⊘ sleep 99 · 5s · mt_19202122', '✓ 42 passing', 'FINAL'].join('\n'));
+});
+
+test('partial wait results render only the task rows', () => {
+  const streaming: TaskDisplay = { id: 'mt_a1b2c3d4', tool: 'bash', state: 'waiting',
+    command: 'npm test', createdAt: Date.now() - 12_000 };
+  const partial = renderTaskResult({ content: [{ type: 'text', text: 'Meantime mt_a1b2c3d4 waiting — npm test' }],
+    details: { tasks: [streaming] } },
+  { expanded: false, isPartial: true }, plain, { args: { action: 'wait' } }, false);
+  assert.equal(render(partial), '● npm test · 12s · mt_a1b2c3d4', 'streaming rows do not repeat the receipt prose');
 });
 
 test('terminal control bytes in commands and tails never reach the terminal', () => {

@@ -277,7 +277,8 @@ test('wait previews show native single and batch bodies, while handle cards reta
     const handles = [];
     for (let i = 0; i < 2; i++) handles.push(await h.pi.call('mcp__preview', { __background__: 'yes' }));
     const ids = handles.map(out => snapshot(out).id);
-    assert.match(managed.renderResult!(handles[0]!.result, { expanded: false, isPartial: false }, theme, {} as Parameters<Render>[3]).render(200).map(line => line.trimEnd()).join('\n'), /● mcp__preview · \d+s · mt_[a-f0-9]{8}\n +background — \/meantime to inspect/);
+    assert.match(managed.renderResult!(handles[0]!.result, { expanded: false, isPartial: false }, theme, {} as Parameters<Render>[3]).render(200).map(line => line.trimEnd()).join('\n'), /● background · mt_[a-f0-9]{8} — \/meantime to inspect/,
+      'the call header already carries the command, so the handle line stays compact');
     initTheme('dark', false);
     const ui = { requestRender() {} } as ConstructorParameters<typeof ToolExecutionComponent>[5];
     for (const args of [{ action: 'wait', ids: [ids[0] ]}, { action: 'wait', ids }]) {
@@ -490,15 +491,17 @@ test('real shell fixture runs, can detach without a second spawn, and result is 
     const command = `node -e 'setTimeout(()=>console.log("SHELL_DONE"),80)'\n# ${'long comment '.repeat(20)}`;
     const out = await h.pi.call('bash', { command, __background__: 'yes' });
     const task = snapshot(out); assert.equal(task.state, 'running');
-    assert.equal(task.command, command);
+    // Details carry a display preview; the original command stays in runtime state.
+    assert.ok(task.command!.endsWith('…')); assert.ok(!task.command!.includes('\n'));
+    assert.equal((h.instance.inspect() as { tasks: Snapshot[] }).tasks.find(t => t.id === task.id)!.command, command);
     const list = await h.pi.call('meantime', { action: 'list' });
     const preview = (list.result.details as { tasks: Snapshot[] }).tasks[0]!.command!;
-    assert.ok(preview.endsWith('…')); assert.ok(!preview.includes('\n'));
+    assert.equal(preview, task.command);
     await until(() => h.pi.notifications.length === 1);
     assert.match(h.pi.notifications[0]!.content, new RegExp(`Meantime ${task.id} completed`));
     assert.match(h.pi.notifications[0]!.content, /<untrusted-output-tail>\nSHELL_DONE/);
     const result = await h.pi.call('meantime', { action: 'wait', timeout: 0, ids: [task.id ]});
-    assert.equal((result.result.details as { task: Snapshot }).task.command, command);
+    assert.equal((result.result.details as { task: Snapshot }).task.command, preview);
     assert.match(JSON.stringify(result.result), /SHELL_DONE/);
   } finally { await h.close(); }
 });
