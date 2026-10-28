@@ -118,7 +118,7 @@ export function renderTaskResult(result: ResultLike & { details?: unknown }, opt
   const { tasks, page } = resultTasks(details);
   if (isHandle && tasks[0]) {
     const task = tasks[0];
-    const reason = task.detachReason === 'timeout' ? ' (120s auto-detach)'
+    const reason = task.detachReason === 'timeout' ? ' (90s auto-detach)'
       : task.detachReason === 'shortcut' || task.detachReason === 'steer' ? ' (detached)' : '';
     // The native call header already renders the command; don't repeat it here.
     if (!options.expanded) return new Text(`${stateGlyph(theme, task.state)} ${theme.fg('dim', `background${reason} · ${task.id}`)}`, 0, 0);

@@ -17,7 +17,7 @@ export interface Config {
 export const DEFAULT_CONFIG: Config = {
   include: ['*'],
   exclude: [],
-  autoDetachMs: 120_000,
+  autoDetachMs: 90_000,
   explicitDetachMs: 1000,
   maxRunning: 4,
   maxRetained: 128,

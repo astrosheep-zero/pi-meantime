@@ -126,7 +126,7 @@ ID 用实际返回值替换；支持唯一前缀，可省略 `mt_`，有歧义�
   "meantime": {
     "include": ["*"],
     "exclude": [],
-    "autoDetachMs": 120000,
+    "autoDetachMs": 90000,
     "detachOnSteer": true,
     "maxRunning": 4
   }

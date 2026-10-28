@@ -120,7 +120,7 @@ test('completion notices carry the truncated command in details.tasks', async ()
     const details = h.pi.notifications[0]!.details as { tasks: { id: string; command?: string }[] };
     assert.equal(details.tasks[0]!.id, snapshot(handle).id);
     assertPreview(details.tasks[0]!.command, raw, 'completion details.tasks[0].command');
-    assert.match(h.pi.notifications[0]!.content, /^<system-reminder>\n[\s\S]*\nBackground completion\. Use meantime\(action="wait", ids=\[\.\.\.\], timeout=0\) for full output\.\n<\/system-reminder>$/);
+    assert.match(h.pi.notifications[0]!.content, /^<system-reminder>\n[\s\S]*\nUse meantime\(action="wait", ids=\[\.\.\.\], timeout=0\) for full output\.\n<\/system-reminder>$/);
   } finally { await h.close(); }
 });
 

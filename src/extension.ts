@@ -27,7 +27,7 @@ function owner(ctx: Context): string {
 function json(value: unknown): Json { return JSON.parse(JSON.stringify(value)) as Json; }
 /** Concise detached-handle attribution; explicit detach needs no reason. */
 function detachReasonSuffix(reason: Snapshot['detachReason'], autoDetachMs: number): string {
-  if (reason === 'timeout') return ` (${(autoDetachMs > 0 ? autoDetachMs / 1000 : 120)}s auto-detach)`;
+  if (reason === 'timeout') return ` (${(autoDetachMs > 0 ? autoDetachMs / 1000 : 90)}s auto-detach)`;
   if (reason === 'shortcut' || reason === 'steer') return ' (detached)';
   return '';
 }
@@ -298,7 +298,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
 
   pi.registerTool({
     name: 'meantime', label: 'Background tasks', exposure: 'model-only',
-    description: 'Manage background tasks (list, wait, cancel). Tasks notify automatically on completion; call wait only when blocked on a result, or with timeout: 0 to read a completed task\'s full output. wait defaults to timeout: 30s and mode: "all" (omit ids to wait for all pending tasks).',
+    description: 'List, wait on, or cancel background tasks. Tasks notify automatically on completion; call wait only when blocked on a result, or with timeout: 0 to read a completed task\'s full output. wait defaults to timeout: 30s and mode: "all" (omit ids to wait for all pending tasks).',
     parameters: { type: 'object', properties: {
       action: { type: 'string', enum: ['list', 'wait', 'cancel'] },
       ids: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 32,
@@ -417,7 +417,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     const boundDelivery = new CompletionDelivery(created, session, () => currentCtx?.isIdle() ?? false, tasks => {
       if (!live || runtime !== created || currentOwner !== boundOwner) throw new Error('Stale notification target');
       return { customType: 'meantime-completion',
-          content: `<system-reminder>\n${tasks.map(t => `${receipt(t)}${t.cancelRequestedAt ? '\nCancellation was requested.' : ''}${outputTail(created.tasks.get(t.id)?.outputTail ?? '')}`).join('\n')}\nBackground completion. Use meantime(action="wait", ids=[...], timeout=0) for full output.\n</system-reminder>`,
+          content: `<system-reminder>\n${tasks.map(t => `${receipt(t)}${t.cancelRequestedAt ? '\nCancellation was requested.' : ''}${outputTail(created.tasks.get(t.id)?.outputTail ?? '')}`).join('\n')}\nUse meantime(action="wait", ids=[...], timeout=0) for full output.\n</system-reminder>`,
           display: true, details: { taskIds: tasks.map(t => t.id),
             tasks: tasks.map(t => ({ id: t.id, tool: t.tool, state: t.state,
               ...(t.command !== undefined ? { command: commandPreview(t.command) } : {}),

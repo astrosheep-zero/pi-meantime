@@ -152,7 +152,7 @@ test('collapsed handle rows attribute the detach trigger concisely', () => {
       createdAt: Date.now() - 12_000, ...(detachReason ? { detachReason } : {}) } }, { expanded: false }, plain, {}, true));
   assert.equal(row(undefined), '● background · mt_a1b2c3d4');
   assert.equal(row('explicit'), '● background · mt_a1b2c3d4');
-  assert.equal(row('timeout'), '● background (120s auto-detach) · mt_a1b2c3d4');
+  assert.equal(row('timeout'), '● background (90s auto-detach) · mt_a1b2c3d4');
   assert.equal(row('shortcut'), '● background (detached) · mt_a1b2c3d4');
   assert.equal(row('steer'), '● background (detached) · mt_a1b2c3d4');
 });
