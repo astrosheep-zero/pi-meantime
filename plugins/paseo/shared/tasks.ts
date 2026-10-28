@@ -91,6 +91,7 @@ export function simplifySnapshot(raw: unknown): TaskSummary | undefined {
   if (typeof raw.tool !== "string" || typeof raw.state !== "string") return undefined;
   const command = text(raw.command);
   const progress = text(raw.progress);
+  const output = text(raw.output);
   const outputPath = text(raw.outputPath);
   const outputTail = text(raw.outputTail);
   return {
@@ -99,6 +100,7 @@ export function simplifySnapshot(raw: unknown): TaskSummary | undefined {
     state: raw.state,
     ...(command ? { command } : {}),
     ...(progress ? { progress } : {}),
+    ...(output ? { output: outputPreview(output) } : {}),
     ...(outputPath ? { outputPath } : {}),
     ...(outputTail ? { outputTail } : {}),
     ...(typeof raw.exitCode === "number" ? { exitCode: raw.exitCode } : {}),
@@ -125,6 +127,7 @@ function projectOutputs(detail: Record<string, unknown>, tasks: TaskSummary[]): 
   if (isRecord(output.details) && Array.isArray(output.details.tasks) && blocks.at(-1)?.startsWith("Pending: ")) blocks.pop();
   const starts = tasks.map(task => blocks.findIndex(block => block.startsWith(`Meantime ${task.id} ${task.state}`)));
   return tasks.map((task, index) => {
+    if (task.output !== undefined) return task;
     const start = starts[index]!;
     if (start < 0) return task;
     const end = starts.slice(index + 1).find(next => next > start) ?? blocks.length;

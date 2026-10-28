@@ -87,7 +87,7 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
     await until(() => (instance.inspect() as { tasks: Snapshot[] }).tasks.every(task => !task.localRunning));
     assert.equal(renders, before, 'closed panel has no changed sink listener');
     await until(() => pi.notifications.length === 1);
-    assert.match(pi.notifications[0]!.content, new RegExp(`Meantime ${idB} cancelled`));
+    assert.match(pi.notifications[0]!.content, new RegExp(`${idB} · cancelled`));
     assert.equal((instance.inspect() as { tasks: Snapshot[] }).tasks.find(task => task.id === idB)!.state, 'cancelled');
 
     await command('status');

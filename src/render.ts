@@ -8,7 +8,7 @@ import { truncateUtf8 } from './store.ts';
 export interface TaskDisplay {
   id: string; tool: string; state: string; command?: string;
   createdAt?: number; endedAt?: number; exitCode?: number;
-  outputPath?: string; outputTail?: string; cancelRequestedAt?: number;
+  output?: string; outputPath?: string; outputTail?: string; cancelRequestedAt?: number;
   detachReason?: string;
   isError?: boolean;
 }
@@ -96,20 +96,6 @@ function resultTasks(details: unknown): { tasks: TaskDisplay[]; page: boolean } 
   if (typeof details.id === 'string' && typeof details.state === 'string') return { tasks: [details as unknown as TaskDisplay], page: false };
   return { tasks: [], page: false };
 }
-/** Remove machine receipt lines, model-only directives and untrusted-data fences;
- * the glyph header replaces the receipt visually. */
-function resultBody(result: ResultLike): string[] {
-  const text = result.content.filter(block => block.type === 'text' && typeof block.text === 'string')
-    .map(block => clean(block.text!)).join('\n');
-  return text
-    .replace(/^Meantime mt_[a-f0-9]{8}[^\n]*$/gm, '')
-    .replace(/^(?:No retained result\.|Result is not available\. Do not relaunch the operation\.)$/gm, '')
-    .replace(/^Pending: .*$/gm, '')
-    .replace(/^<\/?untrusted-output[^>]*>$/gm, '')
-    .split('\n')
-    .filter(line => line.trim().length > 0);
-}
-
 /** Result rendering for meantime itself and for managed tools that returned a
  * background handle. Everything else belongs to the native renderer. */
 export function renderTaskResult(result: ResultLike & { details?: unknown }, options: RenderOptions & { expanded: boolean },
@@ -128,10 +114,8 @@ export function renderTaskResult(result: ResultLike & { details?: unknown }, opt
   const lines: string[] = [];
   if (isWait && tasks.length) {
     for (const task of tasks) lines.push(taskLine(task, theme));
-    // A streaming update has no new body yet; showing the receipt prose would
-    // duplicate the task rows above it.
     if (!options.isPartial) {
-      const body = resultBody(result);
+      const body = tasks.flatMap(task => typeof task.output === 'string' ? tailLines(task.output) : []);
       const shown = options.expanded ? body : body.slice(0, 10);
       lines.push(...shown.map(line => theme.fg('toolOutput', line)));
       const remaining = body.length - shown.length;
@@ -145,7 +129,10 @@ export function renderTaskResult(result: ResultLike & { details?: unknown }, opt
     }
   }
   if (isRecord(details) && details.next_offset != null) lines.push(theme.fg('muted', `More: offset=${details.next_offset}`));
-  if (!lines.length) lines.push(...resultBody(result).map(line => theme.fg('toolOutput', line)));
+  if (!lines.length) {
+    const fallback = result.content.filter(b => b.type === 'text' && typeof b.text === 'string').flatMap(b => tailLines(b.text!));
+    lines.push(...fallback.map(line => theme.fg('toolOutput', line)));
+  }
   return new Text(lines.join('\n'), 0, 0);
 }
 

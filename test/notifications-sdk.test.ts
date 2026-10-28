@@ -44,7 +44,7 @@ async function fixture(workCount = 1, hooks: Hooks = {}) {
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1024 }],
         streamSimple(model, context, options) {
           requests.push(context.messages.filter(message => message.role === 'user')
-            .flatMap(message => [...JSON.stringify(message.content).matchAll(/Meantime (mt_[a-f0-9]{8}) completed/g)].map(match => match[1]!)));
+            .flatMap(message => [...JSON.stringify(message.content).matchAll(/(mt_[a-f0-9]{8}) · completed/g)].map(match => match[1]!)));
           const number = requests.length;
           const stream = createAssistantMessageEventStream();
           void (async () => {

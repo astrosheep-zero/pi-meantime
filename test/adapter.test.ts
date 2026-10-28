@@ -444,7 +444,7 @@ test('multi-task wait exposes settled and pending tasks, validates ids, and shar
     const blocks = all.result.content.filter(block => block.type === 'text').map(block => block.text);
     assert.equal(blocks.filter(text => /^(A+|B+)$/.test(text)).reduce((bytes, text) => bytes + Buffer.byteLength(text), 0), 32 * 1024);
     const text = blocks.join('\n');
-    assert.ok(text.indexOf(`Meantime ${second.id}`) < text.indexOf(`Meantime ${first.id}`));
+    assert.ok(text.indexOf(`${second.id} · `) < text.indexOf(`${first.id} · `));
     const single = await h.pi.call('meantime', { action: 'wait', ids: [first.id ]});
     assert.equal(snapshot(single).id, first.id);
     assert.equal((single.result.structuredContent as { result_available: boolean }).result_available, true);
@@ -498,7 +498,7 @@ test('real shell fixture runs, can detach without a second spawn, and result is 
     const preview = (list.result.details as { tasks: Snapshot[] }).tasks[0]!.command!;
     assert.equal(preview, task.command);
     await until(() => h.pi.notifications.length === 1);
-    assert.match(h.pi.notifications[0]!.content, new RegExp(`Meantime ${task.id} completed`));
+    assert.match(h.pi.notifications[0]!.content, new RegExp(`${task.id} · completed`));
     assert.match(h.pi.notifications[0]!.content, /<untrusted-output>\nSHELL_DONE/);
     const result = await h.pi.call('meantime', { action: 'wait', timeout: 0, ids: [task.id ]});
     assert.equal((result.result.details as { task: Snapshot }).task.command, preview);
@@ -547,7 +547,7 @@ test('short management receipts retain structured data and cancellation semantic
     const data = page.result.structuredContent as unknown as { tasks: Snapshot[]; next_offset: null; total: number };
     assert.equal(data.tasks[0]!.id, task.id);
     assert.deepEqual(data, JSON.parse(JSON.stringify(page.result.details)));
-    assert.match(text(page.result), new RegExp(`^${task.id} \\| mcp__t__receipt \\| running \\| \\d+s$`));
+    assert.match(text(page.result), new RegExp(`^${task.id} · running · \\d+s — mcp__t__receipt$`));
     const status = await h.pi.call('meantime', { action: 'wait', timeout: 0, ids: [task.id ]});
     assert.deepEqual(status.result.structuredContent, { task: JSON.parse(JSON.stringify(status.result.details)), result_available: false });
     assert.ok(!text(status.result).includes('{'));

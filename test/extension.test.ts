@@ -142,7 +142,7 @@ test('list receipts name the exit code when present and put running tasks first'
     const lines = listed.result.content.flatMap(block => block.type === 'text' ? block.text.split('\n') : []);
     assert.match(lines[0]!, new RegExp(running.id), 'a running task leads the list');
     assert.doesNotMatch(lines[0]!, /\(exit /, 'a task without an exit code omits the field');
-    assert.match(lines.find(line => line.includes(failed.id))!, /failed \(exit 7\)/, 'the receipt names the exit code');
+    assert.match(lines.find(line => line.includes(failed.id))!, /failed · exit 7/, 'the receipt names the exit code');
   } finally { gate.resolve(); await h.close(); }
 });
 

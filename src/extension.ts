@@ -57,14 +57,20 @@ function commandOneLine(command: string): string {
 function withCommandPreview<T extends { command?: string }>(task: T): T {
   return task.command === undefined ? task : { ...task, command: commandPreview(task.command) };
 }
-function taskLabel(task: Snapshot): string {
-  return `${task.id} | ${task.tool} | ${task.state}${task.exitCode !== undefined ? ` (exit ${task.exitCode})` : ''}${task.command !== undefined ? ` | ${commandOneLine(task.command)}` : ''}`;
-}
 function elapsed(task: Snapshot): string {
   return `${Math.max(0, Math.floor(((task.endedAt ?? Date.now()) - task.createdAt) / 1000))}s`;
 }
+function taskHeader(task: Snapshot): string {
+  return [
+    task.id,
+    task.state,
+    ...(task.exitCode !== undefined ? [`exit ${task.exitCode}`] : []),
+    elapsed(task),
+  ].join(' · ');
+}
 function taskReceipt(task: Snapshot): string {
-  return `${taskLabel(task)} | ${elapsed(task)}`;
+  const what = task.command !== undefined ? commandOneLine(task.command) : task.tool;
+  return `${taskHeader(task)} — ${what}`;
 }
 const TAIL_BYTES = 1024;
 /** Last ~1KB of a finished task's text output, fenced as untrusted data. */
@@ -78,11 +84,10 @@ function outputTail(text: string): string {
   return `\n<untrusted-output${start > 0 ? ' truncated' : ''}>\n${tail}\n</untrusted-output>`;
 }
 function receipt(task: Snapshot): string {
-  // The command identifies the task for both the model and timeline cards;
-  // keep it one line so receipts stay greppable.
-  const command = task.command
-    ? ` — ${truncateUtf8(task.command.replaceAll('\n', ' ').trim(), 120)}` : '';
-  return `Meantime ${task.id} ${task.state}${task.exitCode !== undefined ? ` (exit ${task.exitCode})` : ''}${command}${task.outputPath ? `\nOutput: ${task.outputPath}` : ''}`;
+  const command = task.command !== undefined
+    ? `\n$ ${truncateUtf8(task.command.replaceAll('\n', ' ').trim(), 120)}`
+    : `\n${task.tool}`;
+  return `${taskHeader(task)}${command}${task.outputPath ? `\nOutput: ${task.outputPath}` : ''}`;
 }
 /** A running task keeps its plain receipt; a settled one has no retained result. */
 function noResultReceipt(task: Snapshot): string {
@@ -114,7 +119,7 @@ function storedResult(task: Snapshot, source: Result, budget?: { remaining: numb
     // details stay whole under one envelope: spreading them drops legal arrays
     // and strings and let a native `task` field overwrite this receipt's own.
     details: {
-      task,
+      task: { ...task, output: content.map(b => b.text).join('\n') },
       ...(source.details !== undefined ? { nativeDetails: source.details } : {}),
       ...(source.usage ? { usage: source.usage } : {}), ...(source.nestedCalls ? { nestedCalls: source.nestedCalls } : {}),
       ...(source.persistenceOmissions ? { persistenceOmissions: source.persistenceOmissions } : {}),
@@ -236,7 +241,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     ctx.ui.setWidget('bg-control', message.split('\n'));
   }
   function taskList(tasks: Snapshot[]): string {
-    return `Current session tasks ${tasks.length || '(none)'}:\n${tasks.map(t => `${taskLabel(t)}${t.cancelRequestedAt ? ' | cancel requested' : ''}${t.recovered ? ' | recovered' : ''}`).join('\n')}`;
+    return `Current session tasks ${tasks.length || '(none)'}:\n${tasks.map(t => `${taskReceipt(t)}${t.recovered ? ' · recovered' : ''}`).join('\n')}`;
   }
   function updateStatus(): void {
     if (!live || !runtime || !currentCtx) return;
@@ -364,7 +369,12 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
         : await r.waitMany(ids, params.mode === 'any' ? 'any' : 'all', timeout, signal);
       const budget = { remaining: 32 * 1024 };
       const views = tasks.map(({ task, result }) => result ? storedResult(task, result, budget) : textResult(noResultReceipt(task)));
-      const page = { tasks: tasks.map(({ task, result }, i) => withTail({ ...withCommandPreview(task), result_available: result !== undefined, result: (views[i]!.structuredContent as { result?: Json } | undefined)?.result })),
+      const page = { tasks: tasks.map(({ task, result }, i) => {
+          const taskDetails = isRecord(views[i]!.details) && isRecord((views[i]!.details as Record<string, unknown>).task)
+            ? (views[i]!.details as { task: { output?: string } }).task : undefined;
+          return withTail({ ...withCommandPreview(task), ...(taskDetails?.output !== undefined ? { output: taskDetails.output } : {}),
+            result_available: result !== undefined, result: (views[i]!.structuredContent as { result?: Json } | undefined)?.result });
+        }),
         pending: pending.map(task => withCommandPreview(task)) };
       return {
         content: [...views.flatMap(view => view.content), { type: 'text', text: `Pending: ${pending.map(task => task.id).join(', ') || '(none)'}` }],
@@ -425,7 +435,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
         return { text: `${receipt(t)}${tail}`, hasMore };
       });
       return { customType: 'meantime-completion',
-          content: `<system-reminder>\n${entries.map(e => e.text).join('\n')}${entries.some(e => e.hasMore) ? '\nUse meantime(action="wait", ids=[...], timeout=0) for full output.' : ''}\n</system-reminder>`,
+          content: `<system-reminder>\n${entries.map(e => e.text).join('\n\n')}${entries.some(e => e.hasMore) ? '\n\nUse meantime(action="wait", ids=[...], timeout=0) for full output.' : ''}\n</system-reminder>`,
           display: true, details: { taskIds: tasks.map(t => t.id),
             tasks: tasks.map(t => ({ id: t.id, tool: t.tool, state: t.state,
               ...(t.command !== undefined ? { command: commandPreview(t.command) } : {}),

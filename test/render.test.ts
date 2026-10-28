@@ -114,23 +114,23 @@ test('collapsed list rows stay one line per task while expanded rows use detail 
   assert.match(expanded, /✕ make release · exit 2 · 61s · mt_e5f60718\n  bash/, 'every task gets its own detail block');
 });
 
-test('wait results show the glyph header plus the result body without the receipt line', () => {
+test('wait results show the glyph header plus the structured output from details without regex scraping', () => {
   const wait = renderTaskResult({ content: [
-    { type: 'text', text: 'Meantime mt_a1b2c3d4 completed (exit 0) — npm test' },
+    { type: 'text', text: 'mt_a1b2c3d4 · completed · exit 0 · 12s\n$ npm test' },
     { type: 'text', text: '✓ 42 passing\n✓ all good' },
-  ], details: { ...done } }, { expanded: false }, plain, { args: { action: 'wait' } }, false);
+  ], details: { ...done, output: '✓ 42 passing\n✓ all good' } }, { expanded: false }, plain, { args: { action: 'wait' } }, false);
   const text = render(wait);
   assert.match(text, /✓ npm test · exit 0 · 12s · mt_a1b2c3d4/);
   assert.match(text, /✓ 42 passing/);
-  assert.doesNotMatch(text, /Meantime mt_a1b2c3d4 completed/, 'the receipt sentence is replaced by the header');
+  assert.doesNotMatch(text, /\$ npm test/, 'the receipt header is not duplicated');
 });
 
-test('multi-task waits strip every machine receipt, directive and untrusted fence', () => {
+test('multi-task waits render each task row and its structured output from details', () => {
   const wait = renderTaskResult({ content: [
-    { type: 'text', text: 'Meantime mt_a1b2c3d4 completed (exit 0) — npm test\n✓ 42 passing' },
-    { type: 'text', text: 'Meantime mt_e5f60718 failed (exit 2) — make release\nResult is not available. Do not relaunch the operation.' },
-    { type: 'text', text: '\n<untrusted-output>\nFINAL\n</untrusted-output>\nPending: (none)' },
-  ], details: { tasks: [{ ...done }, { ...failed }, { ...cancelled }], pending: [] } },
+    { type: 'text', text: 'mt_a1b2c3d4 · completed · exit 0 · 12s\n$ npm test\n✓ 42 passing' },
+    { type: 'text', text: 'mt_e5f60718 · failed · exit 2 · 61s\n$ make release\nNo retained result.' },
+    { type: 'text', text: 'Pending: (none)' },
+  ], details: { tasks: [{ ...done, output: '✓ 42 passing' }, { ...failed }, { ...cancelled, output: 'FINAL' }], pending: [] } },
   { expanded: false }, plain, { args: { action: 'wait' } }, false);
   const text = render(wait);
   assert.equal(text, ['✓ npm test · exit 0 · 12s · mt_a1b2c3d4', '✕ make release · exit 2 · 61s · mt_e5f60718',

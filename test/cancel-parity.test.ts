@@ -256,7 +256,7 @@ test('TUI command cancellation leaves one cancelled completion for the model', a
     await h.command(`cancel ${id}`);
     h.work.resolve(ok('native success after cancellation'));
     await until(() => h.pi.notifications.length === 1);
-    assert.match(h.pi.notifications[0]!.content, new RegExp(`Meantime ${id} cancelled`));
+    assert.match(h.pi.notifications[0]!.content, new RegExp(`${id} · cancelled`));
     const list = await h.pi.call('meantime', { action: 'list' });
     assert.equal((list.result.details as { tasks: Snapshot[] }).tasks[0]!.state, 'cancelled');
     await sleep(10); assert.equal(h.pi.notifications.length, 1);
