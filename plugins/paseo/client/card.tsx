@@ -1,7 +1,6 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { ReactNode } from "react";
 import { View } from "react-native";
-import { mixColor, secondaryColor } from "./rows.js";
 
 /**
  * The one card chrome for every pi-meantime surface — timeline cards, wait
@@ -13,10 +12,10 @@ import { mixColor, secondaryColor } from "./rows.js";
 export function Card({ colors, children }: { colors: PluginTheme["colors"]; children: ReactNode }) {
   return (
     <View style={{
-      borderRadius: 10,
+      borderRadius: 8,
       borderWidth: 1,
-      borderColor: mixColor(secondaryColor(colors), colors.surface0, 0.88),
-      backgroundColor: mixColor(colors.surface1, colors.surface0, 0.45),
+      borderColor: colors.border,
+      backgroundColor: colors.surface1,
     }}>
       {children}
     </View>

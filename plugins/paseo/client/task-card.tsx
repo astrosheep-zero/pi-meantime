@@ -21,7 +21,7 @@ export function MeantimeTaskCard(props: PluginTimelineItemProps<MeantimeCardData
   const data = item.data;
   if (data.source === "meantime" && data.action === "wait" && data.tasks.length === 0) return (
     <Card colors={colors}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, paddingVertical: 10 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 12, paddingVertical: 9 }}>
         <TaskGlyph task={{ state: "waiting" }} colors={colors} />
         <Text style={{ flex: 1, color: colors.foreground, fontFamily: monoFont(layout.platform),
           fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>All pending tasks</Text>

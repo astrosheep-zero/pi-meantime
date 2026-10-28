@@ -139,12 +139,12 @@ test("cards and rows drop the jump triggers and align notes in the command colum
   assert.doesNotMatch(html, /overflow/);
   assert.doesNotMatch(html, /margin-top:4px/);
   assert.doesNotMatch(html, /padding-left:34px/);
-  assert.match(html, /padding-right:14px;padding-left:14px;padding-top:10px;padding-bottom:10px/);
+  assert.match(html, /padding-right:12px;padding-left:12px;padding-top:9px;padding-bottom:9px/);
   // Notes share the command's column, so they inherit its left edge.
   assert.match(html, /flex:1;min-width:0px;gap:3px">[\s\S]*?2\/5/);
   const empty = emptyWait();
   assert.doesNotMatch(empty, /margin-top:4px/);
-  assert.match(empty, /padding-right:14px;padding-left:14px;padding-top:10px;padding-bottom:10px/);
+  assert.match(empty, /padding-right:12px;padding-left:12px;padding-top:9px;padding-bottom:9px/);
 });
 
 test("completion receipts never invent an exit code", () => {

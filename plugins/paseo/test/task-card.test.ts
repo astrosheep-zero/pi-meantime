@@ -106,7 +106,7 @@ test("batch wait shares one card and divides rows with a hairline", () => {
     { id: "mt_a1b2c3d4", state: "waiting", command: "sleep 60" },
     { id: "dead", state: "waiting", command: "npm run watch" },
   ] });
-  assert.equal(html.match(/border-top-left-radius:10px/g)?.length, 1);
+  assert.equal(html.match(/border-top-left-radius:8px/g)?.length, 1);
   assert.equal(html.match(/style="border-top-width:1px;border-top-color:/g)?.length, 1);
   assert.equal(html.match(/>waiting</g)?.length, 2);
   assert.match(html, /npm<span[^>]*> run watch<\/span>/);

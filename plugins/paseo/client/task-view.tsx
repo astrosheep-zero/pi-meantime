@@ -140,7 +140,7 @@ export function TaskLine({ task, colors, layout, showId, status = stateText(task
           return { backgroundColor: hovered ? mixColor(colors.surface1, colors.surface0, 0.25) : "transparent",
             opacity: state.pressed ? 0.85 : 1 };
         }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, paddingVertical: 10 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 12, paddingVertical: 9 }}>
         <TaskGlyph task={task} colors={colors} />
         <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
           <TaskCommand task={task} colors={colors} layout={layout} />
@@ -157,7 +157,7 @@ export function TaskLine({ task, colors, layout, showId, status = stateText(task
         <Text accessibilityLabel={taskStateLabel(task)} style={{ ...meta, letterSpacing: 0.2 }} numberOfLines={1}>
           {status}
         </Text>
-        <Icon name={open ? "ChevronUp" : "ChevronDown"} size={16} color={muted} />
+        <Icon name={open ? "ChevronUp" : "ChevronDown"} size={15} color={muted} />
       </View>
       </Pressable>
       {open ? <TaskDetailInline task={task} colors={colors} layout={layout} /> : null}
@@ -167,8 +167,8 @@ export function TaskLine({ task, colors, layout, showId, status = stateText(task
 
 /** The inset surface that code blocks sit on — one step off the drawer. */
 function codeSurface(colors: Colors) {
-  return { backgroundColor: mixColor(colors.surface1, colors.surface0, 0.6), borderRadius: 6,
-    paddingHorizontal: 10, paddingVertical: 8 };
+  return { backgroundColor: colors.surface1, borderRadius: 4,
+    paddingHorizontal: 8, paddingVertical: 6 };
 }
 
 /** Inset drawer under the row: one block tells the story — command in,
@@ -190,9 +190,9 @@ export function TaskDetailInline({ task, colors, layout }: {
   ].filter(Boolean).join(" · ");
   const output = outputPreview(task.output ?? task.outputTail ?? "");
   const drawer = { borderTopWidth: 1, borderTopColor: dividerColor(colors), backgroundColor: colors.surface0,
-    borderBottomLeftRadius: 9, borderBottomRightRadius: 9,
+    borderBottomLeftRadius: 7, borderBottomRightRadius: 7,
     maxHeight: layout.compact ? 280 : 400 };
-  return <ScrollView style={drawer} contentContainerStyle={{ paddingHorizontal: 14, paddingVertical: 12, gap: 12 }} nestedScrollEnabled>
+  return <ScrollView style={drawer} contentContainerStyle={{ paddingHorizontal: 12, paddingVertical: 10, gap: 8 }} nestedScrollEnabled>
     <View style={{ gap: 4 }}>
       <Text style={{ color: secondaryColor(colors), fontSize: 11 }}>Command</Text>
       <View style={codeSurface(colors)}>
