@@ -125,8 +125,8 @@ export function TaskCommand({ task, colors, layout, open = false }: {
  * text line, so a progress note or an unfolded multi-line command grows the row
  * downward instead of dragging the status mark to the vertical middle.
  */
-export function TaskLine({ task, colors, layout, showId, status = stateText(task.state), defaultOpen = false }: {
-  task: TaskSummary; colors: Colors; layout: Layout; showId?: boolean; status?: string; defaultOpen?: boolean;
+export function TaskLine({ task, colors, layout, showId, status = stateText(task.state), defaultOpen = false, last = true }: {
+  task: TaskSummary; colors: Colors; layout: Layout; showId?: boolean; status?: string; defaultOpen?: boolean; last?: boolean;
 }) {
   const mono = monoFont(layout.platform);
   const muted = secondaryColor(colors);
@@ -144,8 +144,7 @@ export function TaskLine({ task, colors, layout, showId, status = stateText(task
       <Pressable onPress={() => setOpen(prev => !prev)} accessibilityRole="button" accessibilityLabel={taskStateLabel(task)}
         style={state => {
           const hovered = (state as { hovered?: boolean }).hovered;
-          return { backgroundColor: open ? colors.surface0
-              : hovered ? mixColor(colors.surface1, colors.surface0, 0.25) : "transparent",
+          return { backgroundColor: hovered ? mixColor(colors.surface1, colors.surface0, 0.25) : "transparent",
             opacity: state.pressed ? 0.85 : 1 };
         }}>
       <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10,
@@ -171,22 +170,16 @@ export function TaskLine({ task, colors, layout, showId, status = stateText(task
         </View>
       </View>
       </Pressable>
-      {open ? <TaskDetailInline task={task} colors={colors} layout={layout} /> : null}
+      {open ? <TaskDetailInline task={task} colors={colors} layout={layout} last={last} /> : null}
     </View>
   );
 }
 
-/** The inset surface that code blocks sit on — one step off the drawer. */
-function codeSurface(colors: Colors) {
-  return { backgroundColor: colors.surface2, borderRadius: 4,
-    paddingHorizontal: 8, paddingVertical: 6 };
-}
-
 /** Inset drawer under the row: the header already unfolds the command, so the
  * drawer carries only what comes after it — output, bookkeeping, the log path.
- * Same card, no overlay, no second telling of the same command. */
-export function TaskDetailInline({ task, colors, layout }: {
-  task: TaskSummary; colors: Colors; layout: Layout;
+ * One recessed surface, no nested output card; compact rows use the full width. */
+export function TaskDetailInline({ task, colors, layout, last = true }: {
+  task: TaskSummary; colors: Colors; layout: Layout; last?: boolean;
 }) {
   const mono = monoFont(layout.platform);
   const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour12: false });
@@ -200,13 +193,11 @@ export function TaskDetailInline({ task, colors, layout }: {
   ].filter(Boolean).join(" · ");
   const output = outputPreview(task.output ?? task.outputTail ?? "");
   const drawer = { backgroundColor: colors.surface0,
-    borderBottomLeftRadius: 7, borderBottomRightRadius: 7,
+    borderBottomLeftRadius: last ? 7 : 0, borderBottomRightRadius: last ? 7 : 0,
     maxHeight: layout.compact ? 280 : 400 };
-  return <ScrollView style={drawer} contentContainerStyle={{ paddingLeft: 34, paddingRight: 12, paddingBottom: 10, gap: 6 }}
+  return <ScrollView style={drawer} contentContainerStyle={{ paddingLeft: layout.compact ? 12 : 34, paddingRight: 12, paddingBottom: 10, gap: 6 }}
     nestedScrollEnabled>
-    {output.trim() ? <View style={codeSurface(colors)}>
-      <Text selectable style={{ color: colors.foreground, fontFamily: mono, fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>{output}</Text>
-    </View> : null}
+    {output.trim() ? <Text selectable style={{ color: colors.foreground, fontFamily: mono, fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>{output}</Text> : null}
     {meta ? <Text selectable style={{ color: secondaryColor(colors), fontFamily: mono, fontSize: 11, lineHeight: 16 }}>{meta}</Text> : null}
     {task.outputPath ? (
       <Text selectable style={{ color: secondaryColor(colors), fontFamily: mono, fontSize: 11, lineHeight: 16 }}>
@@ -227,7 +218,7 @@ export function TaskTable({ tasks, colors, layout, showId, status }: {
         <View key={task.id} style={index > 0
           ? { borderTopWidth: 1, borderTopColor: divider } : undefined}>
           <TaskLine task={task} colors={colors} layout={layout} showId={showId}
-            status={status?.(task)} />
+            status={status?.(task)} last={index === tasks.length - 1} />
         </View>
       ))}
     </Card>
