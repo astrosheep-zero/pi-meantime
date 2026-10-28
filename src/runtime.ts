@@ -365,7 +365,7 @@ export class TaskRuntime {
   get(id: string): Snapshot { return snap(this.lookup(id)); }
   list(): Snapshot[] {
     this.prune();
-    return [...this.tasks.values()].map(snap).sort((a, b) => b.createdAt - a.createdAt);
+    return [...this.tasks.values()].map(snap).sort((a, b) => Number(b.localRunning) - Number(a.localRunning) || b.createdAt - a.createdAt);
   }
   result(id: string): { task: Snapshot; result?: Result } {
     const task = this.lookup(id);

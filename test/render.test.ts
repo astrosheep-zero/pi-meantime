@@ -99,6 +99,21 @@ test('handle and list results keep one scannable line per task', () => {
   assert.match(text, /More: offset=40/);
 });
 
+test('collapsed list rows stay one line per task while expanded rows use detail blocks', () => {
+  const result = { content: [{ type: 'text', text: 'Current session tasks…' }],
+    details: { tasks: [done, failed], pending: [], next_offset: 0 } };
+  const collapsed = render(renderTaskResult(result, { expanded: false }, plain, {}, false));
+  assert.equal(collapsed.split('\n').filter(line => line.includes('mt_a1b2c3d4')).length, 1, 'one row per task');
+  assert.doesNotMatch(collapsed, /42 passing/, 'collapsed rows carry no output tail');
+  assert.doesNotMatch(collapsed, /Output:/, 'collapsed rows carry no output path');
+  assert.doesNotMatch(collapsed, /^  bash$/m, 'collapsed rows carry no detail block');
+
+  const expanded = render(renderTaskResult(result, { expanded: true }, plain, {}, false));
+  assert.match(expanded, /✓ npm test · exit 0 · 12s · mt_a1b2c3d4\n  bash\n  Output: \/tmp\/out\.txt\n  …\n  ✓ 42 passing/,
+    'expanded rows render the tool, output path and tail per task');
+  assert.match(expanded, /✕ make release · exit 2 · 61s · mt_e5f60718\n  bash/, 'every task gets its own detail block');
+});
+
 test('wait results show the glyph header plus the result body without the receipt line', () => {
   const wait = renderTaskResult({ content: [
     { type: 'text', text: 'Meantime mt_a1b2c3d4 completed (exit 0) — npm test' },

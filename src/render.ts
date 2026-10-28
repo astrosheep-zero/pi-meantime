@@ -135,8 +135,11 @@ export function renderTaskResult(result: ResultLike & { details?: unknown }, opt
       if (remaining > 0) lines.push(theme.fg('muted', `… ${remaining} more lines, ${keyHint('app.tools.expand', 'to expand')}`));
     }
   } else if (page && tasks.length) {
-    lines.push(...tasks.map(task => taskLine(task, theme)));
-    if (options.expanded) for (const task of tasks) lines.push(theme.fg('dim', `  ${task.tool}${task.outputPath ? ` · Output: ${task.outputPath}` : ''}`));
+    if (!options.expanded) lines.push(...tasks.map(task => taskLine(task, theme)));
+    else for (const task of tasks) {
+      const tail = typeof task.outputTail === 'string' ? tailLines(task.outputTail) : [];
+      lines.push(...detailBlock(task, theme, tail, 40));
+    }
   }
   if (isRecord(details) && details.next_offset != null) lines.push(theme.fg('muted', `More: offset=${details.next_offset}`));
   if (!lines.length) lines.push(...resultBody(result).map(line => theme.fg('toolOutput', line)));

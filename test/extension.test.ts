@@ -5,8 +5,8 @@ import { validateConfig } from '../src/config.ts';
 import type { Config } from '../src/config.ts';
 import type { Outcome } from '../src/protocol.ts';
 import type { Snapshot } from '../src/runtime.ts';
-import { FakePi } from './host.ts';
-import { until } from './helpers.ts';
+import { FakePi, basicTool } from './host.ts';
+import { deferred, until } from './helpers.ts';
 
 async function setup(config: Partial<Config> = {}) {
   const pi = new FakePi('A', 'tui');
@@ -96,6 +96,27 @@ test('completion notices carry the truncated command in details.tasks', async ()
     assert.equal(details.tasks[0]!.id, snapshot(handle).id);
     assertPreview(details.tasks[0]!.command, raw, 'completion details.tasks[0].command');
   } finally { await h.close(); }
+});
+
+test('list receipts name the exit code when present and put running tasks first', async () => {
+  const h = await setup();
+  const gate = deferred<void>();
+  h.pi.registerTool(basicTool('release', async () => {
+    await gate.promise;
+    return { content: [{ type: 'text', text: 'boom' }], details: undefined, structuredContent: { exit_code: 7 }, isError: true };
+  }));
+  try {
+    const failed = snapshot(await h.pi.call('release', { __background__: 'yes' }));
+    gate.resolve();
+    const tasks = () => (h.instance.inspect() as unknown as { tasks: Snapshot[] }).tasks;
+    await until(() => tasks().find(task => task.id === failed.id)?.state === 'failed');
+    const running = snapshot(await h.pi.call('bash', { command: 'sleep 5', __background__: 'yes' }));
+    const listed = await h.pi.call('meantime', { action: 'list' });
+    const lines = listed.result.content.flatMap(block => block.type === 'text' ? block.text.split('\n') : []);
+    assert.match(lines[0]!, new RegExp(running.id), 'a running task leads the list');
+    assert.doesNotMatch(lines[0]!, /\(exit /, 'a task without an exit code omits the field');
+    assert.match(lines.find(line => line.includes(failed.id))!, /failed \(exit 7\)/, 'the receipt names the exit code');
+  } finally { gate.resolve(); await h.close(); }
 });
 
 test('list page details previews keep line breaks while the runtime keeps the raw command', async () => {

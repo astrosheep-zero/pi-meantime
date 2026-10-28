@@ -52,7 +52,7 @@ function withCommandPreview<T extends { command?: string }>(task: T): T {
   return task.command === undefined ? task : { ...task, command: commandPreview(task.command) };
 }
 function taskLabel(task: Snapshot): string {
-  return `${task.id} | ${task.tool} | ${task.state}${task.command !== undefined ? ` | ${commandOneLine(task.command)}` : ''}`;
+  return `${task.id} | ${task.tool} | ${task.state}${task.exitCode !== undefined ? ` (exit ${task.exitCode})` : ''}${task.command !== undefined ? ` | ${commandOneLine(task.command)}` : ''}`;
 }
 function elapsed(task: Snapshot): string {
   return `${Math.max(0, Math.floor(((task.endedAt ?? Date.now()) - task.createdAt) / 1000))}s`;
@@ -156,7 +156,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       let error = '', closed = false;
       const close = () => { if (closed) return; closed = true; dispose(); done(); };
       const refresh = () => {
-        tasks = r.list().sort((a, b) => Number(b.localRunning) - Number(a.localRunning) || b.createdAt - a.createdAt);
+        tasks = r.list();
         list = new SelectList(tasks.map(task => ({ value: task.id,
           label: `${stateGlyph(theme, task.state)} ${task.command !== undefined ? commandOneLine(task.command) : task.tool} · ${Math.max(0, Math.floor(((task.endedAt ?? Date.now()) - task.createdAt) / 1000))}s · ${task.id}` })), 10, {
           selectedPrefix: text => theme.fg('accent', text), selectedText: text => theme.fg('accent', text),
@@ -227,8 +227,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     ctx.ui.setWidget('bg-control', ['Latest background control:', ...message.split('\n')]);
   }
   function taskList(tasks: Snapshot[]): string {
-    const sorted = [...tasks].sort((a, b) => Number(b.localRunning) - Number(a.localRunning) || b.createdAt - a.createdAt);
-    return `Current session tasks ${tasks.length || '(none)'}:\n${sorted.map(t => `${taskLabel(t)}${t.cancelRequestedAt ? ' | cancel requested' : ''}${t.recovered ? ' | recovered' : ''}`).join('\n')}`;
+    return `Current session tasks ${tasks.length || '(none)'}:\n${[...tasks].map(t => `${taskLabel(t)}${t.cancelRequestedAt ? ' | cancel requested' : ''}${t.recovered ? ' | recovered' : ''}`).join('\n')}`;
   }
   function updateStatus(): void {
     if (!live || !runtime || !currentCtx) return;

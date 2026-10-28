@@ -475,6 +475,27 @@ test('quota is retained across runtime shutdown until non-cooperative producers 
     assert.equal((await next.run({ tool: 'next', kind: 'tool', callId: 'c3', mode: 'auto', canDetach: true, execute: async () => ok() })).kind, 'result');
   } finally { work.resolve(ok()); await next.close(); await h.close(); }
 });
+test('list orders running tasks before ended ones, newest first inside each group', async () => {
+  const h = runtimeHarness();
+  const older = deferred<Outcome>(); const newer = deferred<Outcome>();
+  const doneWork = deferred<Outcome>(); const laterWork = deferred<Outcome>();
+  try {
+    const olderView = await h.runtime.run({ tool: 'older-running', kind: 'tool', callId: 'older', mode: 'yes', canDetach: true, execute: () => older.promise });
+    await sleep(2);
+    const done = await h.runtime.run({ tool: 'done', kind: 'tool', callId: 'done', mode: 'yes', canDetach: true, execute: () => doneWork.promise });
+    doneWork.resolve(ok());
+    await until(() => !h.runtime.get(done.task.id).localRunning);
+    await sleep(2);
+    const later = await h.runtime.run({ tool: 'later-done', kind: 'tool', callId: 'later', mode: 'yes', canDetach: true, execute: () => laterWork.promise });
+    laterWork.resolve(ok());
+    await until(() => !h.runtime.get(later.task.id).localRunning);
+    await sleep(2);
+    await h.runtime.run({ tool: 'newer-running', kind: 'tool', callId: 'newer', mode: 'yes', canDetach: true, execute: () => newer.promise });
+    assert.ok(h.runtime.get(olderView.task.id).localRunning, 'the older task is still running');
+    assert.deepEqual(h.runtime.list().map(task => task.tool), ['newer-running', 'older-running', 'later-done', 'done']);
+  } finally { older.resolve(ok()); newer.resolve(ok()); doneWork.resolve(ok()); laterWork.resolve(ok()); await h.close(); }
+});
+
 test('terminal retention bounds task count without a second text limit', async () => {
   const h = runtimeHarness({ maxRetained: 2 });
   try {
