@@ -167,7 +167,7 @@ export function TaskLine({ task, colors, layout, showId, status = stateText(task
 
 /** The inset surface that code blocks sit on — one step off the drawer. */
 function codeSurface(colors: Colors) {
-  return { backgroundColor: colors.surface1, borderRadius: 4,
+  return { backgroundColor: colors.surface2, borderRadius: 4,
     paddingHorizontal: 8, paddingVertical: 6 };
 }
 

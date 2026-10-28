@@ -1,9 +1,10 @@
 import { usePaseo, type PluginTimelineItemProps } from "@getpaseo/plugin/client";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import type { MeantimeCardData, TaskSummary } from "../shared/tasks.js";
 import { foldItem, resolveWaitTask } from "../shared/tasks.js";
 import { Card } from "./card.js";
+import { meantimeTheme } from "./palette.js";
 import { CODE_FONT_SIZE, CODE_LINE_HEIGHT, completionResult, monoFont, secondaryColor, stateText } from "./rows.js";
 import { TaskGlyph, TaskTable } from "./task-view.js";
 
@@ -17,7 +18,7 @@ function waitStatus(task: TaskSummary): string {
 
 export function MeantimeTaskCard(props: PluginTimelineItemProps<MeantimeCardData>) {
   const { item, theme, layout } = props;
-  const { colors } = theme;
+  const colors = useMemo(() => meantimeTheme(theme).colors, [theme]);
   const data = item.data;
   if (data.source === "meantime" && data.action === "wait" && data.tasks.length === 0) return (
     <Card colors={colors}>
