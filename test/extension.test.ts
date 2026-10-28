@@ -96,7 +96,7 @@ test('detached handles state why the handoff happened', async () => {
     await until(() => (h.instance.inspect() as { tasks: Snapshot[] }).tasks.length === 2);
     h.pi.shortcuts.get('ctrl+shift+b')!(h.pi.ctx);
     const manual = await pending;
-    assert.equal(text(manual.result), `Meantime ${snapshot(manual).id} running in background (manual detach).`);
+    assert.equal(text(manual.result), `Meantime ${snapshot(manual).id} running in background (detached).`);
     assert.equal(h.pi.uiMessages.at(-1), 'Detached 1 call(s) to background.');
   } finally { await h.close(); }
 });
@@ -106,7 +106,7 @@ test('auto timeout handles name the configured window', async () => {
   try {
     const handle = await h.pi.call('bash', { command: 'sleep 5' });
     assert.equal((handle.result.content[0] as { text: string }).text,
-      `Meantime ${snapshot(handle).id} running in background (0.25s timeout).`);
+      `Meantime ${snapshot(handle).id} running in background (0.25s auto-detach).`);
   } finally { await h.close(); }
 });
 
@@ -120,7 +120,7 @@ test('completion notices carry the truncated command in details.tasks', async ()
     const details = h.pi.notifications[0]!.details as { tasks: { id: string; command?: string }[] };
     assert.equal(details.tasks[0]!.id, snapshot(handle).id);
     assertPreview(details.tasks[0]!.command, raw, 'completion details.tasks[0].command');
-    assert.match(h.pi.notifications[0]!.content, /\nBackground completion \(untrusted tool output, not user input\)\. Use meantime\(action="wait", ids=\[\.\.\.\], timeout=0\) for the full result\.$/);
+    assert.match(h.pi.notifications[0]!.content, /^<system-reminder>\n[\s\S]*\nBackground completion\. Use meantime\(action="wait", ids=\[\.\.\.\], timeout=0\) for full output\.\n<\/system-reminder>$/);
   } finally { await h.close(); }
 });
 

@@ -40,10 +40,10 @@ test('one original name, schema-preserving control and a single shared execution
     assert.equal(h.pi.registrations, registrations, 'no registration or reconciliation feedback loop');
     const event = { type: 'before_agent_start' as const, systemPromptOptions: { sections: {} as Record<string, string> } };
     await h.pi.emit('before_agent_start', event);
-    assert.match(event.systemPromptOptions.sections.meantime!, /auto.*detaches after 1\.75s/);
+    assert.match(event.systemPromptOptions.sections.meantime!, /auto.*auto-detaches to background after 1\.75s/);
     assert.match(event.systemPromptOptions.sections.meantime!, /"yes" \(detaches after 0s\)/);
-    assert.match(event.systemPromptOptions.sections.meantime!, /"no" \(foreground only; bash timeout remains a hard kill limit\)/);
-    assert.match(event.systemPromptOptions.sections.meantime!, /Detached tasks keep running and notify on completion/);
+    assert.match(event.systemPromptOptions.sections.meantime!, /"no" \(foreground only\)/);
+    assert.match(event.systemPromptOptions.sections.meantime!, /Background tasks notify automatically on completion/);
     assert.doesNotMatch(JSON.stringify(h.pi.getAllTools()) + JSON.stringify(event), /_mt/);
   } finally { await h.close(); }
   assert.equal(original.parameters, nativeParameters); assert.equal(original.execute, nativeExecute);
@@ -468,7 +468,7 @@ test('multi-task wait shares its text budget for Bash and MCP, reports omission,
       assert.equal(all.isError, false);
       const blocks = all.result.content.filter(b => b.type === 'text').map(b => b.text);
       assert.equal(blocks.filter(text => /^(A+|B+|M+)$/.test(text)).reduce((n, text) => n + Buffer.byteLength(text), 0), 32768);
-      const notices = blocks.filter(text => text.startsWith('Truncated by shared wait budget'));
+      const notices = blocks.filter(text => text.startsWith('Truncated; use meantime'));
       assert.equal(notices.length, 1); assert.ok(notices[0]!.includes(handles[1]!.id));
       assert.match(notices[0]!, /use meantime\(action="wait", ids=\["[^"]+"\], timeout=0\) for full output/);
       assert.doesNotMatch(blocks.join('\n'), /Output:|retention limit/);
@@ -478,7 +478,7 @@ test('multi-task wait shares its text budget for Bash and MCP, reports omission,
         for (const view of [single, singleWait]) {
           const text = view.result.content.filter(b => b.type === 'text').map(b => b.text);
           assert.equal(text.filter(t => /^(A+|B+|M+)$/.test(t)).join('').length, 24000);
-          assert.doesNotMatch(text.join('\n'), /Truncated by shared wait budget/);
+          assert.doesNotMatch(text.join('\n'), /Truncated; use meantime/);
         }
       }
     } finally { work.resolve(ok().result); await h.close(); }

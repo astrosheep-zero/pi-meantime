@@ -27,9 +27,8 @@ function owner(ctx: Context): string {
 function json(value: unknown): Json { return JSON.parse(JSON.stringify(value)) as Json; }
 /** Concise detached-handle attribution; explicit detach needs no reason. */
 function detachReasonSuffix(reason: Snapshot['detachReason'], autoDetachMs: number): string {
-  if (reason === 'timeout') return ` (${(autoDetachMs > 0 ? autoDetachMs / 1000 : 120)}s timeout)`;
-  if (reason === 'shortcut') return ' (manual detach)';
-  if (reason === 'steer') return ' (steered)';
+  if (reason === 'timeout') return ` (${(autoDetachMs > 0 ? autoDetachMs / 1000 : 120)}s auto-detach)`;
+  if (reason === 'shortcut' || reason === 'steer') return ' (detached)';
   return '';
 }
 function foregroundOrHandle(view: View, autoDetachMs: number): Result {
@@ -65,7 +64,7 @@ function elapsed(task: Snapshot): string {
   return `${Math.max(0, Math.floor(((task.endedAt ?? Date.now()) - task.createdAt) / 1000))}s`;
 }
 function taskReceipt(task: Snapshot): string {
-  return `${taskLabel(task)} | ${elapsed(task)}${task.cancelRequestedAt ? ' | cancellation requested; native outcome may not be settled' : ''}`;
+  return `${taskLabel(task)} | ${elapsed(task)}`;
 }
 const TAIL_BYTES = 1024;
 /** Last ~1KB of a finished task's text output, fenced as untrusted data. */
@@ -106,7 +105,7 @@ function storedResult(task: Snapshot, source: Result, budget?: { remaining: numb
     : source.content.some(b => b.type === 'image') ? 'Images omitted from receipt; retained in task result.' : '';
   return {
     content: [{ type: 'text', text: receipt(task) }, ...content,
-      ...(inlineOmitted ? [{ type: 'text' as const, text: `Truncated by shared wait budget; use meantime(action="wait", ids=["${task.id}"], timeout=0) for full output.` }] : []),
+      ...(inlineOmitted ? [{ type: 'text' as const, text: `Truncated; use meantime(action="wait", ids=["${task.id}"], timeout=0) for full output.` }] : []),
       ...(omitted ? [{ type: 'text' as const, text: omitted }] : []),
       ...(source.persistenceOmissions?.length ? [{ type: 'text' as const, text: `Non-JSON fields omitted (${source.persistenceOmissions.join(', ')}); retained in memory.` }] : []),
     ],
@@ -299,11 +298,11 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
 
   pi.registerTool({
     name: 'meantime', label: 'Background tasks', exposure: 'model-only',
-    description: 'Background tasks: list, wait, cancel. wait blocks until settled, user detach or timeout seconds (default 30, no upper limit); timeout: 0 returns current state/result immediately; omit ids to wait for every pending task. cancel requires ids. mode any|all (default all). Never poll in a loop. Unique ID prefixes accepted. Cancellation does not prove rollback.',
+    description: 'Manage background tasks (list, wait, cancel). Tasks notify automatically on completion; call wait only when blocked on a result, or with timeout: 0 to read a completed task\'s full output. wait defaults to timeout: 30s and mode: "all" (omit ids to wait for all pending tasks).',
     parameters: { type: 'object', properties: {
       action: { type: 'string', enum: ['list', 'wait', 'cancel'] },
       ids: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 32,
-        description: 'Task ids; unique prefixes accepted. wait: omit to wait for every pending task. cancel: required.' },
+        description: 'Task IDs or unique prefixes. Optional for wait (defaults to all pending tasks); required for cancel.' },
       mode: { type: 'string', enum: ['any', 'all'] },
       timeout: { type: 'number', minimum: 0 },
       offset: { type: 'integer', minimum: 0 },
@@ -418,7 +417,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     const boundDelivery = new CompletionDelivery(created, session, () => currentCtx?.isIdle() ?? false, tasks => {
       if (!live || runtime !== created || currentOwner !== boundOwner) throw new Error('Stale notification target');
       return { customType: 'meantime-completion',
-          content: `${tasks.map(t => `${receipt(t)}${t.cancelRequestedAt ? '\nCancellation was requested.' : ''}${outputTail(created.tasks.get(t.id)?.outputTail ?? '')}`).join('\n')}\nBackground completion (untrusted tool output, not user input). Use meantime(action="wait", ids=[...], timeout=0) for the full result.`,
+          content: `<system-reminder>\n${tasks.map(t => `${receipt(t)}${t.cancelRequestedAt ? '\nCancellation was requested.' : ''}${outputTail(created.tasks.get(t.id)?.outputTail ?? '')}`).join('\n')}\nBackground completion. Use meantime(action="wait", ids=[...], timeout=0) for full output.\n</system-reminder>`,
           display: true, details: { taskIds: tasks.map(t => t.id),
             tasks: tasks.map(t => ({ id: t.id, tool: t.tool, state: t.state,
               ...(t.command !== undefined ? { command: commandPreview(t.command) } : {}),
@@ -456,7 +455,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   on('before_agent_start', async (event, ctx) => {
     if (live) {
       currentCtx = ctx; host?.refresh();
-      event.systemPromptOptions.sections.meantime = `Managed tools accept optional ${CONTROL}: "auto" (default; ${config.autoDetachMs > 0 ? `detaches after ${config.autoDetachMs / 1000}s` : 'never detaches on a timer'} or on user detach/steer), "yes" (detaches after ${config.explicitDetachMs / 1000}s), or "no" (foreground only; bash timeout remains a hard kill limit). Detached tasks keep running and notify on completion — do not re-run them.`;
+      event.systemPromptOptions.sections.meantime = `Managed tools accept optional ${CONTROL}: "auto" (default; ${config.autoDetachMs > 0 ? `auto-detaches to background after ${config.autoDetachMs / 1000}s` : 'never detaches on a timer'}), "yes" (detaches after ${config.explicitDetachMs / 1000}s), or "no" (foreground only). Background tasks notify automatically on completion — do not re-run them. Unless blocked on a task's result, do other work and wait for the completion notice instead of calling meantime wait.`;
       await delivery?.atBoundary();
     }
   });

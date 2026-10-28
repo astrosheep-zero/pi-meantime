@@ -184,7 +184,7 @@ try {
   notices.set(id, deferred());
   gates.get('continue').resolve();
   const notice = await bounded(notices.get(id).promise, 'automatic completion');
-  assert.match(notice.content, /Background completion \(untrusted tool output, not user input\)/);
+  assert.match(notice.content, /^<system-reminder>\n[\s\S]*\nBackground completion\. Use meantime\(action="wait", ids=\[\.\.\.\], timeout=0\) for full output\.\n<\/system-reminder>$/);
   assert.equal(session.getSessionStats().tokens.input, 6, 'completion charges before any successful wait');
   const collected = await bounded(control({ action: 'wait', ids: [id], timeout: 10 }), 'collect continuation');
   assert.equal(collected.isError, false);
