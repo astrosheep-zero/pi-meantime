@@ -177,7 +177,13 @@ export function recognizeToolCall(item: ToolCallItemLike): MeantimeCardData | un
     const pending = Array.isArray(details.pending) ? details.pending : [];
     const snapshots = [...raws, ...pending].map(simplifySnapshot).filter((task): task is TaskSummary => task !== undefined);
     const tasks = action === "wait" || action === "cancel" ? projectOutputs(detail, snapshots) : snapshots;
-    if (tasks.length === 0) return undefined;
+    if (tasks.length === 0) {
+      // An empty list is still an answer. Paseo drops unrecognized rows to a
+      // raw tool line, so a completed empty list must become a card instead.
+      return action === "list" && Array.isArray(details.tasks)
+        ? { source: "meantime", action: "list", tasks: [] }
+        : undefined;
+    }
     const moreOffset = typeof details.next_offset === "number" ? details.next_offset : undefined;
     return { source: "meantime", ...(action ? { action } : {}), tasks, ...(moreOffset !== undefined ? { moreOffset } : {}) };
   }

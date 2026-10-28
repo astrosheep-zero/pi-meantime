@@ -174,8 +174,17 @@ describe("recognizeToolCall: meantime tool", () => {
     assert.equal(data?.tasks[0]?.cancelRequested, true);
   });
 
-  it("rejects meantime results without parseable tasks", () => {
-    assert.equal(recognizeToolCall(unknownItem("meantime", { action: "list" }, { details: { tasks: [] } })), undefined);
+  it("recognizes a completed empty list as an empty card", () => {
+    const data = recognizeTimelineToolCall(unknownItem("meantime", { action: "list" }, {
+      content: [{ type: "text", text: "No background tasks" }],
+      details: { tasks: [] },
+    }));
+    assert.deepEqual(data, { source: "meantime", action: "list", tasks: [] });
+  });
+
+  it("rejects empty non-list and unparseable results", () => {
+    assert.equal(recognizeToolCall(unknownItem("meantime", { action: "wait" }, { details: { tasks: [] } })), undefined);
+    assert.equal(recognizeToolCall(unknownItem("meantime", { action: "cancel" }, { details: { tasks: [] } })), undefined);
     assert.equal(recognizeToolCall(unknownItem("meantime", { action: "list" }, { content: [{ type: "text", text: "none" }] })), undefined);
   });
 });

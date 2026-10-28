@@ -30,6 +30,16 @@ export function MeantimeTaskCard(props: PluginTimelineItemProps<MeantimeCardData
       </View>
     </Card>
   );
+  if (data.source === "meantime" && data.action === "list" && data.tasks.length === 0) return (
+    <Card colors={colors}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 12, paddingVertical: 9 }}>
+        <TaskGlyph task={{ state: "completed" }} colors={colors} />
+        <Text style={{ flex: 1, color: colors.foreground, fontFamily: monoFont(layout.platform),
+          fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>No background tasks</Text>
+        <Text style={{ color: secondaryColor(colors), fontSize: 12, lineHeight: 16 }}>{stateText("completed")}</Text>
+      </View>
+    </Card>
+  );
   // Even a snapshot-backed launch handle is historical evidence of starting,
   // not a continuing observation of a running process.
   const tasks = data.source === "handle"
@@ -38,7 +48,10 @@ export function MeantimeTaskCard(props: PluginTimelineItemProps<MeantimeCardData
   return (
     <View style={{ gap: 4 }}>
       <TaskTable tasks={tasks} colors={colors} layout={layout}
-        status={data.source === "completion" ? completionResult : data.source === "meantime" && data.action === "wait" ? waitStatus : undefined} />
+        showId={data.source === "meantime" && data.action === "list"}
+        status={data.source === "completion" || data.source === "meantime" && data.action === "list"
+          ? completionResult
+          : data.source === "meantime" && data.action === "wait" ? waitStatus : undefined} />
       {data.moreOffset !== undefined ? <Text style={{ color: secondaryColor(colors), fontSize: 10,
         fontFamily: monoFont(layout.platform) }}>More tasks not shown (offset {data.moreOffset})</Text> : null}
     </View>

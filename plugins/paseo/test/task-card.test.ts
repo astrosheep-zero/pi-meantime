@@ -55,6 +55,27 @@ test("wait-all renders a waiting card without inventing task identities", () => 
   assert.doesNotMatch(html, /mt_|No output|Finished waiting/);
 });
 
+test("a completed empty list renders a no-tasks card", () => {
+  const html = render({ source: "meantime", action: "list", tasks: [] });
+  assert.match(html, /No background tasks/);
+  assert.match(html, />done</);
+  assert.doesNotMatch(html, /mt_|All pending tasks|No output/);
+});
+
+test("list cards expose short ids and completion results", () => {
+  const html = render({ source: "meantime", action: "list", tasks: [
+    { id: "mt_a1b2c3d4", state: "failed", command: "make test", exitCode: 3, outputTail: "boom" },
+    { id: "mt_deadbeef", state: "completed", command: "npm test", exitCode: 0 },
+  ] });
+  assert.match(html, /aria-label="mt_a1b2c3d4"/);
+  assert.match(html, /aria-label="mt_deadbeef"/);
+  assert.match(html, />a1b2</);
+  assert.match(html, />dead</);
+  assert.match(html, />failed · exit 3</);
+  assert.match(html, />done</);
+  assert.doesNotMatch(html, /Output tail|Output file|boom|All pending tasks/);
+});
+
 test("batch wait renders every target", () => {
   const html = render({ source: "meantime", action: "wait", tasks: [
     { id: "mt_a1b2c3d4", state: "waiting", command: "sleep 60" },
