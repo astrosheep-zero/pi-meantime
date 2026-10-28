@@ -144,10 +144,10 @@ test("task rows keep their details closed until pressed", () => {
 test("pressing a row expands details inline instead of opening a modal", async () => {
   const html = renderLine({ id: "mt_a1b2c3d4", state: "running", command: "npm test -- --watch",
     outputTail: "108 passing\n", outputPath: "/tmp/mt_a1b2c3d4.log", createdAt: 1_700_000_000_000 });
-  assert.match(html, />Command</);
-  assert.match(html, /npm test -- --watch/);
-  assert.match(html, />Output tail</);
+  // The header unfolds the whole command; the drawer adds only what follows.
+  assert.match(html, /npm<span[^>]*> test -- --watch<\/span>/);
   assert.match(html, /108 passing/);
+  assert.doesNotMatch(html, />Command<|>Output<|>Output tail</);
   assert.match(html, /mt_a1b2c3d4/);
   assert.match(html, /Output file: .*mt_a1b2c3d4\.log/);
   assert.doesNotMatch(html, /role="dialog"/);
@@ -159,6 +159,6 @@ test("pressing a row expands details inline instead of opening a modal", async (
 
 test("inline details leave an empty output tail out entirely", () => {
   const html = renderLine({ id: "mt_a1b2c3d4", state: "running", command: "sleep 60", outputTail: "  \n" });
-  assert.match(html, />Command</);
+  assert.match(html, /sleep.*60/);
   assert.doesNotMatch(html, /Output tail|Output file/);
 });

@@ -14,7 +14,7 @@ const { formatElapsed, completionResult, stateLabel, stateColor, doneColor, task
 const surfaces = await build({ stdin: { contents: `
 import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
-import {TaskDetailInline, TaskGlyph, TaskLine, TaskTable} from './client/task-view.tsx';
+import {TaskCommand, TaskDetailInline, TaskGlyph, TaskLine, TaskTable} from './client/task-view.tsx';
 import {MeantimeTaskCard} from './client/task-card.tsx';
 const theme = {colors:{surface0:'#fff',surface1:'#f4f5f4',foreground:'#111',foregroundMuted:'#777',border:'#ccc',statusWarning:'#b7791f',statusDanger:'#c2412d'}};
 const layout = {compact:true,platform:'web'};
@@ -22,6 +22,8 @@ const draw = (element) => renderToStaticMarkup(element);
 export const glyph = (state) => draw(<TaskGlyph task={{state}} colors={theme.colors}/>);
 export const row = (task) => draw(<TaskLine task={task} colors={theme.colors} layout={layout}/>);
 export const detail = (task) => draw(<TaskDetailInline task={task} colors={theme.colors} layout={layout}/>);
+export const openCommand = (task) => draw(<TaskCommand task={task} colors={theme.colors} layout={layout} open/>);
+export const openRow = (task) => draw(<TaskLine task={task} colors={theme.colors} layout={layout} defaultOpen/>);
 export const table = (tasks) => draw(<TaskTable tasks={tasks} colors={theme.colors} layout={layout}/>);
 export const emptyWait = () => draw(<MeantimeTaskCard item={{data:{source:'meantime',action:'wait',tasks:[]}}} theme={theme} layout={layout}/>);`,
   loader: "tsx", resolveDir: new URL("..", import.meta.url).pathname },
@@ -34,13 +36,15 @@ const ui = { exports: {} as {
   glyph: (state: string) => string;
   row: (task: unknown) => string;
   detail: (task: unknown) => string;
+  openCommand: (task: unknown) => string;
+  openRow: (task: unknown) => string;
   table: (tasks: unknown[]) => string;
   emptyWait: () => string;
 } };
 // Bundled CJS keeps React's node builtins available without writing build artifacts.
 const { createRequire } = await import("node:module");
 new Function("require", "module", "exports", surfaces.outputFiles[0]!.text)(createRequire(import.meta.url), ui, ui.exports);
-const { glyph, row, detail, table, emptyWait } = ui.exports;
+const { glyph, row, detail, openCommand, openRow, table, emptyWait } = ui.exports;
 
 test("elapsed is a fixed snapshot, never inferred from a start alone", () => {
   const task = { id: "mt_a1b2c3d4", state: "running", createdAt: 1000 };
@@ -88,13 +92,24 @@ test("washed-out host tokens gain contrast without using border or a fixed palet
   assert.equal(readableColor("#e9b45a", dark), "#e9b45a");
 });
 
-test("a collapsed row flattens preserved newlines while the drawer keeps them", () => {
+test("a collapsed row flattens preserved newlines while an open row keeps them", () => {
   const task = { id: "mt_a1b2c3d4", state: "running", command: "npm test\n  --  --watch" };
   const collapsed = row(task);
   assert.match(collapsed, /npm<span[^>]*> test -- --watch<\/span>/);
   assert.doesNotMatch(collapsed, /npm test\n/);
-  const drawer = detail(task);
-  assert.match(drawer, /npm test\n  --  --watch/);
+  // Once open, the header itself unfolds the command as written; the drawer
+  // no longer repeats it in a nested block.
+  const open = openCommand(task);
+  assert.match(open, /npm<span[^>]*> test\n  --  --watch<\/span>/);
+  assert.doesNotMatch(detail(task), /npm test\n/);
+});
+
+test("an open row unfolds the command in place and pins status to the first line", () => {
+  const html = openRow({ id: "mt_a1b2c3d4", state: "running", command: "npm test\n  --  --watch", progress: "2/5" });
+  assert.match(html, /align-items:flex-start/);
+  assert.match(html, /height:18px;flex-direction:row;align-items:center;gap:8px/);
+  assert.match(html, /npm<span[^>]*> test\n  --  --watch<\/span>/);
+  assert.doesNotMatch(html, />Command</);
 });
 
 test("live dots breathe while parked rings hold steady ink", async () => {
@@ -116,12 +131,12 @@ test("live dots breathe while parked rings hold steady ink", async () => {
   assert.doesNotMatch(source, /toValue: 0\.4/);
 });
 
-test("the drawer prefers projected output and keeps a tail-only fallback", () => {
+test("the drawer shows output directly and keeps a tail-only fallback", () => {
   const task = { id: "mt_a1b2c3d4", state: "completed", command: "npm test", outputTail: "108 passing\n" };
-  assert.match(detail(task), /Output tail/);
-  assert.match(detail(task), /108 passing/);
+  const tail = detail(task);
+  assert.match(tail, /108 passing/);
+  assert.doesNotMatch(tail, /Output tail|>Output</);
   const full = detail({ ...task, output: "start\n108 passing\n" });
-  assert.match(full, />Output</);
   assert.match(full, /start\n108 passing\n/);
 });
 

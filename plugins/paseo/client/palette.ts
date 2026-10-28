@@ -3,36 +3,36 @@ import type { PluginTheme } from "@getpaseo/plugin";
 type Slate = Omit<PluginTheme["colors"], "accentForeground">;
 
 /**
- * Meantime's own console palette: cold blue-slate, deliberately no relative of
- * notesoup's paper or Square's terracotta, so a meantime card reads as a
- * precision instrument rather than another sheet of stationery. Every token is
- * opaque and self-contained — these cards never borrow the host's surface
- * ramp, only its appearance and its accentForeground.
+ * Meantime's own console palette: neutral Braun carbon, deliberately no
+ * relative of notesoup's paper or Square's terracotta, so a meantime card
+ * reads as a precision instrument rather than another sheet of stationery.
+ * Every token is opaque and self-contained — these cards never borrow the
+ * host's surface ramp, only its appearance and its accentForeground.
  */
 const PALETTE: Record<"dark" | "light", Slate> = {
   dark: {
-    surface0: "#0f1319", // drawer
-    surface1: "#151921", // card
-    surface2: "#181e29", // code block
-    border: "#262f3f",
-    foreground: "#e6edf7",
-    foregroundMuted: "#8492a6",
+    surface0: "#0c0c0d", // drawer
+    surface1: "#141416", // card
+    surface2: "#1a1a1d", // code block
+    border: "#26262a",
+    foreground: "#e4e4e7",
+    foregroundMuted: "#71717a",
     statusSuccess: "#34d399",
     statusWarning: "#f59e0b",
     statusDanger: "#f87171",
-    accent: "#7ea7d8",
+    accent: "#a1a1aa",
   },
   light: {
-    surface0: "#edf2f8",
-    surface1: "#f5f8fc",
-    surface2: "#e4ecf5",
-    border: "#d4deeb",
-    foreground: "#131a24",
-    foregroundMuted: "#607086",
-    statusSuccess: "#16a34a",
+    surface0: "#f0f0f2",
+    surface1: "#f8f8f9",
+    surface2: "#e4e4e8",
+    border: "#d4d4d8",
+    foreground: "#18181b",
+    foregroundMuted: "#71717a",
+    statusSuccess: "#059669",
     statusWarning: "#d97706",
     statusDanger: "#dc2626",
-    accent: "#356a9a",
+    accent: "#52525b",
   },
 };
 

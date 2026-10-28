@@ -95,15 +95,19 @@ export function TaskGlyph({ task, colors }: { task: Pick<TaskSummary, "state">; 
   );
 }
 
-/** The collapsed row is one line: preserved newlines in `task.command` collapse
- * to spaces here, while the expanded drawer shows the command as written. */
-export function TaskCommand({ task, colors, layout }: { task: TaskSummary; colors: Colors; layout: Layout }) {
-  const command = task.command?.replace(/\s+/g, " ").trim() || undefined;
+/** Collapsed, the row is one line: preserved newlines in `task.command`
+ * collapse to spaces. Open, the command unfolds in place exactly as written,
+ * so the header carries the whole invocation and the drawer never repeats it. */
+export function TaskCommand({ task, colors, layout, open = false }: {
+  task: TaskSummary; colors: Colors; layout: Layout; open?: boolean;
+}) {
+  const raw = task.command?.trim() || undefined;
+  const command = raw === undefined || open ? raw : raw.replace(/\s+/g, " ");
   // Env assignments belong with the command word; only arguments stay muted.
   const head = command === undefined ? undefined : /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*\S+/.exec(command)?.[0];
   const tail = command === undefined ? "" : command.slice(head?.length ?? 0);
   return (
-    <Text numberOfLines={1} style={{ minWidth: 0, color: colors.foreground,
+    <Text numberOfLines={open ? undefined : 1} style={{ minWidth: 0, color: colors.foreground,
       fontFamily: monoFont(layout.platform), fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>
       {command ? <>{head}<Text style={{ color: secondaryColor(colors) }}>{tail}</Text></>
         : <Text style={{ color: secondaryColor(colors) }}>{task.tool ?? task.id}</Text>}
@@ -117,6 +121,9 @@ export function TaskCommand({ task, colors, layout }: { task: TaskSummary; color
  * Details expand in place under the row — a press never covers the timeline.
  * Notes sit in the command column so they share its left edge without an
  * indent constant.
+ * The glyph and the trailing status controls are pinned to the first 18px
+ * text line, so a progress note or an unfolded multi-line command grows the row
+ * downward instead of dragging the status mark to the vertical middle.
  */
 export function TaskLine({ task, colors, layout, showId, status = stateText(task.state), defaultOpen = false }: {
   task: TaskSummary; colors: Colors; layout: Layout; showId?: boolean; status?: string; defaultOpen?: boolean;
@@ -137,27 +144,31 @@ export function TaskLine({ task, colors, layout, showId, status = stateText(task
       <Pressable onPress={() => setOpen(prev => !prev)} accessibilityRole="button" accessibilityLabel={taskStateLabel(task)}
         style={state => {
           const hovered = (state as { hovered?: boolean }).hovered;
-          return { backgroundColor: hovered ? mixColor(colors.surface1, colors.surface0, 0.25) : "transparent",
+          return { backgroundColor: open ? colors.surface0
+              : hovered ? mixColor(colors.surface1, colors.surface0, 0.25) : "transparent",
             opacity: state.pressed ? 0.85 : 1 };
         }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 12, paddingVertical: 9 }}>
+      <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10,
+        paddingHorizontal: 12, paddingTop: 9, paddingBottom: open ? 6 : 9 }}>
         <TaskGlyph task={task} colors={colors} />
         <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
-          <TaskCommand task={task} colors={colors} layout={layout} />
+          <TaskCommand task={task} colors={colors} layout={layout} open={open} />
           {notes.map((note, index) => (
             <Text key={index} numberOfLines={1} style={{ ...meta, fontFamily: mono, fontSize: 11 }}>{note}</Text>
           ))}
         </View>
-        {showId ? (
-          <Text accessibilityLabel={task.id} selectable style={{ ...meta, fontFamily: mono, fontSize: 11, opacity: 0.7 }} numberOfLines={1}>
-            {task.id.replace(/^mt_/, "").slice(0, 4)}
+        <View style={{ height: CODE_LINE_HEIGHT, flexDirection: "row", alignItems: "center", gap: 8 }}>
+          {showId ? (
+            <Text accessibilityLabel={task.id} selectable style={{ ...meta, fontFamily: mono, fontSize: 11, opacity: 0.7 }} numberOfLines={1}>
+              {task.id.replace(/^mt_/, "").slice(0, 4)}
+            </Text>
+          ) : null}
+          {elapsed ? <Text style={{ ...meta, fontVariant: ["tabular-nums"], letterSpacing: 0.2 }} numberOfLines={1}>{elapsed}</Text> : null}
+          <Text accessibilityLabel={taskStateLabel(task)} style={{ ...meta, letterSpacing: 0.2 }} numberOfLines={1}>
+            {status}
           </Text>
-        ) : null}
-        {elapsed ? <Text style={{ ...meta, fontVariant: ["tabular-nums"], letterSpacing: 0.2 }} numberOfLines={1}>{elapsed}</Text> : null}
-        <Text accessibilityLabel={taskStateLabel(task)} style={{ ...meta, letterSpacing: 0.2 }} numberOfLines={1}>
-          {status}
-        </Text>
-        <Icon name={open ? "ChevronUp" : "ChevronDown"} size={15} color={muted} />
+          <Icon name={open ? "ChevronUp" : "ChevronDown"} size={15} color={muted} />
+        </View>
       </View>
       </Pressable>
       {open ? <TaskDetailInline task={task} colors={colors} layout={layout} /> : null}
@@ -171,16 +182,15 @@ function codeSurface(colors: Colors) {
     paddingHorizontal: 8, paddingVertical: 6 };
 }
 
-/** Inset drawer under the row: one block tells the story — command in,
- * output out, bookkeeping in one dim line. Same card, no overlay. Labels sit
- * tight to their block; the whole drawer scrolls within one bounded box. */
+/** Inset drawer under the row: the header already unfolds the command, so the
+ * drawer carries only what comes after it — output, bookkeeping, the log path.
+ * Same card, no overlay, no second telling of the same command. */
 export function TaskDetailInline({ task, colors, layout }: {
   task: TaskSummary; colors: Colors; layout: Layout;
 }) {
   const mono = monoFont(layout.platform);
   const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour12: false });
   const meta = [
-    formatElapsed(task),
     task.id,
     task.createdAt !== undefined && task.endedAt !== undefined
       ? `${clock(task.createdAt)} → ${clock(task.endedAt)}`
@@ -189,27 +199,17 @@ export function TaskDetailInline({ task, colors, layout }: {
     task.isError && task.state !== "failed" ? "error reported" : undefined,
   ].filter(Boolean).join(" · ");
   const output = outputPreview(task.output ?? task.outputTail ?? "");
-  const drawer = { borderTopWidth: 1, borderTopColor: dividerColor(colors), backgroundColor: colors.surface0,
+  const drawer = { backgroundColor: colors.surface0,
     borderBottomLeftRadius: 7, borderBottomRightRadius: 7,
     maxHeight: layout.compact ? 280 : 400 };
-  return <ScrollView style={drawer} contentContainerStyle={{ paddingHorizontal: 12, paddingVertical: 10, gap: 8 }} nestedScrollEnabled>
-    <View style={{ gap: 4 }}>
-      <Text style={{ color: secondaryColor(colors), fontSize: 11 }}>Command</Text>
-      <View style={codeSurface(colors)}>
-        <Text selectable style={{ color: colors.foreground, fontFamily: mono, fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>
-          {task.command ?? task.tool ?? task.id}
-        </Text>
-      </View>
-    </View>
-    {output.trim() ? <View style={{ gap: 4 }}>
-      <Text style={{ color: secondaryColor(colors), fontSize: 11 }}>{task.output !== undefined ? "Output" : "Output tail"}</Text>
-      <View style={codeSurface(colors)}>
-        <Text selectable style={{ color: colors.foreground, fontFamily: mono, fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>{output}</Text>
-      </View>
+  return <ScrollView style={drawer} contentContainerStyle={{ paddingLeft: 34, paddingRight: 12, paddingBottom: 10, gap: 6 }}
+    nestedScrollEnabled>
+    {output.trim() ? <View style={codeSurface(colors)}>
+      <Text selectable style={{ color: colors.foreground, fontFamily: mono, fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>{output}</Text>
     </View> : null}
-    {meta ? <Text selectable style={{ color: secondaryColor(colors), fontFamily: mono, fontSize: 11, lineHeight: 18 }}>{meta}</Text> : null}
+    {meta ? <Text selectable style={{ color: secondaryColor(colors), fontFamily: mono, fontSize: 11, lineHeight: 16 }}>{meta}</Text> : null}
     {task.outputPath ? (
-      <Text selectable style={{ color: colors.foreground, fontFamily: mono, fontSize: 11, lineHeight: 18 }}>
+      <Text selectable style={{ color: secondaryColor(colors), fontFamily: mono, fontSize: 11, lineHeight: 16 }}>
         Output file: {task.outputPath}
       </Text>
     ) : null}
