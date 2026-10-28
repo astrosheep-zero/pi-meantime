@@ -40,10 +40,10 @@ test('one original name, schema-preserving control and a single shared execution
     assert.equal(h.pi.registrations, registrations, 'no registration or reconciliation feedback loop');
     const event = { type: 'before_agent_start' as const, systemPromptOptions: { sections: {} as Record<string, string> } };
     await h.pi.emit('before_agent_start', event);
-    assert.match(event.systemPromptOptions.sections.meantime!, /auto.*auto-detaches to background after 1\.75s/);
-    assert.match(event.systemPromptOptions.sections.meantime!, /"yes" \(detaches after 0s\)/);
-    assert.match(event.systemPromptOptions.sections.meantime!, /"no" \(foreground only\)/);
-    assert.match(event.systemPromptOptions.sections.meantime!, /Background tasks notify automatically on completion/);
+    assert.match(event.systemPromptOptions.sections.meantime!, /"auto" \(default; moves to background if not finished in time\)/);
+    assert.match(event.systemPromptOptions.sections.meantime!, /"yes" \(run in background\)/);
+    assert.match(event.systemPromptOptions.sections.meantime!, /"no" \(stay in foreground\)/);
+    assert.match(event.systemPromptOptions.sections.meantime!, /Background tasks notify automatically when done/);
     assert.doesNotMatch(JSON.stringify(h.pi.getAllTools()) + JSON.stringify(event), /_mt/);
   } finally { await h.close(); }
   assert.equal(original.parameters, nativeParameters); assert.equal(original.execute, nativeExecute);
@@ -382,7 +382,7 @@ test('wait is the single result path, with immediate reads and fractional second
   try {
     const schema = h.pi.definitions.get('meantime')!.parameters as { properties: Record<string, unknown>; additionalProperties: boolean };
     assert.deepEqual(schema.properties.action, { type: 'string', enum: ['list', 'wait', 'cancel'] });
-    assert.deepEqual(schema.properties.timeout, { type: 'number', minimum: 0 });
+    assert.equal((h.pi.definitions.get('meantime')!.parameters.properties as Record<string, Record<string, unknown>>).timeout!.minimum, 0);
     assert.equal('timeout_ms' in schema.properties, false);
     assert.equal('id' in schema.properties, false);
     assert.equal(schema.additionalProperties, false);

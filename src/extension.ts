@@ -298,13 +298,15 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
 
   pi.registerTool({
     name: 'meantime', label: 'Background tasks', exposure: 'model-only',
-    description: 'List, wait on, or cancel background tasks. Tasks notify automatically on completion; call wait only when blocked on a result, or with timeout: 0 to read a completed task\'s full output. wait defaults to timeout: 30s and mode: "all" (omit ids to wait for all pending tasks).',
+    description: 'List, wait on, or cancel background tasks. Tasks notify automatically when done — only call wait when blocked on a result, or with timeout: 0 to read full output.',
     parameters: { type: 'object', properties: {
       action: { type: 'string', enum: ['list', 'wait', 'cancel'] },
       ids: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 32,
-        description: 'Task IDs or unique prefixes. Optional for wait (defaults to all pending tasks); required for cancel.' },
-      mode: { type: 'string', enum: ['any', 'all'] },
-      timeout: { type: 'number', minimum: 0 },
+        description: 'Task IDs or unique prefixes. Omit in wait to wait for all pending tasks; required for cancel.' },
+      mode: { type: 'string', enum: ['any', 'all'],
+        description: '"all" (default, wait for all targets) or "any" (return when the first settles).' },
+      timeout: { type: 'number', minimum: 0,
+        description: 'Max wait in seconds (default 30; 0 returns current state/output immediately).' },
       offset: { type: 'integer', minimum: 0 },
       limit: { type: 'integer', minimum: 1, maximum: 32 },
     }, required: ['action'], additionalProperties: false },
@@ -416,8 +418,14 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     runtime = created;
     const boundDelivery = new CompletionDelivery(created, session, () => currentCtx?.isIdle() ?? false, tasks => {
       if (!live || runtime !== created || currentOwner !== boundOwner) throw new Error('Stale notification target');
+      const entries = tasks.map(t => {
+        const tail = outputTail(created.tasks.get(t.id)?.outputTail ?? '');
+        const hasMore = tail.includes('<untrusted-output-tail truncated>') || Boolean(t.outputPath)
+          || Boolean(created.tasks.get(t.id)?.result?.content.some(b => b.type !== 'text'));
+        return { text: `${receipt(t)}${tail}`, hasMore };
+      });
       return { customType: 'meantime-completion',
-          content: `<system-reminder>\n${tasks.map(t => `${receipt(t)}${t.cancelRequestedAt ? '\nCancellation was requested.' : ''}${outputTail(created.tasks.get(t.id)?.outputTail ?? '')}`).join('\n')}\nUse meantime(action="wait", ids=[...], timeout=0) for full output.\n</system-reminder>`,
+          content: `<system-reminder>\n${entries.map(e => e.text).join('\n')}${entries.some(e => e.hasMore) ? '\nUse meantime(action="wait", ids=[...], timeout=0) for full output.' : ''}\n</system-reminder>`,
           display: true, details: { taskIds: tasks.map(t => t.id),
             tasks: tasks.map(t => ({ id: t.id, tool: t.tool, state: t.state,
               ...(t.command !== undefined ? { command: commandPreview(t.command) } : {}),
@@ -455,7 +463,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   on('before_agent_start', async (event, ctx) => {
     if (live) {
       currentCtx = ctx; host?.refresh();
-      event.systemPromptOptions.sections.meantime = `Managed tools accept optional ${CONTROL}: "auto" (default; ${config.autoDetachMs > 0 ? `auto-detaches to background after ${config.autoDetachMs / 1000}s` : 'never detaches on a timer'}), "yes" (detaches after ${config.explicitDetachMs / 1000}s), or "no" (foreground only). Background tasks notify automatically on completion — do not re-run them. Unless blocked on a task's result, do other work and wait for the completion notice instead of calling meantime wait.`;
+      event.systemPromptOptions.sections.meantime = `Tools with ${CONTROL} accept: "auto" (default; ${config.autoDetachMs > 0 ? 'moves to background if not finished in time' : 'never detaches on a timer'}), "yes" (run in background), or "no" (stay in foreground). Background tasks notify automatically when done — do not re-run them. Do other work while they run; only call meantime(action="wait") when blocked on a result.`;
       await delivery?.atBoundary();
     }
   });
