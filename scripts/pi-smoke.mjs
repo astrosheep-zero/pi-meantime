@@ -384,7 +384,7 @@ async function completionRace(sdk, root, scenario) {
           void (async () => {
             const n = ++requests;
             const completions = context.messages.filter(m => m.role === 'user' &&
-              JSON.stringify(m.content).includes('Automated background completion'));
+              JSON.stringify(m.content).includes('Background completion (untrusted tool output, not user input)'));
             trace.push(`request ${n}: completion visible=${completions.length}`);
             let calls = [];
             if (n === 1) {

@@ -16,7 +16,7 @@ import { deferred, ok, sleep, until } from './helpers.ts';
 async function setup(tools: Tool[] = [], config: Partial<Config> = {}, mode: 'tui' | 'print' = 'tui') {
   const pi = new FakePi('A', mode);
   for (const tool of tools) pi.registerTool(tool);
-  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, notifyDebounceMs: 5, shutdownGraceMs: 15, ...config }), connect: () => pi });
+  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, explicitDetachMs: 0, notifyDebounceMs: 5, shutdownGraceMs: 15, ...config }), connect: () => pi });
   await pi.emit('session_start', { type: 'session_start' });
   return { pi, instance, async close() { await instance.dispose(); } };
 }
@@ -40,10 +40,10 @@ test('one original name, schema-preserving control and a single shared execution
     assert.equal(h.pi.registrations, registrations, 'no registration or reconciliation feedback loop');
     const event = { type: 'before_agent_start' as const, systemPromptOptions: { sections: {} as Record<string, string> } };
     await h.pi.emit('before_agent_start', event);
-    assert.match(event.systemPromptOptions.sections.meantime!, /original names/);
-    assert.match(event.systemPromptOptions.sections.meantime!, /detaches after 1.75s/);
-    assert.match(event.systemPromptOptions.sections.meantime!, /"no" disables automatic backgrounding\./);
-    assert.match(event.systemPromptOptions.sections.meantime!, /no earlier than 3s after execution admission; early steer waits/);
+    assert.match(event.systemPromptOptions.sections.meantime!, /auto.*detaches after 1\.75s/);
+    assert.match(event.systemPromptOptions.sections.meantime!, /"yes" \(detaches after 0s\)/);
+    assert.match(event.systemPromptOptions.sections.meantime!, /"no" \(foreground only; bash timeout remains a hard kill limit\)/);
+    assert.match(event.systemPromptOptions.sections.meantime!, /Detached tasks keep running and notify on completion/);
     assert.doesNotMatch(JSON.stringify(h.pi.getAllTools()) + JSON.stringify(event), /_mt/);
   } finally { await h.close(); }
   assert.equal(original.parameters, nativeParameters); assert.equal(original.execute, nativeExecute);
@@ -277,7 +277,7 @@ test('wait previews show native single and batch bodies, while handle cards reta
     const handles = [];
     for (let i = 0; i < 2; i++) handles.push(await h.pi.call('mcp__preview', { __background__: 'yes' }));
     const ids = handles.map(out => snapshot(out).id);
-    assert.match(managed.renderResult!(handles[0]!.result, { expanded: false, isPartial: false }, theme, {} as Parameters<Render>[3]).render(200).map(line => line.trimEnd()).join('\n'), /● background · mt_[a-f0-9]{8} — \/meantime to inspect/,
+    assert.match(managed.renderResult!(handles[0]!.result, { expanded: false, isPartial: false }, theme, {} as Parameters<Render>[3]).render(200).map(line => line.trimEnd()).join('\n'), /● background · mt_[a-f0-9]{8}$/,
       'the call header already carries the command, so the handle line stays compact');
     initTheme('dark', false);
     const ui = { requestRender() {} } as ConstructorParameters<typeof ToolExecutionComponent>[5];
@@ -468,9 +468,9 @@ test('multi-task wait shares its text budget for Bash and MCP, reports omission,
       assert.equal(all.isError, false);
       const blocks = all.result.content.filter(b => b.type === 'text').map(b => b.text);
       assert.equal(blocks.filter(text => /^(A+|B+|M+)$/.test(text)).reduce((n, text) => n + Buffer.byteLength(text), 0), 32768);
-      const notices = blocks.filter(text => text.startsWith('Inline text omitted'));
+      const notices = blocks.filter(text => text.startsWith('Truncated by shared wait budget'));
       assert.equal(notices.length, 1); assert.ok(notices[0]!.includes(handles[1]!.id));
-      assert.match(notices[0]!, /Retrieve this task singly.*action="wait".*timeout=0/);
+      assert.match(notices[0]!, /use meantime\(action="wait", ids=\["[^"]+"\], timeout=0\) for full output/);
       assert.doesNotMatch(blocks.join('\n'), /Output:|retention limit/);
       for (const handle of handles) {
         const single = await h.pi.call('meantime', { action: 'wait', timeout: 0, ids: [handle.id ]});
@@ -478,7 +478,7 @@ test('multi-task wait shares its text budget for Bash and MCP, reports omission,
         for (const view of [single, singleWait]) {
           const text = view.result.content.filter(b => b.type === 'text').map(b => b.text);
           assert.equal(text.filter(t => /^(A+|B+|M+)$/.test(t)).join('').length, 24000);
-          assert.doesNotMatch(text.join('\n'), /Inline text omitted/);
+          assert.doesNotMatch(text.join('\n'), /Truncated by shared wait budget/);
         }
       }
     } finally { work.resolve(ok().result); await h.close(); }
@@ -541,9 +541,7 @@ test('short management receipts retain structured data and cancellation semantic
   try {
     const handle = await h.pi.call('mcp__t__receipt', { __background__: 'yes' });
     const task = snapshot(handle);
-    assert.match(text(handle.result), new RegExp(`^Meantime ${task.id} running in background`));
-    assert.match(text(handle.result), /In the TUI use \/meantime or/);
-    assert.ok(text(handle.result).includes(`meantime(action="wait", ids=["${task.id}"], timeout=0)`));
+    assert.equal(text(handle.result), `Meantime ${task.id} running in background.`);
     assert.ok(!text(handle.result).includes('status/result/cancel'));
     const page = await h.pi.call('meantime', { action: 'list', limit: 1 });
     const data = page.result.structuredContent as unknown as { tasks: Snapshot[]; next_offset: null; total: number };

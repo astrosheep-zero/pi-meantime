@@ -155,8 +155,13 @@ export class TaskRuntime {
       task.autoTimer = setTimeout(() => this.detach(task, 'timeout'), this.config.autoDetachMs);
     }
     if (request.mode === 'yes') {
-      // A producer may open a prompt after admission; let it enter the gate.
-      setImmediate(() => { if (this.open) this.detach(task, 'explicit'); });
+      if (this.config.explicitDetachMs > 0) {
+        // Give fast calls a chance to return their foreground result directly.
+        // A producer may open a prompt after admission; the gate defers detach.
+        task.autoTimer = setTimeout(() => this.detach(task, 'explicit'), this.config.explicitDetachMs);
+      } else {
+        setImmediate(() => { if (this.open) this.detach(task, 'explicit'); });
+      }
     }
     if (request.userDetach) {
       // Inherited pre-admission intent still passes prompt and index gates.

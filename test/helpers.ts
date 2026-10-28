@@ -23,7 +23,7 @@ export async function until(test: () => boolean, ms = 2000): Promise<void> {
 }
 export function runtimeHarness(overrides: Partial<Config> = {}) {
   const root = mkdtempSync(join(tmpdir(), 'pi-bg-test-'));
-  const config = validateConfig({ autoDetachMs: 15, shutdownGraceMs: 10, notifyDebounceMs: 5, ...overrides });
+  const config = validateConfig({ autoDetachMs: 15, explicitDetachMs: 0, shutdownGraceMs: 10, notifyDebounceMs: 5, ...overrides });
   const notifications: Snapshot[][] = [];
   const records = new Map<string, TaskRecord>();
   const sink: RuntimeSink = { notify: tasks => { notifications.push(tasks); }, index(change) {

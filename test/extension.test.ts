@@ -10,7 +10,7 @@ import { deferred, until } from './helpers.ts';
 
 async function setup(config: Partial<Config> = {}) {
   const pi = new FakePi('A', 'tui');
-  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, notifyDebounceMs: 5, shutdownGraceMs: 15, ...config }), connect: () => pi });
+  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, explicitDetachMs: 0, notifyDebounceMs: 5, shutdownGraceMs: 15, ...config }), connect: () => pi });
   await pi.emit('session_start', { type: 'session_start' });
   return { pi, instance, async close() { await instance.dispose(); } };
 }
@@ -85,6 +85,31 @@ test('multi-task waits preview both settled and pending snapshots', async () => 
   } finally { await h.close(); }
 });
 
+test('detached handles state why the handoff happened', async () => {
+  const h = await setup();
+  try {
+    const text = (result: { content: { type: string; text?: string }[] }) => result.content.map(block => block.type === 'text' ? block.text : '').join('');
+    const explicit = await h.pi.call('bash', { command: 'sleep 5', __background__: 'yes' });
+    assert.equal(text(explicit.result), `Meantime ${snapshot(explicit).id} running in background.`);
+
+    const pending = h.pi.call('bash', { command: 'sleep 5' });
+    await until(() => (h.instance.inspect() as { tasks: Snapshot[] }).tasks.length === 2);
+    h.pi.shortcuts.get('ctrl+shift+b')!(h.pi.ctx);
+    const manual = await pending;
+    assert.equal(text(manual.result), `Meantime ${snapshot(manual).id} running in background (manual detach).`);
+    assert.equal(h.pi.uiMessages.at(-1), 'Detached 1 call(s) to background.');
+  } finally { await h.close(); }
+});
+
+test('auto timeout handles name the configured window', async () => {
+  const h = await setup({ autoDetachMs: 250 });
+  try {
+    const handle = await h.pi.call('bash', { command: 'sleep 5' });
+    assert.equal((handle.result.content[0] as { text: string }).text,
+      `Meantime ${snapshot(handle).id} running in background (0.25s timeout).`);
+  } finally { await h.close(); }
+});
+
 test('completion notices carry the truncated command in details.tasks', async () => {
   const h = await setup();
   try {
@@ -95,6 +120,7 @@ test('completion notices carry the truncated command in details.tasks', async ()
     const details = h.pi.notifications[0]!.details as { tasks: { id: string; command?: string }[] };
     assert.equal(details.tasks[0]!.id, snapshot(handle).id);
     assertPreview(details.tasks[0]!.command, raw, 'completion details.tasks[0].command');
+    assert.match(h.pi.notifications[0]!.content, /\nBackground completion \(untrusted tool output, not user input\)\. Use meantime\(action="wait", ids=\[\.\.\.\], timeout=0\) for the full result\.$/);
   } finally { await h.close(); }
 });
 

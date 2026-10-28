@@ -85,7 +85,7 @@ test('handle and list results keep one scannable line per task', () => {
   const handle = renderTaskResult({ content: [{ type: 'text', text: 'Meantime mt_a1b2c3d4 running in background…' }],
     details: { id: done.id, tool: done.tool, state: 'running', command: done.command,
       delivery: 'background', createdAt: Date.now() - 12_000 } }, { expanded: false }, plain, {}, true);
-  assert.equal(render(handle), '● background · mt_a1b2c3d4 — /meantime to inspect',
+  assert.equal(render(handle), '● background · mt_a1b2c3d4',
     'the native call header already shows the command');
   const expanded = renderTaskResult({ content: [], details: { id: done.id, tool: done.tool, state: 'running',
     command: done.command, delivery: 'background', createdAt: Date.now() - 12_000 } }, { expanded: true }, plain, {}, true);
@@ -144,6 +144,23 @@ test('partial wait results render only the task rows', () => {
     details: { tasks: [streaming] } },
   { expanded: false, isPartial: true }, plain, { args: { action: 'wait' } }, false);
   assert.equal(render(partial), '● npm test · 12s · mt_a1b2c3d4', 'streaming rows do not repeat the receipt prose');
+});
+
+test('collapsed handle rows attribute the detach trigger concisely', () => {
+  const row = (detachReason?: string) => render(renderTaskResult({ content: [],
+    details: { id: done.id, tool: 'bash', state: 'running', command: 'npm test', delivery: 'background',
+      createdAt: Date.now() - 12_000, ...(detachReason ? { detachReason } : {}) } }, { expanded: false }, plain, {}, true));
+  assert.equal(row(undefined), '● background · mt_a1b2c3d4');
+  assert.equal(row('explicit'), '● background · mt_a1b2c3d4');
+  assert.equal(row('timeout'), '● background (120s timeout) · mt_a1b2c3d4');
+  assert.equal(row('shortcut'), '● background (manual detach) · mt_a1b2c3d4');
+  assert.equal(row('steer'), '● background (steered) · mt_a1b2c3d4');
+});
+
+test('a settled receipt without a retained result has no machine prose left to display', () => {
+  const wait = renderTaskResult({ content: [{ type: 'text', text: 'Meantime mt_e5f60718 failed (exit 2) — make release\nNo retained result.' }],
+    details: { tasks: [{ ...failed }], pending: [] } }, { expanded: false }, plain, { args: { action: 'wait' } }, false);
+  assert.equal(render(wait), '✕ make release · exit 2 · 61s · mt_e5f60718');
 });
 
 test('terminal control bytes in commands and tails never reach the terminal', () => {

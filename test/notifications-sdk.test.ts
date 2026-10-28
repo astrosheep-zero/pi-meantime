@@ -96,7 +96,7 @@ async function fixture(workCount = 1, hooks: Hooks = {}) {
           await hooks.front?.(ctx);
         }
       });
-      plugin = install(pi, { config: validateConfig({ autoDetachMs: 0, maxRunning: 32, notifyDebounceMs: 5000 }) });
+      plugin = install(pi, { config: validateConfig({ autoDetachMs: 0, explicitDetachMs: 0, maxRunning: 32, notifyDebounceMs: 5000 }) });
       pi.on('session_before_compact', event => hooks.beforeCompact?.(event));
       pi.on('before_agent_start', event => hooks.beforeStart?.(event));
       pi.on('turn_end', () => hooks.turnEnd?.());

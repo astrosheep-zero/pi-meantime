@@ -138,7 +138,7 @@ test('model cancel returns the single-wait stored result with native payload and
   pi.registerTool(basicTool('mcp__test__cancel', async (_id, _args, signal) => new Promise(resolve => {
     signal?.addEventListener('abort', () => resolve(native));
   })));
-  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, shutdownGraceMs: 100, notifyDebounceMs: 0 }), connect: () => pi });
+  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, explicitDetachMs: 0, shutdownGraceMs: 100, notifyDebounceMs: 0 }), connect: () => pi });
   try {
     await pi.emit('session_start', { type: 'session_start' });
     const handle = await pi.call('mcp__test__cancel', { __background__: 'yes' });
@@ -172,7 +172,7 @@ test('real SDK: a script-created task is cancelled directly without a completion
             structuredContent: { marker: 'CODEMODE_CANCELLED_NATIVE' },
           })));
         } });
-      instance = install(pi, { config: validateConfig({ include: ['fixture'], autoDetachMs: 0,
+      instance = install(pi, { config: validateConfig({ include: ['fixture'], autoDetachMs: 0, explicitDetachMs: 0,
         shutdownGraceMs: 100, notifyDebounceMs: 0 }) });
     }] });
   try {
@@ -216,7 +216,7 @@ async function commandHarness() {
   pi.registerTool(basicTool('mcp__test__one', async (_id, _args, signal) => {
     signal?.addEventListener('abort', () => { aborts++; }); return (await work.promise).result;
   }));
-  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, shutdownGraceMs: 10 }), connect: () => pi });
+  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, explicitDetachMs: 0, shutdownGraceMs: 10 }), connect: () => pi });
   await pi.emit('session_start', { type: 'session_start' }); await sleep(1); pi.refresh();
   assert.equal(pi.commands.get('bg'), pi.commands.get('meantime'));
   const command = (args: string) => pi.commands.get('meantime')!(args, pi.ctx);
@@ -230,11 +230,11 @@ test('/bg cancel requires one explicit id and never guesses among current sessio
     const b = await h.pi.call('mcp__test__one', { __background__: 'yes' });
     const idA = (a.result.details as Snapshot).id, idB = (b.result.details as Snapshot).id;
     const handleText = a.result.content[0]; assert.ok(handleText?.type === 'text');
-    assert.match(handleText.text, /In the TUI use \/meantime or \/meantime cancel/);
+    assert.match(handleText.text, /^Meantime mt_[a-f0-9]{8} running in background\.$/);
     await h.command(''); assert.match(h.pi.uiMessages.at(-1)!, /Current session tasks 2:/);
     assert.ok(h.pi.uiMessages.at(-1)!.includes(idA)); assert.ok(!h.pi.uiMessages.at(-1)!.includes('producerId'));
     assert.equal(h.pi.uiWidgets.size, 1); assert.equal(h.pi.notifications.length, 0);
-    await h.command('detach'); assert.match(h.pi.uiMessages.at(-1)!, /Detached 0 managed call/);
+    await h.command('detach'); assert.match(h.pi.uiMessages.at(-1)!, /Detached 0 call\(s\) to background/);
     await h.command('status'); assert.match(h.pi.uiMessages.at(-1)!, /Use \/meantime \[detach\|rescan\|cancel <id>\]/);
     await h.command('cancel');
     assert.match(h.pi.uiMessages.at(-1)!, /Usage: \/meantime cancel <id>.*No task was cancelled/s);
@@ -403,7 +403,7 @@ test('model batch cancel refuses an unknown id before cancelling valid producers
   pi.registerTool(basicTool('mcp__test__batch', (_id, _args, signal) => new Promise<Result>(resolve => {
     signal?.addEventListener('abort', () => { aborts++; resolve(ok(`native settled ${aborts}`).result); });
   })));
-  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, shutdownGraceMs: 100, notifyDebounceMs: 0 }), connect: () => pi });
+  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, explicitDetachMs: 0, shutdownGraceMs: 100, notifyDebounceMs: 0 }), connect: () => pi });
   try {
     await pi.emit('session_start', { type: 'session_start' });
     const first = await pi.call('mcp__test__batch', { __background__: 'yes' });

@@ -23,7 +23,7 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
     update = text => onUpdate?.(ok(text).result);
     return (await work.promise).result;
   } });
-  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, shutdownGraceMs: 1 }), connect: () => pi });
+  const instance = install(pi, { config: validateConfig({ autoDetachMs: 0, explicitDetachMs: 0, shutdownGraceMs: 1 }), connect: () => pi });
   type Factory = Parameters<Context['ui']['custom']>[0];
   type Component = Awaited<ReturnType<Factory>>;
   let panel: Component | undefined, renders = 0, closed = 0;
@@ -116,11 +116,11 @@ for (const mode of ['print', 'json'] as const) test(`${mode} bare command lists 
   const pi = new FakePi('A', mode);
   const work = deferred<Outcome>();
   pi.registerTool({ ...fixtureBash(root), async execute() { return (await work.promise).result; } });
-  const instance = install(pi, { config: validateConfig({}), connect: () => pi });
+  const instance = install(pi, { config: validateConfig({ explicitDetachMs: 0 }), connect: () => pi });
   try {
     await pi.emit('session_start', { type: 'session_start' });
     await pi.commands.get('meantime')!('', pi.ctx);
-    assert.equal(pi.uiMessages.at(-1), 'Latest background control:\nCurrent session tasks (none):\n\nCancel: /meantime cancel <id>; output: ask meantime(action="wait", ids=[...], timeout=0).\nManaged tools: 1; warnings: 0.');
+    assert.equal(pi.uiMessages.at(-1), 'Current session tasks (none):\n\nCancel: /meantime cancel <id>; output: ask meantime(action="wait", ids=[...], timeout=0).\nManaged tools: 1; warnings: 0.');
     pi.ctx = { ...pi.ctx, mode: 'rpc' };
     const ids: string[] = [];
     for (let i = 0; i < 4; i++) {

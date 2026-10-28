@@ -3,7 +3,7 @@ import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import type { TaskSummary } from "../shared/tasks.js";
-import { foldItem, foldTimeline, sortTasks } from "../shared/tasks.js";
+import { foldItem, foldTimeline, isActiveTask, sortTasks } from "../shared/tasks.js";
 import { Card } from "./card.js";
 import { meantimeTheme } from "./palette.js";
 import { dividerColor, secondaryColor, stateColor } from "./rows.js";
@@ -82,7 +82,7 @@ export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps)
           </Text>
         </View>
         {tasks.length === 0
-          ? <Text style={{ ...styles.muted, paddingHorizontal: 12, paddingVertical: 9 }}>Nothing on this agent's timeline</Text>
+          ? <Text style={{ ...styles.muted, paddingHorizontal: 12, paddingVertical: 9 }}>No background tasks</Text>
           : tasks.map((task, index) => (
             <View key={task.id} style={index > 0
               ? { borderTopWidth: 1, borderTopColor: dividerColor(colors) } : undefined}>
@@ -94,7 +94,9 @@ export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps)
       {hasOlder
         ? <Text style={styles.muted}>Only the latest {PAGE_LIMIT} timeline entries were scanned; older tasks may be missing.</Text>
         : null}
-      <Text style={styles.muted}>Ask the agent to cancel a task.</Text>
+      {tasks.some(isActiveTask)
+        ? <Text style={styles.muted}>Ask the agent to cancel a task.</Text>
+        : null}
     </ScrollView>
   );
 }

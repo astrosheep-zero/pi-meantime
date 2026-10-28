@@ -121,7 +121,7 @@ async function sdk(managed: boolean, maxRunning = 8) {
       // Capture delivery, not native finalization. All registration and session
       // capture still use the actual factory API, without a test connect port.
       plugin = install(pi as unknown as PiHost,
-        { config: validateConfig({ include: ['victim', 'shapes'], autoDetachMs: 0, maxRunning, shutdownGraceMs: 1, notifyDebounceMs: 1 }) });
+        { config: validateConfig({ include: ['victim', 'shapes'], autoDetachMs: 0, explicitDetachMs: 0, maxRunning, shutdownGraceMs: 1, notifyDebounceMs: 1 }) });
     }] : []), (pi: ExtensionAPI) => {
       // Registered AFTER meantime: admission must wait for this whole chain,
       // including late denial and mutations forbidden by the original schema.
@@ -199,7 +199,7 @@ test('real SDK: reload drains stale approved/blocked native prehooks behind one 
       });
       pi.on('tool_result', event => { posts.push({ generation: ownGeneration, id: event.toolCallId }); });
     }, pi => {
-      install(pi as unknown as PiHost, { config: validateConfig({ include: ['victim'], autoDetachMs: 0, shutdownGraceMs: 1 }) });
+      install(pi as unknown as PiHost, { config: validateConfig({ include: ['victim'], autoDetachMs: 0, explicitDetachMs: 0, shutdownGraceMs: 1 }) });
     }],
   });
   await loader.reload();
@@ -284,7 +284,7 @@ async function bashSdk(config: Record<string, unknown>, custom: boolean) {
   const loader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings,
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true,
     extensionFactories: [...(custom ? [(pi: ExtensionAPI) => { pi.registerTool(definition); }] : []),
-      (pi: ExtensionAPI) => { plugin = install(pi as unknown as PiHost, { config: validateConfig({ autoDetachMs: 0, ...config }) }); }],
+      (pi: ExtensionAPI) => { plugin = install(pi as unknown as PiHost, { config: validateConfig({ autoDetachMs: 0, explicitDetachMs: 0, ...config }) }); }],
   });
   await loader.reload();
   const { session } = await createAgentSession({ cwd: root, agentDir: root, resourceLoader: loader, settingsManager: settings,

@@ -9,6 +9,7 @@ export interface TaskDisplay {
   id: string; tool: string; state: string; command?: string;
   createdAt?: number; endedAt?: number; exitCode?: number;
   outputPath?: string; outputTail?: string; cancelRequestedAt?: number;
+  detachReason?: string;
   isError?: boolean;
 }
 export type RenderTheme = Pick<Theme, 'fg'>;
@@ -102,7 +103,7 @@ function resultBody(result: ResultLike): string[] {
     .map(block => clean(block.text!)).join('\n');
   return text
     .replace(/^Meantime mt_[a-f0-9]{8}[^\n]*$/gm, '')
-    .replace(/^Result is not available\. Do not relaunch the operation\.$/gm, '')
+    .replace(/^(?:No retained result\.|Result is not available\. Do not relaunch the operation\.)$/gm, '')
     .replace(/^Pending: .*$/gm, '')
     .replace(/^<\/?untrusted-output-tail[^>]*>$/gm, '')
     .split('\n')
@@ -117,8 +118,11 @@ export function renderTaskResult(result: ResultLike & { details?: unknown }, opt
   const { tasks, page } = resultTasks(details);
   if (isHandle && tasks[0]) {
     const task = tasks[0];
+    const reason = task.detachReason === 'timeout' ? ' (120s timeout)'
+      : task.detachReason === 'shortcut' ? ' (manual detach)'
+        : task.detachReason === 'steer' ? ' (steered)' : '';
     // The native call header already renders the command; don't repeat it here.
-    if (!options.expanded) return new Text(`${stateGlyph(theme, task.state)} ${theme.fg('dim', `background · ${task.id} — /meantime to inspect`)}`, 0, 0);
+    if (!options.expanded) return new Text(`${stateGlyph(theme, task.state)} ${theme.fg('dim', `background${reason} · ${task.id}`)}`, 0, 0);
     return new Text(detailBlock(task, theme, undefined, 0).join('\n'), 0, 0);
   }
   const isWait = isRecord(context.args) && context.args.action === 'wait';

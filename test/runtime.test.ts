@@ -77,6 +77,31 @@ test('explicit background returns before producer, notification waits for finali
     h.runtime.published('c1'); h.runtime.flushNotifications(); assert.equal(h.notifications.length, 1);
   } finally { work.resolve(ok()); await h.close(); }
 });
+test('explicit background settles within explicitDetachMs as a foreground result', async () => {
+  const h = runtimeHarness({ autoDetachMs: 0, explicitDetachMs: 25 });
+  try {
+    const view = await h.runtime.run({ tool: 'fast', kind: 'tool', callId: 'c1', mode: 'yes', canDetach: true,
+      execute: async () => ok('fast') });
+    assert.equal(view.kind, 'result');
+    if (view.kind === 'result') assert.equal(view.result.content.map(block => block.type === 'text' ? block.text : '').join(''), 'fast');
+    assert.equal(h.records.size, 0, 'a settled call is never indexed as a background task');
+    await sleep(40);
+    assert.equal(h.notifications.length, 0, 'a foreground result never produces a completion notice');
+    assert.equal(h.runtime.list().length, 0);
+  } finally { await h.close(); }
+});
+
+test('explicit background still running after explicitDetachMs detaches with explicit attribution', async () => {
+  const h = runtimeHarness({ autoDetachMs: 0, explicitDetachMs: 20 }); const work = deferred<Outcome>();
+  try {
+    const view = await h.runtime.run({ tool: 'slow', kind: 'tool', callId: 'c1', mode: 'yes', canDetach: true, execute: () => work.promise });
+    assert.equal(view.kind, 'handle');
+    assert.equal(view.task.detachReason, 'explicit');
+    assert.equal(h.records.size, 1, 'the late handoff is indexed once');
+    work.resolve(ok()); await until(() => h.runtime.get(view.task.id).state === 'completed');
+    h.runtime.published('c1'); await until(() => h.notifications.length === 1);
+  } finally { work.resolve(ok()); await h.close(); }
+});
 test('auto timeout detaches, never aborts the producer', async () => {
   const h = runtimeHarness(); const work = deferred<Outcome>(); let signal: AbortSignal | undefined;
   try {

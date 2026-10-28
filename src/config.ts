@@ -7,6 +7,7 @@ export interface Config {
   include: string[];
   exclude: string[];
   autoDetachMs: number;
+  explicitDetachMs: number;
   maxRunning: number;
   maxRetained: number;
   shutdownGraceMs: number;
@@ -17,6 +18,7 @@ export const DEFAULT_CONFIG: Config = {
   include: ['*'],
   exclude: [],
   autoDetachMs: 120_000,
+  explicitDetachMs: 1000,
   maxRunning: 4,
   maxRetained: 128,
   shutdownGraceMs: 1000,
@@ -31,7 +33,7 @@ export function validateConfig(raw: unknown): Config {
     if (!Array.isArray(config[key]) || !config[key].every(v => typeof v === 'string' && v.length > 0)) throw new Error(`${key} must be an array of patterns`);
   }
   const bounds: [keyof Config, number, number][] = [
-    ['autoDetachMs', 0, 2_147_483_647], ['maxRunning', 1, 32], ['maxRetained', 1, 512],
+    ['autoDetachMs', 0, 2_147_483_647], ['explicitDetachMs', 0, 60_000], ['maxRunning', 1, 32], ['maxRetained', 1, 512],
     ['shutdownGraceMs', 0, 10_000], ['notifyDebounceMs', 0, 5000],
   ];
   for (const [key, min, max] of bounds) {
