@@ -105,7 +105,7 @@ function resultBody(result: ResultLike): string[] {
     .replace(/^Meantime mt_[a-f0-9]{8}[^\n]*$/gm, '')
     .replace(/^(?:No retained result\.|Result is not available\. Do not relaunch the operation\.)$/gm, '')
     .replace(/^Pending: .*$/gm, '')
-    .replace(/^<\/?untrusted-output-tail[^>]*>$/gm, '')
+    .replace(/^<\/?untrusted-output[^>]*>$/gm, '')
     .split('\n')
     .filter(line => line.trim().length > 0);
 }

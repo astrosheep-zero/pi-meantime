@@ -41,7 +41,7 @@ test('completion card answers what finished, how it ended and what it produced',
   assert.match(collapsed, /✓ npm test · exit 0 · 12s · mt_a1b2c3d4/);
   assert.match(collapsed, /✓ 42 passing/, 'a single-task card shows a tail glimpse');
   assert.doesNotMatch(collapsed, /Automated background completion/, 'model-directed boilerplate is not displayed');
-  assert.doesNotMatch(collapsed, /untrusted-output-tail/);
+  assert.doesNotMatch(collapsed, /untrusted-output/);
   assert.doesNotMatch(collapsed, /Output:/, 'collapsed card omits the output path');
 
   const expanded = render(renderCompletion(message, { expanded: true }, plain));
@@ -129,7 +129,7 @@ test('multi-task waits strip every machine receipt, directive and untrusted fenc
   const wait = renderTaskResult({ content: [
     { type: 'text', text: 'Meantime mt_a1b2c3d4 completed (exit 0) — npm test\n✓ 42 passing' },
     { type: 'text', text: 'Meantime mt_e5f60718 failed (exit 2) — make release\nResult is not available. Do not relaunch the operation.' },
-    { type: 'text', text: '\n<untrusted-output-tail>\nFINAL\n</untrusted-output-tail>\nPending: (none)' },
+    { type: 'text', text: '\n<untrusted-output>\nFINAL\n</untrusted-output>\nPending: (none)' },
   ], details: { tasks: [{ ...done }, { ...failed }, { ...cancelled }], pending: [] } },
   { expanded: false }, plain, { args: { action: 'wait' } }, false);
   const text = render(wait);

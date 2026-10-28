@@ -150,7 +150,7 @@ test('detached finalized results feed wait, completion tail and native renderer 
     assert.equal(task.delivery, 'background'); assert.equal(posts, 0, 'handle bypasses original result hooks');
     assert.equal((await h.pi.call('local_fast', {})).isError, false);
     work.resolve(ok('SECRET').result); await until(() => h.pi.notifications.length === 1);
-    assert.match(h.pi.notifications[0]!.content, /<untrusted-output-tail>\nFINAL\n/);
+    assert.match(h.pi.notifications[0]!.content, /<untrusted-output>\nFINAL\n/);
     assert.doesNotMatch(JSON.stringify(h.pi.entries) + JSON.stringify(h.pi.notifications), /SECRET/);
     const collected = await h.pi.call('meantime', { action: 'wait', ids: [task.id.slice(3, 9)], timeout: 0 });
     assert.equal(collected.isError, false); assert.match(JSON.stringify(collected.result), /FINAL/);
@@ -499,7 +499,7 @@ test('real shell fixture runs, can detach without a second spawn, and result is 
     assert.equal(preview, task.command);
     await until(() => h.pi.notifications.length === 1);
     assert.match(h.pi.notifications[0]!.content, new RegExp(`Meantime ${task.id} completed`));
-    assert.match(h.pi.notifications[0]!.content, /<untrusted-output-tail>\nSHELL_DONE/);
+    assert.match(h.pi.notifications[0]!.content, /<untrusted-output>\nSHELL_DONE/);
     const result = await h.pi.call('meantime', { action: 'wait', timeout: 0, ids: [task.id ]});
     assert.equal((result.result.details as { task: Snapshot }).task.command, preview);
     assert.match(JSON.stringify(result.result), /SHELL_DONE/);

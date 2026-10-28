@@ -75,7 +75,7 @@ function outputTail(text: string): string {
   let start = Math.max(0, bytes.length - TAIL_BYTES);
   while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start++;
   const tail = bytes.subarray(start).toString('utf8');
-  return `\n<untrusted-output-tail${start > 0 ? ' truncated' : ''}>\n${tail}\n</untrusted-output-tail>`;
+  return `\n<untrusted-output${start > 0 ? ' truncated' : ''}>\n${tail}\n</untrusted-output>`;
 }
 function receipt(task: Snapshot): string {
   // The command identifies the task for both the model and timeline cards;
@@ -420,7 +420,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       if (!live || runtime !== created || currentOwner !== boundOwner) throw new Error('Stale notification target');
       const entries = tasks.map(t => {
         const tail = outputTail(created.tasks.get(t.id)?.outputTail ?? '');
-        const hasMore = tail.includes('<untrusted-output-tail truncated>') || Boolean(t.outputPath)
+        const hasMore = tail.includes('<untrusted-output truncated>') || Boolean(t.outputPath)
           || Boolean(created.tasks.get(t.id)?.result?.content.some(b => b.type !== 'text'));
         return { text: `${receipt(t)}${tail}`, hasMore };
       });
@@ -435,7 +435,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
               ...(t.createdAt !== undefined ? { createdAt: t.createdAt } : {}),
               ...(t.endedAt !== undefined ? { endedAt: t.endedAt } : {}),
               // Untrusted output tail for display (timeline detail modal); the
-              // same bytes appear in the prose receipt's untrusted-output-tail.
+              // same bytes appear in the prose receipt's untrusted-output.
               ...(created.tasks.get(t.id)?.outputTail ? { outputTail: created.tasks.get(t.id)!.outputTail } : {}) })) },
         };
     });
