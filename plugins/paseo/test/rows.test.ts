@@ -6,7 +6,7 @@ import { build } from "esbuild";
 // Resolve the client's .js imports as TypeScript, as the plugin bundler does.
 const bundle = await build({ entryPoints: [new URL("../client/rows.ts", import.meta.url).pathname],
   bundle: true, write: false, platform: "node", format: "esm" });
-const { formatElapsed, completionResult, stateLabel, stateColor, doneColor, taskStateLabel, secondaryColor, frameColor, readableColor } =
+const { formatElapsed, stateLabel, stateColor, doneColor, taskStateLabel, secondaryColor, frameColor, readableColor } =
   await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0]!.text).toString("base64")}`);
 
 // Cards render through react-native-web so the markup the timeline receives —
@@ -14,12 +14,11 @@ const { formatElapsed, completionResult, stateLabel, stateColor, doneColor, task
 const surfaces = await build({ stdin: { contents: `
 import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
-import {TaskCommand, TaskDetailInline, TaskGlyph, TaskLine, TaskTable} from './client/task-view.tsx';
+import {TaskCommand, TaskDetailInline, TaskLine, TaskTable} from './client/task-view.tsx';
 import {MeantimeTaskCard} from './client/task-card.tsx';
 const theme = {colors:{surface0:'#fff',surface1:'#f4f5f4',foreground:'#111',foregroundMuted:'#777',border:'#ccc',statusWarning:'#b7791f',statusDanger:'#c2412d'}};
 const layout = {compact:true,platform:'web'};
 const draw = (element) => renderToStaticMarkup(element);
-export const glyph = (state) => draw(<TaskGlyph task={{state}} colors={theme.colors}/>);
 export const row = (task) => draw(<TaskLine task={task} colors={theme.colors} layout={layout}/>);
 export const detail = (task) => draw(<TaskDetailInline task={task} colors={theme.colors} layout={layout}/>);
 export const openCommand = (task) => draw(<TaskCommand task={task} colors={theme.colors} layout={layout} open/>);
@@ -33,7 +32,6 @@ export const emptyWait = () => draw(<MeantimeTaskCard item={{data:{source:'meant
   }}],
   define: { "process.env.NODE_ENV": '"production"' } });
 const ui = { exports: {} as {
-  glyph: (state: string) => string;
   row: (task: unknown) => string;
   detail: (task: unknown) => string;
   openCommand: (task: unknown) => string;
@@ -44,7 +42,7 @@ const ui = { exports: {} as {
 // Bundled CJS keeps React's node builtins available without writing build artifacts.
 const { createRequire } = await import("node:module");
 new Function("require", "module", "exports", surfaces.outputFiles[0]!.text)(createRequire(import.meta.url), ui, ui.exports);
-const { glyph, row, detail, openCommand, openRow, table, emptyWait } = ui.exports;
+const { row, detail, openCommand, openRow, table, emptyWait } = ui.exports;
 
 test("elapsed is a fixed snapshot, never inferred from a start alone", () => {
   const task = { id: "mt_a1b2c3d4", state: "running", createdAt: 1000 };
@@ -92,43 +90,30 @@ test("washed-out host tokens gain contrast without using border or a fixed palet
   assert.equal(readableColor("#e9b45a", dark), "#e9b45a");
 });
 
-test("a collapsed row flattens preserved newlines while an open row keeps them", () => {
+test("a collapsed row flattens newlines while the drawer always carries the full command", () => {
   const task = { id: "mt_a1b2c3d4", state: "running", command: "npm test\n  --  --watch" };
   const collapsed = row(task);
   assert.match(collapsed, /npm<span[^>]*> test -- --watch<\/span>/);
   assert.doesNotMatch(collapsed, /npm test\n/);
-  // Once open, the header itself unfolds the command as written; the drawer
-  // no longer repeats it in a nested block.
   const open = openCommand(task);
-  assert.match(open, /npm<span[^>]*> test\n  --  --watch<\/span>/);
-  assert.doesNotMatch(detail(task), /npm test\n/);
+  assert.match(open, /\$ <\/span>npm<span[^>]*> test\n  --  --watch<\/span>/);
+  assert.match(detail(task), /npm<span[^>]*> test\n  --  --watch<\/span>/);
+  const long = "npm run verify -- " + "x".repeat(160);
+  assert.match(detail({ ...task, command: long }), /run verify -- x{160}/);
 });
 
-test("an open row unfolds the command in place and pins status to the first line", () => {
+test("ordinary status is already carried by the lamp; only abnormal outcomes add text", () => {
+  for (const state of ["running", "started", "waiting", "queued"]) assert.doesNotMatch(row({ id: "mt_a1b2c3d4", state, command: "npm test" }), />running<|>waiting<|>queued<|>started</);
+  assert.doesNotMatch(row({ id: "mt_a1b2c3d4", state: "completed", exitCode: 0, command: "npm test" }), />done</);
+  assert.match(row({ id: "mt_a1b2c3d4", state: "completed", exitCode: 2, command: "npm test" }), />exit 2</);
+  assert.match(row({ id: "mt_a1b2c3d4", state: "cancelled", command: "npm test" }), />cancelled</);
+});
+
+test("an open row keeps its one-line header and unfolds the full command in the drawer", () => {
   const html = openRow({ id: "mt_a1b2c3d4", state: "running", command: "npm test\n  --  --watch", progress: "2/5" });
-  assert.match(html, /align-items:flex-start/);
-  assert.match(html, /height:18px;flex-direction:row;align-items:center;gap:8px/);
-  assert.match(html, /npm<span[^>]*> test\n  --  --watch<\/span>/);
-  assert.doesNotMatch(html, />Command</);
-});
-
-test("live dots breathe while parked rings hold steady ink", async () => {
-  for (const state of ["running", "started"]) {
-    assert.match(glyph(state), /opacity:/, `${state} dot carries the pulse value`);
-  }
-  for (const state of ["waiting", "queued", "cancel_requested"]) {
-    const ring = glyph(state);
-    assert.doesNotMatch(ring, /opacity:/, `${state} ring must not pulse`);
-    assert.match(ring, /border-top-width:1\.5px/, `${state} is a hollow ring`);
-  }
-  // Node cannot run effects, so the shape of the cycle is pinned from source:
-  // two legs at 1000ms each, one loop, no sawtooth snap back to full ink.
-  const source = await readFile(new URL("../client/task-view.tsx", import.meta.url), "utf8");
-  assert.match(source, /sequence\(\[leg\(target, 0\.35\), leg\(target, 1\)\]\)/);
-  assert.match(source, /const BREATHE_MS = 1000;/);
-  assert.match(source, /loop\(cycle\)/);
-  assert.match(source, /EASING\.inOut\(EASING\.sin\)/);
-  assert.doesNotMatch(source, /toValue: 0\.4/);
+  assert.match(html, /npm<span[^>]*> test -- --watch<\/span>/);
+  assert.match(html, /\$ <\/span>npm<span[^>]*> test\n  --  --watch<\/span>/);
+  assert.match(html, /2\/5/);
 });
 
 test("the drawer shows output directly and keeps a tail-only fallback", () => {
@@ -137,7 +122,7 @@ test("the drawer shows output directly and keeps a tail-only fallback", () => {
   assert.match(tail, /108 passing/);
   assert.doesNotMatch(tail, /Output tail|>Output</);
   const full = detail({ ...task, output: "start\n108 passing\n" });
-  assert.match(full, /start\n108 passing\n/);
+  assert.match(full, /start\n108 passing/);
 });
 
 test("the drawer caps direct oversized output as well as projected timeline data", () => {
@@ -147,27 +132,4 @@ test("the drawer caps direct oversized output as well as projected timeline data
   assert.match(drawer, /END/);
   assert.match(drawer, /middle is hidden/);
   assert.ok(drawer.length < 40_000);
-});
-
-test("cards and rows drop the jump triggers and align notes in the command column", () => {
-  const html = table([{ id: "mt_a1b2c3d4", state: "running", command: "npm test", progress: "2/5" }]);
-  assert.doesNotMatch(html, /overflow/);
-  assert.doesNotMatch(html, /margin-top:4px/);
-  assert.doesNotMatch(html, /padding-left:34px/);
-  assert.match(html, /padding-right:12px;padding-left:12px;padding-top:9px;padding-bottom:9px/);
-  // Notes share the command's column, so they inherit its left edge.
-  assert.match(html, /flex:1;min-width:0px;gap:3px">[\s\S]*?2\/5/);
-  const empty = emptyWait();
-  assert.doesNotMatch(empty, /margin-top:4px/);
-  assert.match(empty, /padding-right:12px;padding-left:12px;padding-top:9px;padding-bottom:9px/);
-});
-
-test("completion receipts never invent an exit code", () => {
-  assert.equal(completionResult({ state: "completed" }), "done");
-  assert.equal(completionResult({ state: "failed" }), "failed");
-  assert.equal(completionResult({ state: "completed", exitCode: 0 }), "done");
-  assert.equal(completionResult({ state: "completed", exitCode: 2 }), "done · exit 2");
-  assert.equal(completionResult({ state: "failed", exitCode: 1 }), "failed · exit 1");
-  assert.equal(completionResult({ state: "cancelled" }), "cancelled");
-  assert.equal(completionResult({ state: "outcome_unknown" }), "status unknown");
 });

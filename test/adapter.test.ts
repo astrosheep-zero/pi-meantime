@@ -491,8 +491,8 @@ test('real shell fixture runs, can detach without a second spawn, and result is 
     const command = `node -e 'setTimeout(()=>console.log("SHELL_DONE"),80)'\n# ${'long comment '.repeat(20)}`;
     const out = await h.pi.call('bash', { command, __background__: 'yes' });
     const task = snapshot(out); assert.equal(task.state, 'running');
-    // Details carry a display preview; the original command stays in runtime state.
-    assert.ok(task.command!.endsWith('…')); assert.ok(task.command!.includes('\n'), 'multi-line preview keeps its line breaks');
+    // Structured UI data preserves the exact command; prose stays bounded.
+    assert.equal(task.command, command);
     assert.equal((h.instance.inspect() as { tasks: Snapshot[] }).tasks.find(t => t.id === task.id)!.command, command);
     const list = await h.pi.call('meantime', { action: 'list' });
     const preview = (list.result.details as { tasks: Snapshot[] }).tasks[0]!.command!;

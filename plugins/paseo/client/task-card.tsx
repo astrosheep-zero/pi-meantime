@@ -1,45 +1,70 @@
-import { usePaseo, type PluginTimelineItemProps } from "@getpaseo/plugin/client";
-import { useEffect, useMemo, useState } from "react";
+import type { PluginTimelineItemProps } from "@getpaseo/plugin/client";
+import { useMemo } from "react";
 import { Text, View } from "react-native";
-import type { MeantimeCardData, TaskSummary } from "../shared/tasks.js";
-import { foldItem, resolveWaitTask } from "../shared/tasks.js";
+import type { MeantimeCardData } from "../shared/tasks.js";
+import { isActiveTask } from "../shared/tasks.js";
 import { Card } from "./card.js";
 import { meantimeTheme } from "./palette.js";
-import { CODE_FONT_SIZE, CODE_LINE_HEIGHT, completionResult, monoFont, secondaryColor, stateText } from "./rows.js";
-import { TaskGlyph, TaskTable } from "./task-view.js";
+import { CODE_FONT_SIZE, CODE_LINE_HEIGHT, dividerColor, monoFont, secondaryColor, stateColor } from "./rows.js";
+import { TaskGlyph, TaskLine, TaskTable } from "./task-view.js";
+import { Icon } from "@getpaseo/plugin/client/react-native";
 
-const RESOLUTION_PAGE_LIMIT = 500;
-
-/** The wait outcome is the row's own status: "waiting", "done", "still
- * running". No second-line prose narrating what the wait did. */
-function waitStatus(task: TaskSummary): string {
-  return task.state === "running" ? "still running" : completionResult(task);
-}
 
 export function MeantimeTaskCard(props: PluginTimelineItemProps<MeantimeCardData>) {
   const { item, theme, layout } = props;
   const colors = useMemo(() => meantimeTheme(theme).colors, [theme]);
   const data = item.data;
+  if (data.pending) return <WaitSkeleton colors={colors} layout={layout} />;
+  if (data.error !== undefined) return (
+    <Card colors={colors}>
+      <View style={{ paddingHorizontal: 12, paddingVertical: 9, gap: 4 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+          <TaskGlyph task={{ state: "failed" }} colors={colors} />
+          <Text numberOfLines={1} style={{ flex: 1, color: colors.foreground, fontFamily: monoFont(layout.platform),
+            fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>{data.call ?? "meantime"}</Text>
+          <Text style={{ color: secondaryColor(colors), fontSize: 12, lineHeight: 16 }}>failed</Text>
+        </View>
+        <Text selectable style={{ color: stateColor("failed", colors), fontSize: 12, lineHeight: 17 }}>{data.error}</Text>
+      </View>
+    </Card>
+  );
   if (data.source === "meantime" && data.action === "wait" && data.tasks.length === 0) return (
     <Card colors={colors}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 12, paddingVertical: 9 }}>
         <TaskGlyph task={{ state: "waiting" }} colors={colors} />
         <Text style={{ flex: 1, color: colors.foreground, fontFamily: monoFont(layout.platform),
           fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>All pending tasks</Text>
-        <Text style={{ color: secondaryColor(colors), fontSize: 12, lineHeight: 16 }}>{stateText("waiting")}</Text>
       </View>
     </Card>
   );
-  if (data.source === "meantime" && data.action === "list" && data.tasks.length === 0) return (
-    <Card colors={colors}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 12, paddingVertical: 9 }}>
-        <TaskGlyph task={{ state: "completed" }} colors={colors} />
-        <Text style={{ flex: 1, color: colors.foreground, fontFamily: monoFont(layout.platform),
-          fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>No background tasks</Text>
-        <Text style={{ color: secondaryColor(colors), fontSize: 12, lineHeight: 16 }}>{stateText("completed")}</Text>
+  if (data.source === "meantime" && data.action === "list") {
+    const count = data.total ?? data.tasks.length;
+    const divider = dividerColor(colors);
+    const muted = secondaryColor(colors);
+    return (
+      <View style={{ gap: 4 }}>
+        <Card colors={colors}>
+          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12,
+            paddingHorizontal: 12, paddingVertical: 8,
+            borderBottomWidth: data.tasks.length > 0 ? 1 : 0, borderBottomColor: divider }}>
+            <Text style={{ color: muted, fontSize: 12, lineHeight: 16, fontWeight: "500" }}>
+              {data.tasks.length === 0 ? "No background tasks" : "Background tasks"}
+            </Text>
+            <Text style={{ color: muted, fontSize: 12, lineHeight: 16 }}>
+              {data.tasks.length === 0 ? "none" : `${count} task${count === 1 ? "" : "s"}`}
+            </Text>
+          </View>
+          {data.tasks.map((task, index) => (
+            <View key={task.id} style={index > 0 ? { borderTopWidth: 1, borderTopColor: divider } : undefined}>
+              <TaskLine task={task} colors={colors} layout={layout} showId muted={!isActiveTask(task)} last={index === data.tasks.length - 1} />
+            </View>
+          ))}
+        </Card>
+        {data.moreOffset !== undefined ? <Text style={{ color: muted, fontSize: 10,
+          fontFamily: monoFont(layout.platform) }}>More tasks not shown (offset {data.moreOffset})</Text> : null}
       </View>
-    </Card>
-  );
+    );
+  }
   // Even a snapshot-backed launch handle is historical evidence of starting,
   // not a continuing observation of a running process.
   const tasks = data.source === "handle"
@@ -47,46 +72,23 @@ export function MeantimeTaskCard(props: PluginTimelineItemProps<MeantimeCardData
     : data.tasks;
   return (
     <View style={{ gap: 4 }}>
-      <TaskTable tasks={tasks} colors={colors} layout={layout}
-        showId={data.source === "meantime" && data.action === "list"}
-        status={data.source === "completion" || data.source === "meantime" && data.action === "list"
-          ? completionResult
-          : data.source === "meantime" && data.action === "wait" ? waitStatus : undefined} />
+      <TaskTable tasks={tasks} colors={colors} layout={layout} />
       {data.moreOffset !== undefined ? <Text style={{ color: secondaryColor(colors), fontSize: 10,
         fontFamily: monoFont(layout.platform) }}>More tasks not shown (offset {data.moreOffset})</Text> : null}
     </View>
   );
 }
 
-/**
- * Timeline transformer only sees one item. A running `meantime wait` carries
- * just the target id, so resolve that id against the agent timeline (the same
- * folding the board uses) to show the command being awaited instead of a bare
- * mt_xxxxxxxx. Pure card rendering stays in MeantimeTaskCard for node tests.
- */
-export function ConnectedMeantimeTaskCard(props: PluginTimelineItemProps<MeantimeCardData>) {
-  const paseo = usePaseo();
-  const { agentId, item } = props;
-  const data = item.data;
-  const [resolved, setResolved] = useState<ReadonlyMap<string, TaskSummary>>(new Map());
-  const unresolvedWait = data.source === "meantime" && data.action === "wait"
-    ? data.tasks.filter(task => task.command === undefined).map(task => task.id)
-    : [];
-  const waitKey = unresolvedWait.join(",");
-
-  useEffect(() => {
-    if (unresolvedWait.length === 0) return;
-    let cancelled = false;
-    paseo.agents.ref(agentId).timeline.refetch({ direction: "tail", limit: RESOLUTION_PAGE_LIMIT }).then(page => {
-      if (cancelled) return;
-      const byId = new Map<string, TaskSummary>();
-      for (const entry of page.entries) foldItem(byId, entry.item);
-      setResolved(byId);
-    }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [agentId, paseo, waitKey]);
-
-  if (unresolvedWait.length === 0) return <MeantimeTaskCard {...props} />;
-  const tasks = data.tasks.map(task => resolveWaitTask(task, resolved));
-  return <MeantimeTaskCard {...props} item={{ ...item, data: { ...data, tasks } }} />;
+/** Before the first Pi snapshot, reserve exactly the future command row's shape.
+ * No tool name or task id masquerading as a command. */
+function WaitSkeleton({ colors, layout }: { colors: ReturnType<typeof meantimeTheme>["colors"]; layout: PluginTimelineItemProps["layout"] }) {
+  return <Card colors={colors}>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 12, paddingVertical: 9 }}>
+      <TaskGlyph task={{ state: "waiting" }} colors={colors} />
+      <View style={{ flex: 1, height: CODE_LINE_HEIGHT, justifyContent: "center" }}>
+        <View style={{ width: "65%", maxWidth: 240, height: 8, borderRadius: 2, backgroundColor: dividerColor(colors) }} />
+      </View>
+      <Icon name="ChevronDown" size={15} color={secondaryColor(colors)} />
+    </View>
+  </Card>;
 }

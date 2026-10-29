@@ -92,10 +92,11 @@ test('handle and list results keep one scannable line per task', () => {
   assert.match(render(expanded), /● npm test · \d+s · mt_a1b2c3d4\n +bash/, 'expanding still reveals the command');
 
   const list = renderTaskResult({ content: [{ type: 'text', text: 'Current session tasks…' }],
-    details: { tasks: [done, failed], pending: [], next_offset: 40 } }, { expanded: false }, plain, {}, false);
+    details: { tasks: [{ ...done, notification: 'observed' }, { ...failed, notification: 'delivered' }], total: 10, pending: [], next_offset: 40 } }, { expanded: false }, recordingTheme(), {}, false);
   const text = render(list);
-  assert.match(text, /✓ npm test · exit 0 · 12s · mt_a1b2c3d4/);
-  assert.match(text, /✕ make release · exit 2 · 61s · mt_e5f60718/);
+  assert.match(text, /\[muted\]Background tasks \(10\)/);
+  assert.match(text, /\[muted\]✓ npm test\[dim\] · exit 0 · 12s · observed · mt_a1b2c3d4/);
+  assert.match(text, /\[muted\]✕ make release\[dim\] · exit 2 · 61s · delivered · mt_e5f60718/);
   assert.match(text, /More: offset=40/);
 });
 

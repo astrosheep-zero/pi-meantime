@@ -33,46 +33,48 @@ new Function("require", "module", "exports", bundle.outputFiles[0]!.text)(create
 const render = module.exports.render!;
 const renderLine = module.exports.renderLine!;
 
-test("wait rows show the observed status directly, without wait prose", () => {
-  const base = { source: "meantime", action: "wait" };
-  for (const [task, status] of [
-    [{ id: "mt_a1b2c3d4", state: "waiting", command: "sleep 60" }, />waiting</],
-    [{ id: "mt_a1b2c3d4", state: "running", command: "sleep 60" }, />still running</],
-    [{ id: "mt_a1b2c3d4", state: "completed", command: "sleep 60", exitCode: 0 }, />done</],
-    [{ id: "mt_a1b2c3d4", state: "failed", command: "sleep 60", exitCode: 2 }, />failed · exit 2</],
-  ] as const) {
-    const html = render({ ...base, tasks: [task] });
-    assert.match(html, status);
+test("wait rows let the lamp carry ordinary status and spell out failures", () => {
+  for (const task of [
+    { id: "mt_a1b2c3d4", state: "waiting", command: "sleep 60" },
+    { id: "mt_a1b2c3d4", state: "running", command: "sleep 60" },
+    { id: "mt_a1b2c3d4", state: "completed", command: "sleep 60", exitCode: 0 },
+  ]) {
+    const html = render({ source: "meantime", action: "wait", tasks: [task] });
     assert.match(html, /sleep.*60/);
-    assert.doesNotMatch(html, /Wait ended|Finished waiting|Still running when wait ended|steer|[\u3400-\u9fff]/);
+    assert.doesNotMatch(html, /still running|>waiting<|>done</);
   }
+  assert.match(render({ source: "meantime", action: "wait", tasks: [
+    { id: "mt_a1b2c3d4", state: "failed", command: "sleep 60", exitCode: 2 },
+  ] }), />exit 2</);
 });
 
-test("wait-all renders a waiting card without inventing task identities", () => {
+test("wait-all renders a waiting lamp without inventing task identities", () => {
   const html = render({ source: "meantime", action: "wait", tasks: [] });
   assert.match(html, /All pending tasks/);
-  assert.match(html, />waiting</);
-  assert.doesNotMatch(html, /mt_|No output|Finished waiting/);
+  assert.doesNotMatch(html, /mt_|No output|Finished waiting|>waiting</);
 });
 
-test("a completed empty list renders a no-tasks card", () => {
+test("a completed empty list renders a no-tasks card without fake completion status", () => {
   const html = render({ source: "meantime", action: "list", tasks: [] });
   assert.match(html, /No background tasks/);
-  assert.match(html, />done</);
-  assert.doesNotMatch(html, /mt_|All pending tasks|No output/);
+  assert.match(html, />none</);
+  assert.doesNotMatch(html, />done<|mt_|All pending tasks|No output/);
 });
 
-test("list cards expose short ids and completion results", () => {
-  const html = render({ source: "meantime", action: "list", tasks: [
+test("list cards include an inventory header, expose short ids, and surface observed/delivered history", () => {
+  const html = render({ source: "meantime", action: "list", total: 10, tasks: [
     { id: "mt_a1b2c3d4", state: "failed", command: "make test", exitCode: 3, outputTail: "boom" },
-    { id: "mt_deadbeef", state: "completed", command: "npm test", exitCode: 0 },
+    { id: "mt_deadbeef", state: "completed", command: "npm test", exitCode: 0, notification: "observed" },
+    { id: "mt_feedface", state: "completed", command: "npm run lint", exitCode: 0, notification: "delivered" },
   ] });
+  assert.match(html, />Background tasks</);
+  assert.match(html, />10 tasks</);
   assert.match(html, /aria-label="mt_a1b2c3d4"/);
   assert.match(html, /aria-label="mt_deadbeef"/);
   assert.match(html, />a1b2</);
   assert.match(html, />dead</);
-  assert.match(html, />failed · exit 3</);
-  assert.match(html, />done</);
+  assert.match(html, />exit 3</);
+  assert.doesNotMatch(html, />observed<|>delivered</);
   assert.doesNotMatch(html, /Output tail|Output file|boom|All pending tasks/);
 });
 
@@ -83,13 +85,13 @@ test("batch wait renders every target", () => {
   ] });
   assert.match(html, /sleep.*60/);
   assert.match(html, /dead/);
-  assert.equal(html.match(/>waiting</g)?.length, 2);
+  assert.doesNotMatch(html, />waiting</);
 });
 
-test("actual handle card says started even if launch snapshot said running", () => {
+test("a launch handle carries a running lamp without redundant status prose", () => {
   const html = render({ source: "handle", tasks: [{ id: "mt_a1b2c3d4", state: "running", command: "npm test", createdAt: 1000 }] });
-  assert.match(html, />started</);
-  assert.doesNotMatch(html, /RUNNING|1 R|seen |LIVE|00:01|meantime|snapshots|mt_a1b2c3d4/);
+  assert.match(html, /aria-label="STARTED"/);
+  assert.doesNotMatch(html, /RUNNING|1 R|seen |LIVE|00:01|meantime|snapshots|mt_a1b2c3d4|>started</);
   assert.match(html, /npm/);
 });
 
@@ -108,8 +110,8 @@ test("timeline tables lead with commands and keep bookkeeping out of the way", (
   ] });
   assert.match(html, /aria-label="COMPLETED · exit 0"/);
   assert.match(html, /aria-label="FAILED · exit 1"/);
-  assert.match(html, />done<\/div>/);
-  assert.match(html, />failed<\/div>/);
+  assert.doesNotMatch(html, />done<\/div>/);
+  assert.match(html, />exit 1<\/div>/);
   assert.doesNotMatch(html, />X0<\/div>|>E1<\/div>|meantime|snapshots|mt_a1b2c3d4|mt_deadbeef/);
 });
 
@@ -127,9 +129,8 @@ test("batch wait shares one card and divides rows with a hairline", () => {
     { id: "mt_a1b2c3d4", state: "waiting", command: "sleep 60" },
     { id: "dead", state: "waiting", command: "npm run watch" },
   ] });
-  assert.equal(html.match(/border-top-left-radius:8px/g)?.length, 1);
   assert.equal(html.match(/style="border-top-width:1px;border-top-color:/g)?.length, 1);
-  assert.equal(html.match(/>waiting</g)?.length, 2);
+  assert.doesNotMatch(html, />waiting</);
   assert.match(html, /npm<span[^>]*> run watch<\/span>/);
 });
 
@@ -144,7 +145,7 @@ test("task rows keep their details closed until pressed", () => {
 test("pressing a row expands details inline instead of opening a modal", async () => {
   const html = renderLine({ id: "mt_a1b2c3d4", state: "running", command: "npm test -- --watch",
     outputTail: "108 passing\n", outputPath: "/tmp/mt_a1b2c3d4.log", createdAt: 1_700_000_000_000 });
-  // The header unfolds the whole command; the drawer adds only what follows.
+  // The header stays single-line; the drawer carries the complete command and details.
   assert.match(html, /npm<span[^>]*> test -- --watch<\/span>/);
   assert.match(html, /108 passing/);
   assert.doesNotMatch(html, />Command<|>Output<|>Output tail</);

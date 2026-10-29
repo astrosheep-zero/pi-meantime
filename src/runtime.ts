@@ -61,6 +61,13 @@ function failure(error: unknown): Result {
   return { content: [{ type: 'text', text: error instanceof Error ? error.message : String(error) }], details: undefined, isError: true };
 }
 function snap(task: Task): Snapshot { return { ...task.meta }; }
+function sliceTail(text: string): string {
+  if (text.length <= 1026) return text;
+  const slice = text.slice(-1026);
+  if (text[text.length - 1027] === '\n') return slice;
+  const nl = slice.indexOf('\n');
+  return nl >= 0 && nl + 1 < slice.length ? slice.slice(nl + 1).replace(/^\n+/, '') : slice;
+}
 
 export class TaskRuntime {
   readonly config: Config;
@@ -85,7 +92,7 @@ export class TaskRuntime {
         cancelRequestedAt: completion.cancelRequestedAt, exitCode: completion.exitCode,
         outputPath: completion.outputPath,
         state: completion.cancelRequestedAt !== undefined ? 'cancelled' : completion.isError ? 'failed' : 'completed' });
-      this.tasks.set(meta.id, { meta, outputTail: completion?.text.slice(-1026), result: completion?.result ?? (completion ? { content: [{ type: 'text', text: completion.text }], details: undefined } : undefined),
+      this.tasks.set(meta.id, { meta, outputTail: completion ? sliceTail(completion.text) : undefined, result: completion?.result ?? (completion ? { content: [{ type: 'text', text: completion.text }], details: undefined } : undefined),
         callId: '', published: true, observed: false, viewSettled: true, canDetach: false, notifyAttempts: 0, waiters: 0 });
     }
   }
@@ -266,7 +273,7 @@ export class TaskRuntime {
     }
     task.result = result;
     const text = result.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
-    task.outputTail = text.slice(-1026); // Enough UTF-16 units for the notification's UTF-8 tail budget.
+    task.outputTail = sliceTail(text); // Enough UTF-16 units for the notification's UTF-8 tail budget.
     const data = isRecord(result.structuredContent) ? result.structuredContent : {};
     const details = isRecord(result.details) ? result.details : {};
     const path = data.full_output_path ?? details.fullOutputPath;

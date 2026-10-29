@@ -21,6 +21,17 @@ function unknownItem(name: string, input: unknown, output: unknown): ToolCallIte
 }
 
 describe("recognizeToolCall: meantime tool", () => {
+  it("turns a failed call into a call line and one sentence instead of raw JSON", () => {
+    const data = recognizeToolCall({
+      type: "tool_call", name: "meantime", status: "failed",
+      error: { content: [{ type: "text", text: "Error: Unknown task id mt_deadbeef\n{\"stack\":1}" }] },
+      detail: { type: "unknown", input: { action: "wait", ids: ["mt_deadbeef"] }, output: null },
+    });
+    assert.equal(data?.call, "meantime wait mt_deadbeef");
+    assert.equal(data?.error, "Unknown task id mt_deadbeef");
+    assert.deepEqual(data?.tasks, []);
+  });
+
   it("parses list results with tasks and pagination", () => {
     const data = recognizeToolCall(unknownItem("meantime", { action: "list" }, {
       content: [{ type: "text", text: "..." }],
@@ -95,7 +106,8 @@ describe("recognizeToolCall: meantime tool", () => {
     });
     assert.equal(data?.source, "meantime");
     assert.equal(data?.action, "wait");
-    assert.deepEqual(data?.tasks, [{ id: SNAPSHOT.id, state: "waiting" }]);
+    assert.deepEqual(data?.tasks, []);
+    assert.equal(data?.pending, true);
   });
 
   it("reads command and metadata from a running wait's partial details", () => {
@@ -123,26 +135,28 @@ describe("recognizeToolCall: meantime tool", () => {
       command: "sleep 60", createdAt: SNAPSHOT.createdAt }]);
   });
 
-  it("falls back to requested ids when partial details carry no tasks", () => {
+  it("an empty Pi task snapshot shows the real wait-all state, not a skeleton", () => {
     const data = recognizeToolCall({
       type: "tool_call", name: "meantime", status: "running",
       detail: { type: "unknown", input: { action: "wait", ids: [SNAPSHOT.id] },
-        output: { content: [], details: { tasks: [] } } },
+        output: { content: [], details: { tasks: [], pending: [] } } },
     });
-    assert.deepEqual(data?.tasks, [{ id: SNAPSHOT.id, state: "waiting" }]);
+    assert.deepEqual(data?.tasks, []);
+    assert.equal(data?.pending, undefined);
   });
 
-  it("recognizes batch, prefix, wait-all and historical wait inputs", () => {
-    for (const [input, ids] of [
-      [{ action: "wait", ids: [SNAPSHOT.id, "mt_deadbeef"] }, [SNAPSHOT.id, "mt_deadbeef"]],
-      [{ action: "wait", ids: ["a1b2", "mt_dead"] }, ["a1b2", "mt_dead"]],
-      [{ action: "wait" }, []],
-      [{ action: "wait", id: SNAPSHOT.id }, [SNAPSHOT.id]],
-    ] as const) {
+  it("input-only waits use one command-shaped skeleton, without exposing ids", () => {
+    for (const input of [
+      { action: "wait", ids: [SNAPSHOT.id, "mt_deadbeef"] },
+      { action: "wait", ids: ["a1b2", "mt_dead"] },
+
+      { action: "wait", id: SNAPSHOT.id },
+    ]) {
       const data = recognizeTimelineToolCall({ type: "tool_call", name: "meantime", status: "running",
         detail: { type: "unknown", input, output: null } });
       assert.equal(data?.action, "wait");
-      assert.deepEqual(data?.tasks, ids.map(id => ({ id, state: "waiting" })));
+      assert.deepEqual(data?.tasks, []);
+      assert.equal(data?.pending, true);
     }
   });
 
@@ -291,7 +305,7 @@ describe("timeline transformer gate", () => {
     assert.equal(recognizeTimelineToolCall({
       type: "tool_call", name: "meantime", status: "running",
       detail: { type: "unknown", input: { action: "wait", ids: [SNAPSHOT.id] }, output: null },
-    })?.tasks[0]?.state, "waiting");
+    })?.pending, true);
     assert.equal(recognizeTimelineToolCall(bash), undefined);
     assert.equal(recognizeTimelineToolCall(completion)?.source, "completion");
   });

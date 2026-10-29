@@ -113,15 +113,6 @@ export function formatElapsed(task: TaskSummary): string | undefined {
   return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}`;
 }
 
-export function completionResult(task: TaskSummary): string {
-  // A clean success is just "done"; never manufacture exit 0 from a state,
-  // and never invent an exit code a sparse receipt never carried.
-  const state = stateText(task.state);
-  const exitCode = task.exitCode;
-  return exitCode !== undefined && (exitCode !== 0 || task.state !== "completed")
-    ? `${state} · exit ${exitCode}` : state;
-}
-
 export function taskStateLabel(task: TaskSummary): string {
   return task.exitCode === undefined ? stateLabel(task.state) : `${stateLabel(task.state)} · exit ${task.exitCode}`;
 }

@@ -10,6 +10,7 @@ export interface TaskDisplay {
   createdAt?: number; endedAt?: number; exitCode?: number;
   output?: string; outputPath?: string; outputTail?: string; cancelRequestedAt?: number;
   detachReason?: string;
+  notification?: string;
   isError?: boolean;
 }
 export type RenderTheme = Pick<Theme, 'fg'>;
@@ -26,9 +27,9 @@ const GLYPHS: Record<string, [glyph: string, color: ThemeColor]> = {
   cancelled: ['⊘', 'muted'],
   outcome_unknown: ['?', 'warning'],
 };
-export function stateGlyph(theme: RenderTheme, state: string): string {
+export function stateGlyph(theme: RenderTheme, state: string, quiet = false): string {
   const [glyph, color] = GLYPHS[state] ?? ['·', 'muted'];
-  return theme.fg(color, glyph);
+  return theme.fg(quiet ? 'muted' : color, glyph);
 }
 
 /** Display text must never carry terminal control from tool output. */
@@ -43,17 +44,21 @@ export function elapsedText(task: TaskDisplay): string {
   if (task.createdAt === undefined) return '';
   return `${Math.max(0, Math.floor(((task.endedAt ?? Date.now()) - task.createdAt) / 1000))}s`;
 }
-function meta(task: TaskDisplay, withId: boolean): string {
+function isAcknowledged(task: TaskDisplay): boolean {
+  return task.notification === 'observed' || task.notification === 'delivered';
+}
+function meta(task: TaskDisplay, withId: boolean, showAck = false): string {
   return [
     ...(task.exitCode !== undefined ? [`exit ${task.exitCode}`] : []),
     ...(elapsedText(task) ? [elapsedText(task)] : []),
+    ...(showAck && isAcknowledged(task) ? [task.notification!] : []),
     ...(withId ? [task.id] : []),
   ].join(' · ');
 }
 /** Collapsed row: glyph, what it is, then dim facts. */
-export function taskLine(task: TaskDisplay, theme: RenderTheme, withId = true): string {
-  const facts = meta(task, withId);
-  return `${stateGlyph(theme, task.state)} ${commandLabel(task)}${facts ? theme.fg('dim', ` · ${facts}`) : ''}`;
+export function taskLine(task: TaskDisplay, theme: RenderTheme, withId = true, quiet = false): string {
+  const facts = meta(task, withId, quiet);
+  return `${stateGlyph(theme, task.state, quiet)} ${commandLabel(task)}${facts ? theme.fg('dim', ` · ${facts}`) : ''}`;
 }
 function tailLines(tail: string): string[] {
   return clean(tail).trimEnd().split('\n').filter(line => line.trim().length > 0);
@@ -122,7 +127,12 @@ export function renderTaskResult(result: ResultLike & { details?: unknown }, opt
       if (remaining > 0) lines.push(theme.fg('muted', `… ${remaining} more lines, ${keyHint('app.tools.expand', 'to expand')}`));
     }
   } else if (page && tasks.length) {
-    if (!options.expanded) lines.push(...tasks.map(task => taskLine(task, theme)));
+    const isCancel = isRecord(context.args) && context.args.action === 'cancel';
+    if (!isCancel) {
+      const total = typeof details?.total === 'number' ? details.total : tasks.length;
+      lines.push(theme.fg('muted', `Background tasks (${total})`));
+    }
+    if (!options.expanded) lines.push(...tasks.map(task => taskLine(task, theme, true, !isCancel && task.state !== 'running' && task.state !== 'waiting' && task.state !== 'cancel_requested')));
     else for (const task of tasks) {
       const tail = typeof task.outputTail === 'string' ? tailLines(task.outputTail) : [];
       lines.push(...detailBlock(task, theme, tail, 40));

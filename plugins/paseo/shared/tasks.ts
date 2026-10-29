@@ -50,6 +50,7 @@ export const taskSummarySchema = z.object({
   isError: z.boolean().optional(),
   cancelRequested: z.boolean().optional(),
   recovered: z.boolean().optional(),
+  notification: z.string().optional(),
   createdAt: z.number().optional(),
   endedAt: z.number().optional(),
 });
@@ -59,7 +60,12 @@ export const cardDataSchema = z.object({
   source: z.enum(["handle", "meantime", "completion"]),
   action: z.string().optional(),
   tasks: z.array(taskSummarySchema),
+  total: z.number().optional(),
   moreOffset: z.number().optional(),
+  /** A failed meantime call: the call line and one human sentence, never raw JSON. */
+  call: z.string().optional(),
+  error: z.string().optional(),
+  pending: z.boolean().optional(),
 });
 export type MeantimeCardData = z.output<typeof cardDataSchema>;
 
@@ -69,6 +75,7 @@ export interface ToolCallItemLike {
   name: string;
   status: "running" | "completed" | "failed" | "canceled";
   detail: unknown;
+  error?: unknown;
   metadata?: unknown;
 }
 
@@ -93,7 +100,11 @@ export function simplifySnapshot(raw: unknown): TaskSummary | undefined {
   const progress = text(raw.progress);
   const output = text(raw.output);
   const outputPath = text(raw.outputPath);
-  const outputTail = text(raw.outputTail);
+  const rawTail = text(raw.outputTail);
+  const outputTail = rawTail && rawTail.length >= 1024 && rawTail.includes("\n")
+    ? rawTail.slice(rawTail.indexOf("\n") + 1).replace(/^\n+/, "") || rawTail
+    : rawTail;
+  const notification = raw.notification === "observed" || raw.notification === "delivered" ? raw.notification : undefined;
   return {
     id: raw.id,
     tool: raw.tool,
@@ -107,6 +118,7 @@ export function simplifySnapshot(raw: unknown): TaskSummary | undefined {
     ...(raw.isError === true ? { isError: true } : {}),
     ...(typeof raw.cancelRequestedAt === "number" ? { cancelRequested: true } : {}),
     ...(raw.recovered === true ? { recovered: true } : {}),
+    ...(notification ? { notification } : {}),
     ...(typeof raw.createdAt === "number" ? { createdAt: raw.createdAt } : {}),
     ...(typeof raw.endedAt === "number" ? { endedAt: raw.endedAt } : {}),
   };
@@ -136,6 +148,22 @@ function projectOutputs(detail: Record<string, unknown>, tasks: TaskSummary[]): 
   });
 }
 
+/** First line of a tool error's text, whatever shape the host preserved. */
+function errorSentence(value: unknown): string | undefined {
+  const raw = typeof value === "string" ? value
+    : isRecord(value) && Array.isArray(value.content)
+      ? value.content.flatMap(block => isRecord(block) && typeof block.text === "string" ? [block.text] : []).join("\n")
+      : isRecord(value) && typeof value.message === "string" ? value.message : undefined;
+  const line = raw?.split("\n").map(part => part.trim()).find(Boolean)?.replace(/^Error:\s*/, "");
+  return line ? (line.length > 240 ? `${line.slice(0, 239)}…` : line) : undefined;
+}
+
+function meantimeCall(action: string | undefined, input: Record<string, unknown> | undefined): string {
+  const ids = Array.isArray(input?.ids) ? input.ids.filter(id => typeof id === "string")
+    : typeof input?.id === "string" ? [input.id] : [];
+  return ["meantime", action, ...ids].filter(Boolean).join(" ");
+}
+
 /**
  * Recognize a tool_call timeline item as meantime-related. Returns undefined
  * to leave the entry on Paseo's native renderer.
@@ -160,7 +188,7 @@ export function recognizeToolCall(item: ToolCallItemLike): MeantimeCardData | un
       const observed = raws.map(simplifySnapshot)
         .filter((task): task is TaskSummary => task !== undefined)
         .map(task => ({ ...task, state: "waiting" }));
-      if (observed.length > 0) return { source: "meantime", action, tasks: observed };
+      if (details !== undefined) return { source: "meantime", action, tasks: observed };
       // No partial snapshot yet. Current calls use ids (including prefixes);
       // keep id for historical timelines. No ids means wait-all, not an
       // inferred set of tasks from a later client-side snapshot.
@@ -168,7 +196,12 @@ export function recognizeToolCall(item: ToolCallItemLike): MeantimeCardData | un
       if (ids === undefined) return { source: "meantime", action, tasks: [] };
       if (!Array.isArray(ids) || ids.length === 0 || ids.length > 32
         || !ids.every(id => typeof id === "string" && /^(?:mt_)?[a-f0-9]{1,8}$/.test(id))) return undefined;
-      return { source: "meantime", action, tasks: [...new Set<string>(ids)].map(id => ({ id, state: "waiting" })) };
+      return { source: "meantime", action, tasks: [], pending: true };
+    }
+    const output = isRecord(detail.output) ? detail.output : undefined;
+    if (item.status === "failed" || output?.isError === true) {
+      const error = errorSentence(item.error) ?? errorSentence(detail.output) ?? "meantime call failed";
+      return { source: "meantime", ...(action ? { action } : {}), tasks: [], call: meantimeCall(action, input), error };
     }
     const details = unknownDetails(detail);
     if (!details) return undefined;
@@ -187,8 +220,9 @@ export function recognizeToolCall(item: ToolCallItemLike): MeantimeCardData | un
         ? { source: "meantime", action: "list", tasks: [] }
         : undefined;
     }
+    const total = typeof details.total === "number" ? details.total : undefined;
     const moreOffset = typeof details.next_offset === "number" ? details.next_offset : undefined;
-    return { source: "meantime", ...(action ? { action } : {}), tasks, ...(moreOffset !== undefined ? { moreOffset } : {}) };
+    return { source: "meantime", ...(action ? { action } : {}), tasks, ...(total !== undefined ? { total } : {}), ...(moreOffset !== undefined ? { moreOffset } : {}) };
   }
 
   // Managed tools now retain their original names; old _mt rows still work.
@@ -243,7 +277,7 @@ export function recognizeTimelineToolCall(item: ToolCallItemLike): MeantimeCardD
   return data?.source === "completion" || data?.source === "meantime" ? data : undefined;
 }
 
-/** Resolve identity only: later results must not rewrite a wait's snapshot. */
+/** Used by the board's folding, not as a fallback data source for cards. */
 export function resolveWaitTask(task: TaskSummary, known: ReadonlyMap<string, TaskSummary>): TaskSummary {
   const prefix = task.id.startsWith("mt_") ? task.id : `mt_${task.id}`;
   const matches = [...known.values()].filter(candidate => candidate.id.startsWith(prefix));

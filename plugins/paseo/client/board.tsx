@@ -86,7 +86,7 @@ export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps)
           : tasks.map((task, index) => (
             <View key={task.id} style={index > 0
               ? { borderTopWidth: 1, borderTopColor: dividerColor(colors) } : undefined}>
-              <TaskLine task={task} colors={colors} layout={layout} showId />
+              <TaskLine task={task} colors={colors} layout={layout} showId muted={!isActiveTask(task)} />
             </View>
           ))}
       </Card>

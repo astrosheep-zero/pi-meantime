@@ -17,20 +17,15 @@ async function setup(config: Partial<Config> = {}) {
 function snapshot(outcome: Outcome): Snapshot {
   return (outcome.result.structuredContent as unknown as { task: Snapshot }).task;
 }
-// A multi-line command long enough to require the 120-byte ellipsis.
+// Structured snapshots preserve exact commands for the detail UI. Receipt prose
+// remains independently bounded by commandPreview in extension.ts.
 const LONG_COMMAND = `echo first\necho second\necho ${'x'.repeat(200)}`;
 const normalized = (command: string) => command.replace(/\s+/g, ' ').trim();
-function assertPreview(command: string | undefined, raw: string, what: string): void {
-  assert.ok(command, `${what}: command is present`);
-  assert.ok(Buffer.byteLength(command!) <= 123, `${what}: preview stays within 120 UTF-8 bytes plus ellipsis`);
-  assert.notEqual(command, raw, `${what}: the raw command is not leaked wholesale`);
-  assert.ok(command!.endsWith('…'), `${what}: truncation is visible`);
-  const kept = command!.slice(0, -1);
-  assert.ok(raw.startsWith(kept), `${what}: preview is the raw command prefix, line breaks intact`);
-  if (kept.includes('\n')) assert.notEqual(normalized(kept), kept, `${what}: multi-line preview is not flattened`);
+function assertFull(command: string | undefined, raw: string, what: string): void {
+  assert.equal(command, raw, `${what}: exact command, including line breaks`);
 }
 
-test('background handles carry the truncated command in details and structuredContent', async () => {
+test('background handles carry the complete command in details and structuredContent', async () => {
   const h = await setup();
   try {
     const handle = await h.pi.call('bash', { command: LONG_COMMAND, __background__: 'yes' });
@@ -38,7 +33,7 @@ test('background handles carry the truncated command in details and structuredCo
     const task = snapshot(handle);
     assert.equal(task.delivery, 'background');
     const details = handle.result.details as Snapshot;
-    assertPreview(details.command, LONG_COMMAND, 'handle details.command');
+    assertFull(details.command, LONG_COMMAND, 'handle details.command');
     assert.ok(details.command!.includes('\n'), 'multi-line preview keeps its line breaks');
     const structured = handle.result.structuredContent as unknown as { task: { command?: string } };
     assert.equal(structured.task.command, details.command, 'structuredContent mirrors the same preview');
@@ -60,11 +55,11 @@ test('meantime wait streams an immediate partial snapshot of its targets', async
     assert.equal(preview.tool, 'bash');
     assert.equal(preview.state, 'waiting', 'the target is named before the wait resolves');
     assert.equal(typeof preview.createdAt, 'number');
-    assertPreview(preview.command, LONG_COMMAND.replace('echo second', 'sleep 0.4 && echo second'), 'streamed details.tasks[0].command');
+    assertFull(preview.command, LONG_COMMAND.replace('echo second', 'sleep 0.4 && echo second'), 'streamed details.tasks[0].command');
     const settled = await waiting;
     assert.equal(settled.isError, false);
     const final = settled.result.details as { task: Snapshot };
-    assertPreview(final.task.command, LONG_COMMAND.replace('echo second', 'sleep 0.4 && echo second'), 'settled wait details.task.command');
+    assertFull(final.task.command, LONG_COMMAND.replace('echo second', 'sleep 0.4 && echo second'), 'settled wait details.task.command');
   } finally { await h.close(); }
 });
 
@@ -77,9 +72,9 @@ test('multi-task waits preview both settled and pending snapshots', async () => 
     const outcome = await h.pi.call('meantime', { action: 'wait', ids: [quick.id, slow.id], timeout: 0.5 });
     const details = outcome.result.details as { tasks: Snapshot[]; pending: Snapshot[] };
     assert.ok(details.tasks.length >= 1, 'the quick task settled');
-    assertPreview(details.tasks[0]!.command, `echo quick\necho ${'q'.repeat(160)}`, 'page.tasks[0].command');
+    assertFull(details.tasks[0]!.command, `echo quick\necho ${'q'.repeat(160)}`, 'page.tasks[0].command');
     assert.equal(details.pending.length, 1, 'the slow task is still pending');
-    assertPreview(details.pending[0]!.command, slowRaw, 'page.pending[0].command');
+    assertFull(details.pending[0]!.command, slowRaw, 'page.pending[0].command');
     assert.equal((outcome.result.structuredContent as unknown as { tasks: Snapshot[] }).tasks[0]!.command, details.tasks[0]!.command,
       'structuredContent mirrors the previews');
   } finally { await h.close(); }
@@ -110,7 +105,7 @@ test('auto timeout handles name the configured window', async () => {
   } finally { await h.close(); }
 });
 
-test('completion notices carry the truncated command in details.tasks', async () => {
+test('completion notices carry the complete command in details.tasks', async () => {
   const h = await setup();
   try {
     const raw = `echo started\necho ${'c'.repeat(200)}`;
@@ -119,7 +114,7 @@ test('completion notices carry the truncated command in details.tasks', async ()
     await until(() => h.pi.notifications.length === 1, 4000);
     const details = h.pi.notifications[0]!.details as { tasks: { id: string; command?: string }[] };
     assert.equal(details.tasks[0]!.id, snapshot(handle).id);
-    assertPreview(details.tasks[0]!.command, raw, 'completion details.tasks[0].command');
+    assertFull(details.tasks[0]!.command, raw, 'completion details.tasks[0].command');
     assert.match(h.pi.notifications[0]!.content, /^<system-reminder>\n[\s\S]*\n<\/system-reminder>$/);
     assert.doesNotMatch(h.pi.notifications[0]!.content, /Use meantime\(action="wait"/, 'short untruncated output omits the full-output hint');
   } finally { await h.close(); }
@@ -146,16 +141,16 @@ test('list receipts name the exit code when present and put running tasks first'
   } finally { gate.resolve(); await h.close(); }
 });
 
-test('list page details previews keep line breaks while the runtime keeps the raw command', async () => {
+test('list page details snapshots preserve commands while the runtime keeps the raw command', async () => {
   const h = await setup();
   try {
     const handle = await h.pi.call('bash', { command: LONG_COMMAND, __background__: 'yes' });
     const listed = await h.pi.call('meantime', { action: 'list' });
     const tasks = (listed.result.details as unknown as { tasks: Snapshot[] }).tasks;
     const entry = tasks.find(task => task.id === snapshot(handle).id)!;
-    assertPreview(entry.command, LONG_COMMAND, 'list details.tasks[].command');
+    assertFull(entry.command, LONG_COMMAND, 'list details.tasks[].command');
     const raw = (h.instance.inspect() as unknown as { tasks: Snapshot[] }).tasks.find(task => task.id === entry.id)!;
-    assert.equal(raw.command, LONG_COMMAND, 'truncation is a projection, not a runtime mutation');
+    assert.equal(raw.command, LONG_COMMAND, 'projection preserves the runtime command');
     const structured = (listed.result.structuredContent as unknown as { tasks: Snapshot[] }).tasks;
     assert.equal(structured.find(task => task.id === entry.id)!.command, entry.command, 'structuredContent mirrors the previews');
     const row = listed.result.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n').split('\n').find(line => line.includes(entry.id))!;

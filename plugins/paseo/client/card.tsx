@@ -12,7 +12,7 @@ import { View } from "react-native";
 export function Card({ colors, children }: { colors: PluginTheme["colors"]; children: ReactNode }) {
   return (
     <View style={{
-      borderRadius: 8,
+      borderRadius: 4,
       borderWidth: 1,
       borderColor: colors.border,
       backgroundColor: colors.surface1,
