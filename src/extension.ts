@@ -6,7 +6,7 @@ import type { Context, EventHandler, EventMap, Json, PiHost, Result, Tool } from
 import { captureSession, manageTools } from './host.ts';
 import type { HostSession, ManagedCall } from './host.ts';
 import { CONTROL, isRecord, projectResult } from './schema.ts';
-import { renderCompletion, renderMeantimeCall, renderTaskResult, stateGlyph } from './render.ts';
+import { clean, renderCompletion, renderMeantimeCall, renderTaskResult, stateGlyph } from './render.ts';
 import { TaskRuntime } from './runtime.ts';
 import { CompletionDelivery } from './notifications.ts';
 import type { Snapshot, View, TaskRecord, IndexChange } from './runtime.ts';
@@ -208,13 +208,15 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
           const details = task ? [
             ...(rawCommand !== undefined ? [`Command: ${stripTerminalSequences(rawCommand)}`] : []),
             ...(task.progress ? [`Progress: ${stripTerminalSequences(task.progress)}`] : []),
-            ...(!task.localRunning ? [stripTerminalSequences(outputTail(r.tasks.get(task.id)?.outputTail ?? '')).trim()] : []),
+            // The panel is for the human: show the raw tail, not the model's untrusted-output fence.
+            ...(!task.localRunning ? [clean(r.tasks.get(task.id)?.outputTail ?? '').trim()] : []),
             ...(task.outputPath ? [`Output: ${task.outputPath}`] : []),
           ].filter(Boolean) : [];
-          return [theme.fg('accent', 'Current session tasks'), ...list.render(width),
+          return [theme.fg('accent', 'Current session tasks'),
+            ...(tasks.length ? list.render(width) : [theme.fg('muted', '  No background tasks.')]),
             ...details.flatMap(line => wrapTextWithAnsi(line, width)),
             ...(error ? wrapTextWithAnsi(theme.fg('error', error), width) : []),
-            ...wrapTextWithAnsi('↑/↓ select · Enter expand · c cancel · Esc/q close', width),
+            ...wrapTextWithAnsi(theme.fg('dim', '↑/↓ select · Enter expand · c cancel · Esc/q close'), width),
           ].flatMap(line => wrapTextWithAnsi(line, width));
         },
         invalidate() { list.invalidate(); },

@@ -9,11 +9,11 @@ import { FakePi, fixtureBash } from './host.ts';
 
 /** Records the semantic color of every fragment: `[color]text`. */
 function recordingTheme() {
-  return { fg: (color: string, text: string) => `[${color}]${text}` } as unknown as Parameters<typeof renderCompletion>[2];
+  return { fg: (color: string, text: string) => `[${color}]${text}`, bg: (_c: string, t: string) => t, bold: (t: string) => t } as unknown as Parameters<typeof renderCompletion>[2];
 }
-const plain = { fg: (_color: string, text: string) => text } as unknown as Parameters<typeof renderCompletion>[2];
+const plain = { fg: (_color: string, text: string) => text, bg: (_c: string, t: string) => t, bold: (t: string) => t } as unknown as Parameters<typeof renderCompletion>[2];
 const render = (component: { render(width: number): string[] } | undefined) =>
-  component?.render(200).map(line => line.trimEnd()).join('\n') ?? '';
+  component?.render(200).map(line => line.trimEnd()).join('\n').replace(/^\n+|\n+$/g, '') ?? '';
 
 const done: TaskDisplay = { id: 'mt_a1b2c3d4', tool: 'bash', state: 'completed', command: 'npm test',
   exitCode: 0, createdAt: 1_000, endedAt: 13_000, outputTail: '…\n✓ 42 passing', outputPath: '/tmp/out.txt' };
@@ -45,8 +45,7 @@ test('completion card answers what finished, how it ended and what it produced',
   assert.doesNotMatch(collapsed, /Output:/, 'collapsed card omits the output path');
 
   const expanded = render(renderCompletion(message, { expanded: true }, plain));
-  assert.match(expanded, /^  bash$/m, 'the detail line names the tool once, without repeating the id');
-  assert.doesNotMatch(expanded, /bash · mt_a1b2c3d4/);
+  assert.doesNotMatch(expanded, /^\s*bash$/m, 'a bash task needs no tool label under its command');
   assert.match(expanded, /Output: \/tmp\/out\.txt/);
 });
 
@@ -67,9 +66,9 @@ test('completion renderer declines messages without task metadata', () => {
 });
 
 test('meantime call rows summarize the action instead of raw JSON', () => {
-  assert.equal(render(renderMeantimeCall({ action: 'wait', ids: ['mt_a', 'mt_b'], timeout: 30 }, plain)), 'wait mt_a, mt_b · 30s');
-  assert.equal(render(renderMeantimeCall({ action: 'cancel', ids: ['mt_a'] }, plain)), 'cancel mt_a');
-  assert.equal(render(renderMeantimeCall({}, plain)), 'list');
+  assert.equal(render(renderMeantimeCall({ action: 'wait', ids: ['mt_a', 'mt_b'], timeout: 30 }, plain)), 'meantime wait mt_a, mt_b · 30s');
+  assert.equal(render(renderMeantimeCall({ action: 'cancel', ids: ['mt_a'] }, plain)), 'meantime cancel mt_a');
+  assert.equal(render(renderMeantimeCall({}, plain)), 'meantime list');
 });
 
 test('install registers the completion message renderer', async () => {
@@ -85,11 +84,11 @@ test('handle and list results keep one scannable line per task', () => {
   const handle = renderTaskResult({ content: [{ type: 'text', text: 'Meantime mt_a1b2c3d4 running in background…' }],
     details: { id: done.id, tool: done.tool, state: 'running', command: done.command,
       delivery: 'background', createdAt: Date.now() - 12_000 } }, { expanded: false }, plain, {}, true);
-  assert.equal(render(handle), '● background · mt_a1b2c3d4',
+  assert.equal(render(handle), '● running in background · mt_a1b2c3d4',
     'the native call header already shows the command');
   const expanded = renderTaskResult({ content: [], details: { id: done.id, tool: done.tool, state: 'running',
     command: done.command, delivery: 'background', createdAt: Date.now() - 12_000 } }, { expanded: true }, plain, {}, true);
-  assert.match(render(expanded), /● npm test · \d+s · mt_a1b2c3d4\n +bash/, 'expanding still reveals the command');
+  assert.match(render(expanded), /● npm test · \d+s · mt_a1b2c3d4/, 'expanding still reveals the command');
 
   const list = renderTaskResult({ content: [{ type: 'text', text: 'Current session tasks…' }],
     details: { tasks: [{ ...done, notification: 'observed' }, { ...failed, notification: 'delivered' }], total: 10, pending: [], next_offset: 40 } }, { expanded: false }, recordingTheme(), {}, false);
@@ -107,12 +106,11 @@ test('collapsed list rows stay one line per task while expanded rows use detail 
   assert.equal(collapsed.split('\n').filter(line => line.includes('mt_a1b2c3d4')).length, 1, 'one row per task');
   assert.doesNotMatch(collapsed, /42 passing/, 'collapsed rows carry no output tail');
   assert.doesNotMatch(collapsed, /Output:/, 'collapsed rows carry no output path');
-  assert.doesNotMatch(collapsed, /^  bash$/m, 'collapsed rows carry no detail block');
 
   const expanded = render(renderTaskResult(result, { expanded: true }, plain, {}, false));
-  assert.match(expanded, /✓ npm test · exit 0 · 12s · mt_a1b2c3d4\n  bash\n  Output: \/tmp\/out\.txt\n  …\n  ✓ 42 passing/,
-    'expanded rows render the tool, output path and tail per task');
-  assert.match(expanded, /✕ make release · exit 2 · 61s · mt_e5f60718\n  bash/, 'every task gets its own detail block');
+  assert.match(expanded, /✓ npm test · exit 0 · 12s · mt_a1b2c3d4\n  Output: \/tmp\/out\.txt\n  …\n  ✓ 42 passing/,
+    'expanded rows render the output path and tail per task');
+  assert.match(expanded, /✕ make release · exit 2 · 61s · mt_e5f60718/, 'every task gets its own detail block');
 });
 
 test('wait results show the glyph header plus the structured output from details without regex scraping', () => {
@@ -135,7 +133,7 @@ test('multi-task waits render each task row and its structured output from detai
   { expanded: false }, plain, { args: { action: 'wait' } }, false);
   const text = render(wait);
   assert.equal(text, ['✓ npm test · exit 0 · 12s · mt_a1b2c3d4', '✕ make release · exit 2 · 61s · mt_e5f60718',
-    '⊘ sleep 99 · 5s · mt_19202122', '✓ 42 passing', 'FINAL'].join('\n'));
+    '⊘ sleep 99 · 5s · mt_19202122', '', '✓ 42 passing', 'FINAL'].join('\n'), 'a blank line separates status rows from output');
 });
 
 test('partial wait results render only the task rows', () => {
@@ -151,11 +149,11 @@ test('collapsed handle rows attribute the detach trigger concisely', () => {
   const row = (detachReason?: string) => render(renderTaskResult({ content: [],
     details: { id: done.id, tool: 'bash', state: 'running', command: 'npm test', delivery: 'background',
       createdAt: Date.now() - 12_000, ...(detachReason ? { detachReason } : {}) } }, { expanded: false }, plain, {}, true));
-  assert.equal(row(undefined), '● background · mt_a1b2c3d4');
-  assert.equal(row('explicit'), '● background · mt_a1b2c3d4');
-  assert.equal(row('timeout'), '● background (90s auto-detach) · mt_a1b2c3d4');
-  assert.equal(row('shortcut'), '● background (detached) · mt_a1b2c3d4');
-  assert.equal(row('steer'), '● background (detached) · mt_a1b2c3d4');
+  assert.equal(row(undefined), '● running in background · mt_a1b2c3d4');
+  assert.equal(row('explicit'), '● running in background · mt_a1b2c3d4');
+  assert.equal(row('timeout'), '● running in background (90s auto-detach) · mt_a1b2c3d4');
+  assert.equal(row('shortcut'), '● running in background (detached) · mt_a1b2c3d4');
+  assert.equal(row('steer'), '● running in background (detached) · mt_a1b2c3d4');
 });
 
 test('a settled receipt without a retained result has no machine prose left to display', () => {

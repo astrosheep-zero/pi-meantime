@@ -11,22 +11,22 @@ type Slate = Omit<PluginTheme["colors"], "accentForeground">;
  */
 const PALETTE: Record<"dark" | "light", Slate> = {
   dark: {
-    surface0: "#0c0c0d", // drawer
-    surface1: "#141416", // card
-    surface2: "#1a1a1d", // code block
-    border: "#26262a",
-    foreground: "#e4e4e7",
-    foregroundMuted: "#71717a",
+    surface0: "#101012", // recessed output well
+    surface1: "#19191c", // card, lifted off the timeline
+    surface2: "#222226",
+    border: "#2e2e33",
+    foreground: "#e8e8eb",
+    foregroundMuted: "#8a8a93",
     statusSuccess: "#34d399",
     statusWarning: "#f59e0b",
     statusDanger: "#f87171",
     accent: "#a1a1aa",
   },
   light: {
-    surface0: "#f0f0f2",
-    surface1: "#f8f8f9",
-    surface2: "#e4e4e8",
-    border: "#d4d4d8",
+    surface0: "#f3f4f6",
+    surface1: "#ffffff",
+    surface2: "#e9ebef",
+    border: "#dcdee3",
     foreground: "#18181b",
     foregroundMuted: "#71717a",
     statusSuccess: "#059669",

@@ -277,7 +277,7 @@ test('wait previews show native single and batch bodies, while handle cards reta
     const handles = [];
     for (let i = 0; i < 2; i++) handles.push(await h.pi.call('mcp__preview', { __background__: 'yes' }));
     const ids = handles.map(out => snapshot(out).id);
-    assert.match(managed.renderResult!(handles[0]!.result, { expanded: false, isPartial: false }, theme, {} as Parameters<Render>[3]).render(200).map(line => line.trimEnd()).join('\n'), /● background · mt_[a-f0-9]{8}$/,
+    assert.match(managed.renderResult!(handles[0]!.result, { expanded: false, isPartial: false }, theme, {} as Parameters<Render>[3]).render(200).map(line => line.trimEnd()).join('\n'), /● running in background · mt_[a-f0-9]{8}$/,
       'the call header already carries the command, so the handle line stays compact');
     initTheme('dark', false);
     const ui = { requestRender() {} } as ConstructorParameters<typeof ToolExecutionComponent>[5];

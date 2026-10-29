@@ -90,30 +90,23 @@ test("washed-out host tokens gain contrast without using border or a fixed palet
   assert.equal(readableColor("#e9b45a", dark), "#e9b45a");
 });
 
-test("a collapsed row flattens newlines while the drawer always carries the full command", () => {
+test("a collapsed row flattens newlines; an open row unfolds the full command in its header", () => {
   const task = { id: "mt_a1b2c3d4", state: "running", command: "npm test\n  --  --watch" };
   const collapsed = row(task);
   assert.match(collapsed, /npm<span[^>]*> test -- --watch<\/span>/);
   assert.doesNotMatch(collapsed, /npm test\n/);
-  const open = openCommand(task);
-  assert.match(open, /\$ <\/span>npm<span[^>]*> test\n  --  --watch<\/span>/);
-  assert.match(detail(task), /npm<span[^>]*> test\n  --  --watch<\/span>/);
-  const long = "npm run verify -- " + "x".repeat(160);
-  assert.match(detail({ ...task, command: long }), /run verify -- x{160}/);
+  assert.match(openCommand(task), /\$ <\/span>npm<span[^>]*> test\n  --  --watch<\/span>/);
+  const open = openRow({ ...task, progress: "2/5" });
+  assert.equal(open.match(/> test\n  --  --watch</g)?.length, 1, "the command is printed once, in the header");
+  assert.match(open, /2\/5/);
+  assert.doesNotMatch(detail(task), /npm/, "the drawer never repeats the command");
 });
 
-test("ordinary status is already carried by the lamp; only abnormal outcomes add text", () => {
-  for (const state of ["running", "started", "waiting", "queued"]) assert.doesNotMatch(row({ id: "mt_a1b2c3d4", state, command: "npm test" }), />running<|>waiting<|>queued<|>started</);
-  assert.doesNotMatch(row({ id: "mt_a1b2c3d4", state: "completed", exitCode: 0, command: "npm test" }), />done</);
+test("the trailing slot is never empty: elapsed time, else an honest state word", () => {
+  for (const state of ["running", "started", "waiting", "queued"]) assert.match(row({ id: "mt_a1b2c3d4", state, command: "npm test" }), new RegExp(`>${state}<`));
+  assert.doesNotMatch(row({ id: "mt_a1b2c3d4", state: "running", command: "npm test", createdAt: 0, endedAt: 45_000 }), />running</);
   assert.match(row({ id: "mt_a1b2c3d4", state: "completed", exitCode: 2, command: "npm test" }), />exit 2</);
   assert.match(row({ id: "mt_a1b2c3d4", state: "cancelled", command: "npm test" }), />cancelled</);
-});
-
-test("an open row keeps its one-line header and unfolds the full command in the drawer", () => {
-  const html = openRow({ id: "mt_a1b2c3d4", state: "running", command: "npm test\n  --  --watch", progress: "2/5" });
-  assert.match(html, /npm<span[^>]*> test -- --watch<\/span>/);
-  assert.match(html, /\$ <\/span>npm<span[^>]*> test\n  --  --watch<\/span>/);
-  assert.match(html, /2\/5/);
 });
 
 test("the drawer shows output directly and keeps a tail-only fallback", () => {

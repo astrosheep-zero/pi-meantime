@@ -57,7 +57,7 @@ export function frameColor(colors: PluginTheme["colors"]): string {
 
 /** Hairline between rows inside a flush card. */
 export function dividerColor(colors: PluginTheme["colors"]): string {
-  return mixColor(secondaryColor(colors), colors.surface0, 0.85);
+  return mixColor(secondaryColor(colors), colors.surface1 ?? colors.surface0, 0.72);
 }
 
 /** Done is green when the theme has one; the pilot lamp always uses this. */

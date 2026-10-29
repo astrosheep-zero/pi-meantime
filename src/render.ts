@@ -1,4 +1,4 @@
-import { Text, stripTerminalSequences } from '@earendil-works/pi-tui';
+import { Box, Text, stripTerminalSequences } from '@earendil-works/pi-tui';
 import { keyHint } from '@earendil-works/pi-coding-agent';
 import type { Theme, ThemeColor } from '@earendil-works/pi-coding-agent';
 import { isRecord } from './schema.ts';
@@ -13,9 +13,9 @@ export interface TaskDisplay {
   notification?: string;
   isError?: boolean;
 }
-export type RenderTheme = Pick<Theme, 'fg'>;
+export type RenderTheme = Pick<Theme, 'fg' | 'bg' | 'bold'>;
 interface ResultLike { content: { type: string; text?: string }[] }
-interface RenderOptions { expanded?: boolean; isPartial?: boolean }
+interface RenderOptions { expanded?: boolean; isPartial?: boolean; outputPad?: number }
 
 // One semantic channel: the glyph carries state, color only supports it.
 const GLYPHS: Record<string, [glyph: string, color: ThemeColor]> = {
@@ -64,8 +64,9 @@ function tailLines(tail: string): string[] {
   return clean(tail).trimEnd().split('\n').filter(line => line.trim().length > 0);
 }
 function detailBlock(task: TaskDisplay, theme: RenderTheme, tail: string[] | undefined, tailBudget: number): string[] {
-  const lines = [taskLine(task, theme),
-    theme.fg('dim', `  ${task.tool}`)];
+  const lines = [taskLine(task, theme)];
+  // The row already names a command-less tool; bash needs no label at all.
+  if (task.command !== undefined && task.tool !== 'bash') lines.push(theme.fg('dim', `  ${task.tool}`));
   if (task.outputPath) lines.push(theme.fg('muted', `  Output: ${task.outputPath}`));
   if (task.cancelRequestedAt !== undefined) lines.push(theme.fg('warning', '  Cancellation was requested; the native outcome may not be settled.'));
   if (tail?.length) lines.push(...tail.slice(-tailBudget).map(line => theme.fg('toolOutput', `  ${truncateUtf8(line, 200)}`)));
@@ -75,7 +76,7 @@ function detailBlock(task: TaskDisplay, theme: RenderTheme, tail: string[] | und
 /** Chat card for a persisted completion notice. Model-directed boilerplate in
  * message.content is deliberately not shown; display answers what finished,
  * how it ended and what it produced. */
-export function renderCompletion(message: { details?: unknown }, options: RenderOptions, theme: RenderTheme): Text | undefined {
+export function renderCompletion(message: { details?: unknown }, options: RenderOptions, theme: RenderTheme): Box | undefined {
   const details = isRecord(message.details) ? message.details : undefined;
   const tasks = (Array.isArray(details?.tasks) ? details.tasks : []).filter(isRecord) as unknown as TaskDisplay[];
   if (!tasks.length) return undefined;
@@ -89,7 +90,10 @@ export function renderCompletion(message: { details?: unknown }, options: Render
       if (tasks.length === 1 && tail.length) blocks.push(...tail.slice(-2).map(line => theme.fg('toolOutput', `  ${truncateUtf8(line, 200)}`)));
     }
   }
-  return new Text(blocks.join('\n'), 0, 0);
+  // Same chrome as Pi's own custom messages: padded, on the message background.
+  const box = new Box(options.outputPad ?? 1, 1, text => theme.bg('customMessageBg', text));
+  box.addChild(new Text(blocks.join('\n'), 0, 0));
+  return box;
 }
 
 /** Extract task snapshots from a result's control details, in display order.
@@ -112,8 +116,9 @@ export function renderTaskResult(result: ResultLike & { details?: unknown }, opt
     const reason = task.detachReason === 'timeout' ? ' (90s auto-detach)'
       : task.detachReason === 'shortcut' || task.detachReason === 'steer' ? ' (detached)' : '';
     // The native call header already renders the command; don't repeat it here.
-    if (!options.expanded) return new Text(`${stateGlyph(theme, task.state)} ${theme.fg('dim', `background${reason} · ${task.id}`)}`, 0, 0);
-    return new Text(detailBlock(task, theme, undefined, 0).join('\n'), 0, 0);
+    const what = task.state === 'running' ? 'running in background' : 'background';
+    if (!options.expanded) return new Text(`\n${stateGlyph(theme, task.state)} ${theme.fg('dim', `${what}${reason} · ${task.id}`)}`, 0, 0);
+    return new Text(`\n${detailBlock(task, theme, undefined, 0).join('\n')}`, 0, 0);
   }
   const isWait = isRecord(context.args) && context.args.action === 'wait';
   const lines: string[] = [];
@@ -122,7 +127,8 @@ export function renderTaskResult(result: ResultLike & { details?: unknown }, opt
     if (!options.isPartial) {
       const body = tasks.flatMap(task => typeof task.output === 'string' ? tailLines(task.output) : []);
       const shown = options.expanded ? body : body.slice(0, 10);
-      lines.push(...shown.map(line => theme.fg('toolOutput', line)));
+      // A blank line keeps the status rows apart from the process's own output.
+      if (shown.length) lines.push('', ...shown.map(line => theme.fg('toolOutput', line)));
       const remaining = body.length - shown.length;
       if (remaining > 0) lines.push(theme.fg('muted', `… ${remaining} more lines, ${keyHint('app.tools.expand', 'to expand')}`));
     }
@@ -143,13 +149,13 @@ export function renderTaskResult(result: ResultLike & { details?: unknown }, opt
     const fallback = result.content.filter(b => b.type === 'text' && typeof b.text === 'string').flatMap(b => tailLines(b.text!));
     lines.push(...fallback.map(line => theme.fg('toolOutput', line)));
   }
-  return new Text(lines.join('\n'), 0, 0);
+  return new Text(`\n${lines.join('\n')}`, 0, 0);
 }
 
-/** Compact call row: `wait mt_a, mt_b · 30s` instead of raw JSON arguments. */
+/** Call header in Pi's tool language: **meantime** `wait mt_a, mt_b · 30s`, not raw JSON. */
 export function renderMeantimeCall(args: unknown, theme: RenderTheme): Text {
   const action = isRecord(args) && typeof args.action === 'string' ? args.action : 'list';
   const ids = isRecord(args) && Array.isArray(args.ids) ? args.ids.filter(id => typeof id === 'string').join(', ') : '';
   const timeout = isRecord(args) && typeof args.timeout === 'number' ? ` · ${args.timeout}s` : '';
-  return new Text(`${theme.fg('accent', action)}${ids ? ` ${ids}` : ''}${theme.fg('dim', timeout)}`, 0, 0);
+  return new Text(`${theme.fg('toolTitle', theme.bold('meantime'))} ${theme.fg('accent', action)}${ids ? ` ${ids}` : ''}${theme.fg('dim', timeout)}`, 0, 0);
 }

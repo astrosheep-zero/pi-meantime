@@ -41,7 +41,7 @@ test("wait rows let the lamp carry ordinary status and spell out failures", () =
   ]) {
     const html = render({ source: "meantime", action: "wait", tasks: [task] });
     assert.match(html, /sleep.*60/);
-    assert.doesNotMatch(html, /still running|>waiting<|>done</);
+    assert.doesNotMatch(html, /still running/);
   }
   assert.match(render({ source: "meantime", action: "wait", tasks: [
     { id: "mt_a1b2c3d4", state: "failed", command: "sleep 60", exitCode: 2 },
@@ -85,13 +85,13 @@ test("batch wait renders every target", () => {
   ] });
   assert.match(html, /sleep.*60/);
   assert.match(html, /dead/);
-  assert.doesNotMatch(html, />waiting</);
 });
 
-test("a launch handle carries a running lamp without redundant status prose", () => {
+test("a launch handle says it started, not that it is still running", () => {
   const html = render({ source: "handle", tasks: [{ id: "mt_a1b2c3d4", state: "running", command: "npm test", createdAt: 1000 }] });
   assert.match(html, /aria-label="STARTED"/);
-  assert.doesNotMatch(html, /RUNNING|1 R|seen |LIVE|00:01|meantime|snapshots|mt_a1b2c3d4|>started</);
+  assert.match(html, />started</);
+  assert.doesNotMatch(html, /RUNNING|>running<|00:01|meantime|mt_a1b2c3d4/);
   assert.match(html, /npm/);
 });
 
@@ -110,7 +110,6 @@ test("timeline tables lead with commands and keep bookkeeping out of the way", (
   ] });
   assert.match(html, /aria-label="COMPLETED · exit 0"/);
   assert.match(html, /aria-label="FAILED · exit 1"/);
-  assert.doesNotMatch(html, />done<\/div>/);
   assert.match(html, />exit 1<\/div>/);
   assert.doesNotMatch(html, />X0<\/div>|>E1<\/div>|meantime|snapshots|mt_a1b2c3d4|mt_deadbeef/);
 });
@@ -130,7 +129,6 @@ test("batch wait shares one card and divides rows with a hairline", () => {
     { id: "dead", state: "waiting", command: "npm run watch" },
   ] });
   assert.equal(html.match(/style="border-top-width:1px;border-top-color:/g)?.length, 1);
-  assert.doesNotMatch(html, />waiting</);
   assert.match(html, /npm<span[^>]*> run watch<\/span>/);
 });
 
@@ -145,12 +143,12 @@ test("task rows keep their details closed until pressed", () => {
 test("pressing a row expands details inline instead of opening a modal", async () => {
   const html = renderLine({ id: "mt_a1b2c3d4", state: "running", command: "npm test -- --watch",
     outputTail: "108 passing\n", outputPath: "/tmp/mt_a1b2c3d4.log", createdAt: 1_700_000_000_000 });
-  // The header stays single-line; the drawer carries the complete command and details.
-  assert.match(html, /npm<span[^>]*> test -- --watch<\/span>/);
+  // The header unfolds in place; the drawer holds only output and facts.
+  assert.equal(html.match(/> test -- --watch</g)?.length, 1);
   assert.match(html, /108 passing/);
   assert.doesNotMatch(html, />Command<|>Output<|>Output tail</);
   assert.match(html, /mt_a1b2c3d4/);
-  assert.match(html, /Output file: .*mt_a1b2c3d4\.log/);
+  assert.match(html, /mt_a1b2c3d4 · .*\/tmp\/mt_a1b2c3d4\.log/);
   assert.doesNotMatch(html, /role="dialog"/);
   // The host Modal renders null everywhere the tests can run, so the source
   // is what proves the row owns a drawer rather than an overlay.

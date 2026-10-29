@@ -56,7 +56,7 @@ export function MeantimeTaskCard(props: PluginTimelineItemProps<MeantimeCardData
           </View>
           {data.tasks.map((task, index) => (
             <View key={task.id} style={index > 0 ? { borderTopWidth: 1, borderTopColor: divider } : undefined}>
-              <TaskLine task={task} colors={colors} layout={layout} showId muted={!isActiveTask(task)} last={index === data.tasks.length - 1} />
+              <TaskLine task={task} colors={colors} layout={layout} showId muted={!isActiveTask(task)} />
             </View>
           ))}
         </Card>
