@@ -2,42 +2,40 @@ import type { PluginTheme } from "@getpaseo/plugin";
 
 type Slate = Omit<PluginTheme["colors"], "accentForeground">;
 
+export const LIGHT_CHASSIS_SURFACE = "#eef1f6";
+
 /**
- * Meantime's own console palette: neutral Braun carbon, deliberately no
- * relative of notesoup's paper or Square's terracotta, so a meantime card
- * reads as a precision instrument rather than another sheet of stationery.
- * Every token is opaque and self-contained — these cards never borrow the
- * host's surface ramp, only its appearance and its accentForeground.
+ * Dark hosts keep the smoked Braun-carbon console. Light hosts get the frosted
+ * quartz chassis from the light-glass-v4 direction: a pale mineral surface,
+ * one white sheen, and the task's tone glowing in from the top-left corner.
  */
-const PALETTE: Record<"dark" | "light", Slate> = {
+const PALETTE: Record<"dark" | "onLight", Slate> = {
   dark: {
-    surface0: "#101012", // recessed output well
-    surface1: "#19191c", // card, lifted off the timeline
-    surface2: "#222226",
-    border: "#2e2e33",
-    foreground: "#e8e8eb",
-    foregroundMuted: "#8a8a93",
-    statusSuccess: "#34d399",
-    statusWarning: "#f59e0b",
-    statusDanger: "#f87171",
-    accent: "#a1a1aa",
+    surface0: "#0f1114",
+    surface1: "#13161b",
+    surface2: "#1b1f26",
+    border: "#252a33",
+    foreground: "#f0f2f5",
+    foregroundMuted: "#8a9199",
+    statusSuccess: "#7fb26a",
+    statusWarning: "#8ba7c4",
+    statusDanger: "#ef7d6b",
+    accent: "#8d99a8",
   },
-  light: {
-    surface0: "#f3f4f6",
-    surface1: "#ffffff",
-    surface2: "#e9ebef",
-    border: "#dcdee3",
-    foreground: "#18181b",
-    foregroundMuted: "#71717a",
-    statusSuccess: "#059669",
-    statusWarning: "#d97706",
-    statusDanger: "#dc2626",
-    accent: "#52525b",
+  onLight: {
+    surface0: LIGHT_CHASSIS_SURFACE,
+    surface1: "#ecf0f6",
+    surface2: "#e6eaf1",
+    border: "#d7dbe3",
+    foreground: "#151a23",
+    foregroundMuted: "#646e7e",
+    statusSuccess: "#209c56",
+    statusWarning: "#4f7093",
+    statusDanger: "#da3c2e",
+    accent: "#7d8591",
   },
 };
 
-/** WCAG relative luminance, the same sRGB curve rows.ts judges contrast with;
- * kept local so the palette depends on nothing that renders. */
 function luminance(color: string): number | undefined {
   const hex = /^#([\da-f]{3}|[\da-f]{6})$/i.exec(color)?.[1];
   if (!hex) return undefined;
@@ -49,18 +47,12 @@ function luminance(color: string): number | undefined {
   return r! * 0.2126 + g! * 0.7152 + b! * 0.0722;
 }
 
-/**
- * Appearance is read off the host's own ink: a foreground brighter than
- * surface0 can only be a dark theme, and the reverse a light one. A host that
- * hands over something other than hex keeps its palette untouched — guessing
- * an appearance would be worse than inheriting.
- */
 export function meantimeTheme(theme: PluginTheme): PluginTheme {
   const surface = luminance(theme.colors.surface0);
   const ink = luminance(theme.colors.foreground);
   if (surface === undefined || ink === undefined) return theme;
   return { colors: {
-    ...(ink > surface ? PALETTE.dark : PALETTE.light),
+    ...(ink > surface ? PALETTE.dark : PALETTE.onLight),
     accentForeground: theme.colors.accentForeground,
   } };
 }

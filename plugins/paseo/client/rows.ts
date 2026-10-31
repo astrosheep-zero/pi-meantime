@@ -3,7 +3,8 @@ import type { TaskSummary } from "../shared/tasks.js";
 import { elapsedSeconds } from "../shared/tasks.js";
 
 type RGB = [number, number, number];
-function rgb(color: string): RGB | undefined {
+export function rgb(color: string | undefined): RGB | undefined {
+  if (!color) return undefined;
   const hex = /^#([\da-f]{3}|[\da-f]{6})$/i.exec(color)?.[1];
   if (hex) {
     const full = hex.length === 3 ? [...hex].map(c => c + c).join("") : hex;
@@ -94,20 +95,26 @@ export function stateText(state: string): string {
   }
 }
 
-/** Cross-platform monospace: iOS has no generic "monospace" alias. */
+/** Cross-platform monospace: explicit Menlo/SF Mono stack on web avoids Chromium's Courier fallback. */
 export function monoFont(platform: "ios" | "android" | "web"): string {
-  return platform === "ios" ? "Menlo" : "monospace";
+  if (platform === "ios") return "Menlo";
+  if (platform === "android") return "monospace";
+  return 'Menlo, ui-monospace, "SF Mono", SFMono-Regular, Consolas, monospace';
 }
 
 /** Paseo's default codeFontSize/line-height. Plugin themes expose colors only,
  * so this aligns with the native default rather than the user's live setting. */
-export const CODE_FONT_SIZE = 12;
-export const CODE_LINE_HEIGHT = 18;
+export const CODE_FONT_SIZE = 11.5;
+export const CODE_LINE_HEIGHT = 16;
 
 /** Snapshot only. A creation time without an end is not an elapsed duration. */
 export function formatElapsed(task: TaskSummary): string | undefined {
   const seconds = elapsedSeconds(task);
   if (seconds === undefined) return undefined;
+  return formatSeconds(seconds);
+}
+
+export function formatSeconds(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
   return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}`;

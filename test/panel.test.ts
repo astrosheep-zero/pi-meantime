@@ -63,10 +63,12 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
     await pi.call('bash', { command: 'third command', __background__: 'yes' });
     assert.ok(renders > changedBefore, 'runtime changed sink refreshes without a timer tick');
     assert.match(text(), /third command/);
-    updateSecond('live progress');
+    const beforeOutput = renders;
+    updateSecond('earlier output\nlive progress\u001b[2J');
+    assert.equal(renders, beforeOutput, 'producer chunks do not trigger unbounded panel redraws');
     t.mock.timers.tick(1000);
     assertElapsedVisible();
-    assert.match(text(), /Progress: live progress/);
+    assert.match(text(), /earlier output\nlive progress/);
     assert.ok(panel!.render(20).every(line => visibleWidth(line) <= 20));
     panel!.handleInput!('\u001b[B');
     panel!.handleInput!('\r');
@@ -87,8 +89,8 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
     await until(() => (instance.inspect() as { tasks: Snapshot[] }).tasks.every(task => !task.localRunning));
     assert.equal(renders, before, 'closed panel has no changed sink listener');
     await until(() => pi.notifications.length === 1);
-    assert.match(pi.notifications[0]!.content, new RegExp(`${idB} · cancelled`));
-    assert.equal((instance.inspect() as { tasks: Snapshot[] }).tasks.find(task => task.id === idB)!.state, 'cancelled');
+    assert.match(pi.notifications[0]!.content, new RegExp(`${idB} · completed`));
+    assert.equal((instance.inspect() as { tasks: Snapshot[] }).tasks.find(task => task.id === idB)!.state, 'completed');
 
     await command('status');
     assert.equal(closed, 1);
@@ -96,7 +98,7 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
     const reopened = command();
     panel!.handleInput!('\r');
     assert.match(text(), /recent output/); assert.doesNotMatch(text(), /Output:/);
-    assert.match(text(), /~⊘/, 'cancelled task shows the muted cancellation glyph');
+    assert.match(text(), /✓/, 'the cooperatively cancelled task settles with the completed glyph');
     await sleep(10); assert.equal(pi.notifications.length, 1);
     panel!.handleInput!('\u001b'); await reopened;
     assert.equal(closed, 2);

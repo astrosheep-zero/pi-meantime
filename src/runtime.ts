@@ -24,8 +24,8 @@ export interface Completion {
   /** Late linked update; only this nested delta is new accounting. */
   lateScope?: boolean; nestedUsage?: Result['usage'];
 }
-export type TaskRecord = TaskIndex & { completion?: Completion };
-export type IndexChange = { task: TaskIndex } | { completion: Completion } | { removed: string[] };
+export type TaskRecord = TaskIndex & { completion?: Completion; observed?: boolean };
+export type IndexChange = { task: TaskIndex } | { completion: Completion } | { observed: string } | { removed: string[] };
 export type View = { kind: 'result'; task: Snapshot; result: Result; isError?: boolean; thrown?: { error: unknown } } | { kind: 'handle'; task: Snapshot };
 export interface RunRequest {
   tool: string; kind: 'bash' | 'tool'; callId: string; mode: Mode; command?: string;
@@ -50,6 +50,8 @@ export interface RuntimeSink {
   notify(tasks: Snapshot[]): void | false;
   changed?(): void;
   index(change: IndexChange): void;
+  /** A result was observed: forget its volatile queued notification. */
+  observed?(id: string): void;
 }
 // Reloaded modules share only admission; old non-cooperative producers retain
 // their slot until they settle, without retaining a successor's Pi context.
@@ -91,7 +93,12 @@ export class TaskRuntime {
       if (completion) Object.assign(meta, { endedAt: completion.endedAt, isError: completion.isError,
         cancelRequestedAt: completion.cancelRequestedAt, exitCode: completion.exitCode,
         outputPath: completion.outputPath,
-        state: completion.cancelRequestedAt !== undefined ? 'cancelled' : completion.isError ? 'failed' : 'completed' });
+        // Same rule as finish(): the persisted outcome decides the state;
+        // a recorded cancel request never relabels it.
+        state: completion.isError ? 'failed' : 'completed',
+        // A crash between the completion write and the notification would
+        // otherwise silence it forever: requeue terminal, unobserved tasks.
+        notification: record.observed ? 'observed' : 'pending' });
       this.tasks.set(meta.id, { meta, outputTail: completion ? sliceTail(completion.text) : undefined, result: completion?.result ?? (completion ? { content: [{ type: 'text', text: completion.text }], details: undefined } : undefined),
         callId: '', published: true, observed: false, viewSettled: true, canDetach: false, notifyAttempts: 0, waiters: 0 });
     }
@@ -119,8 +126,12 @@ export class TaskRuntime {
         // The observer may already be gone (including a foreground result).
         // Its immutable result is not rewritten; append linked late metadata.
         if (task.result) task.result = scope.result;
+        // Merge the late scope over the stored completion instead of replacing
+        // it: the original carries exitCode/outputPath the scope record lacks.
+        const prior = task.meta;
         try { this.sink.index({ completion: { id, toolCallId: task.callId, codemodeRootId: task.codemodeRootId,
           endedAt: task.meta.endedAt!, isError: task.meta.isError!, cancelRequestedAt: task.meta.cancelRequestedAt,
+          exitCode: prior.exitCode, outputPath: prior.outputPath,
           text: scope.result.content.filter(block => block.type === 'text').map(block => block.text).join('\n'),
           result: scope.result, lateScope: true, nestedUsage: scope.usage,
         } }); }
@@ -135,7 +146,9 @@ export class TaskRuntime {
     task.cleanupParent = () => request.parentSignal?.removeEventListener('abort', onParentAbort);
     const update: Update = partial => {
       if (!task.meta.localRunning) return;
-      task.meta.progress = truncateUtf8(partial.content.filter(b => b.type === 'text').map(b => b.text).join('\n'), 2048);
+      const text = partial.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+      task.meta.progress = truncateUtf8(text, 2048);
+      task.outputTail = sliceTail(text);
       if (this.open && !task.viewSettled && task.meta.delivery === 'foreground') {
         try { request.onUpdate?.(partial); } catch { /* A dead renderer cannot kill the producer. */ }
       }
@@ -258,11 +271,14 @@ export class TaskRuntime {
   private finish(task: Task, result: Result, isError: boolean, thrown?: { error: unknown }): void {
     task.meta.localRunning = false; task.meta.endedAt = Date.now(); task.finishSequence = ++this.completionSequence;
     delete task.meta.progress; // Terminal previews must use finalized output, not a pre-hook partial.
+    delete task.outputTail;
     clearTimeout(task.autoTimer); clearTimeout(task.cancelTimer); task.cleanupParent?.();
     clearTimeout(task.steerTimer); task.steerTimer = undefined; task.requestedDetach = undefined;
-    // Cancellation is a lifecycle fact, not a claim of remote rollback.
+    // Cancellation is a request, not a claim of remote rollback. A producer
+    // that ignored abort still completed or failed for real; cancelRequestedAt
+    // records the request without masking that outcome.
     task.meta.isError = isError;
-    task.meta.state = task.meta.cancelRequestedAt !== undefined ? 'cancelled' : isError ? 'failed' : 'completed';
+    task.meta.state = isError ? 'failed' : 'completed';
     task.controller = undefined;
     if (!task.viewSettled) {
       // Pi already persists the foreground result, including its native payload.
@@ -308,30 +324,37 @@ export class TaskRuntime {
     return task;
   }
   /** Wait (optionally requesting cancellation first), then acknowledge the available result. */
-  async wait(id: string, timeoutMs: number, signal?: AbortSignal, cancel = false): Promise<{ task: Snapshot; result?: Result }> {
+  async wait(id: string, timeoutMs: number, signal?: AbortSignal, cancel = false): Promise<{ task: Snapshot; result?: Result; waitOutcome?: 'timeout' | 'interrupted' }> {
     signal?.throwIfAborted();
     const task = this.lookup(id);
     return this.withWaiters([task], async () => {
       if (cancel) this.cancel(id);
       signal?.throwIfAborted();
-      await this.waitUntil(task.meta.localRunning ? task.done : undefined, timeoutMs, signal);
-      return this.result(task.meta.id);
+      const outcome = await this.waitUntil(task.meta.localRunning ? task.done : undefined, timeoutMs, signal);
+      const res = this.result(task.meta.id);
+      return { ...res, ...(!cancel && res.result === undefined && outcome !== 'settled' ? { waitOutcome: outcome } : {}) };
     });
   }
-  async waitMany(ids: string[], mode: 'any' | 'all', timeoutMs: number, signal?: AbortSignal): Promise<{ tasks: { task: Snapshot; result?: Result }[]; pending: Snapshot[] }> {
+  async waitMany(ids: string[], mode: 'any' | 'all', timeoutMs: number, signal?: AbortSignal): Promise<{ tasks: { task: Snapshot; result?: Result }[]; pending: Snapshot[]; waitOutcome?: 'timeout' | 'interrupted' }> {
     signal?.throwIfAborted();
     // Resolve every prefix before waiting or acknowledging any result.
     const tasks = [...new Set(ids.map(id => this.lookup(id)))];
     return this.withWaiters(tasks, async () => {
-      const done = tasks.map(task => task.meta.localRunning ? task.done : undefined);
-      await this.waitUntil(mode === 'any' ? Promise.race(done) : Promise.all(done), timeoutMs, signal);
+      // Only race genuinely live promises: a recovered outcome_unknown task
+      // has no `done`, and Promise.race(undefined) would settle immediately
+      // even though nothing actually finished.
+      const live = tasks.filter(task => task.meta.localRunning).map(task => task.done!);
+      const outcome = await this.waitUntil(mode === 'any'
+        ? (live.length > 0 ? Promise.race(live) : undefined)
+        : Promise.all(tasks.map(task => task.meta.localRunning ? task.done : undefined)), timeoutMs, signal);
       const settled: { task: Snapshot; result?: Result }[] = [], pending: Snapshot[] = [];
       for (const task of tasks) {
         const snapshot = this.get(task.meta.id);
         if (!snapshot.localRunning && snapshot.endedAt !== undefined) settled.push(this.result(task.meta.id));
         else pending.push(snapshot);
       }
-      return { tasks: settled, pending };
+      const incomplete = mode === 'any' ? settled.length === 0 && pending.length > 0 : pending.length > 0;
+      return { tasks: settled, pending, ...(incomplete && outcome !== 'settled' ? { waitOutcome: outcome } : {}) };
     });
   }
   private async withWaiters<T>(tasks: Task[], operation: () => Promise<T>): Promise<T> {
@@ -343,27 +366,28 @@ export class TaskRuntime {
       this.scheduleNotifications(); this.prune();
     }
   }
-  private async waitUntil(done: Promise<unknown> | undefined, timeoutMs: number, signal?: AbortSignal): Promise<void> {
-    if (done && timeoutMs > 0) {
+  private async waitUntil(done: Promise<unknown> | undefined, timeoutMs: number, signal?: AbortSignal): Promise<'settled' | 'timeout' | 'interrupted'> {
+    if (!done || timeoutMs <= 0) return 'settled';
+    {
       let timer: ReturnType<typeof setTimeout> | undefined;
       let onAbort: (() => void) | undefined;
       let release: (() => void) | undefined;
       try {
-        await Promise.race([
-          done,
-          new Promise<void>(resolve => { release = resolve; this.waitReleases.add(resolve); }),
-          new Promise<void>(resolve => {
+        return await Promise.race([
+          done.then(() => 'settled' as const),
+          new Promise<'interrupted'>(resolve => { release = () => resolve('interrupted'); this.waitReleases.add(release); }),
+          new Promise<'timeout'>(resolve => {
             let remaining = timeoutMs;
             const schedule = () => {
               const chunk = Math.min(remaining, 2_147_483_647);
               timer = setTimeout(() => {
                 remaining -= chunk;
-                if (remaining > 0) schedule(); else resolve();
+                if (remaining > 0) schedule(); else resolve('timeout');
               }, chunk);
             };
             schedule();
           }),
-          new Promise<void>((_resolve, reject) => {
+          new Promise<never>((_resolve, reject) => {
             onAbort = () => reject(signal!.reason);
             signal?.addEventListener('abort', onAbort, { once: true });
           }),
@@ -383,7 +407,14 @@ export class TaskRuntime {
     const task = this.lookup(id);
     if (task.meta.localRunning || !task.meta.endedAt) return { task: snap(task) };
     const result = task.result;
-    if (result) { task.observed = true; task.meta.notification = 'observed'; }
+    if (result) {
+      task.observed = true; task.meta.notification = 'observed';
+      // Persist the observation so a restart doesn't re-notify this task.
+      try { this.sink.index({ observed: task.meta.id }); } catch { /* A volatile index must not break result retrieval. */ }
+      // Forget the volatile queued copy: it can't be unsent from the host,
+      // but it must not be returned and re-queued as a duplicate either.
+      this.sink.observed?.(task.meta.id);
+    }
     const view = { task: snap(task), result };
     this.prune(task.meta.id);
     return view;

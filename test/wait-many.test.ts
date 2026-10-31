@@ -39,7 +39,7 @@ for (const ending of ['completion', 'timeout', 'abort', 'detach'] as const) test
     const ids = [first.task.id, second.task.id];
     const batch = h.runtime.waitMany(ids, 'all', ending === 'timeout' ? 10 : 5000, caller.signal);
     const cancelled = await h.runtime.wait(first.task.id, h.config.shutdownGraceMs, undefined, true);
-    assert.equal(cancelled.task.state, 'cancelled'); assert.equal(cancelled.task.notification, 'observed');
+    assert.equal(cancelled.task.state, 'completed'); assert.equal(cancelled.task.notification, 'observed');
     if (ending === 'abort') {
       caller.abort(new Error('stop batch'));
       await assert.rejects(batch, /stop batch/);
@@ -53,7 +53,7 @@ for (const ending of ['completion', 'timeout', 'abort', 'detach'] as const) test
     if (ending === 'completion') {
       const complete = await batch;
       assert.deepEqual(complete.tasks.map(view => view.task.id), ids);
-      assert.deepEqual(complete.tasks.map(view => view.task.state), ['cancelled', 'completed']);
+      assert.deepEqual(complete.tasks.map(view => view.task.state), ['completed', 'completed']);
       assert.deepEqual(complete.tasks.map(view => view.result?.structuredContent), [{ value: 'A cancelled' }, { value: 'B completed' }]);
       assert.deepEqual(complete.pending, []);
       h.runtime.flushNotifications(); assert.equal(h.notifications.length, 0);
@@ -105,7 +105,25 @@ test('cancelMany mirrors waitMany preflight: a bad id aborts nothing and a signa
       execute: signal => { signal.addEventListener('abort', () => cooperative.resolve(ok('B cancelled'))); return cooperative.promise; } });
     h.runtime.published('b');
     const settled = await h.runtime.cancelMany([second.task.id, second.task.id.slice(3)], h.config.shutdownGraceMs);
-    assert.deepEqual(settled.tasks.map(view => [view.task.id, view.task.state]), [[second.task.id, 'cancelled']], 'duplicate ids collapse');
+    assert.deepEqual(settled.tasks.map(view => [view.task.id, view.task.state]), [[second.task.id, 'completed']], 'duplicate ids collapse');
     assert.deepEqual(settled.pending, []);
   } finally { stubborn.resolve(ok()); cooperative.resolve(ok()); await h.close(); }
+});
+
+test('waitMany any ignores un-waitable outcome_unknown tasks instead of settling immediately', async () => {
+  const h = runtimeHarness(); const work = deferred<Outcome>();
+  const { TaskRuntime } = await import('../src/runtime.ts');
+  // A record without completion restores as outcome_unknown: no live promise.
+  const ghostRecord = { id: 'mt_deadbeef', tool: 'ghost', kind: 'tool' as const, mode: 'yes' as const, createdAt: Date.now() - 1000 };
+  const recovered = new TaskRuntime(h.config, h.sink, [ghostRecord]);
+  try {
+    assert.equal(recovered.get('mt_deadbeef').state, 'outcome_unknown');
+    const live = await recovered.run({ tool: 'live', kind: 'tool', callId: 'live', mode: 'yes', canDetach: true, execute: () => work.promise });
+    const waiting = recovered.waitMany(['mt_deadbeef', live.task.id], 'any', 5000);
+    // Only the live task is waitable; `any` must wait for IT, not return at once.
+    work.resolve(ok('live done'));
+    const batch = await waiting;
+    assert.deepEqual(batch.tasks.map(view => view.task.id), [live.task.id]);
+    assert.deepEqual(batch.pending.map(task => task.id), ['mt_deadbeef']);
+  } finally { work.resolve(ok()); await recovered.close(); await h.close(); }
 });

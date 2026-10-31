@@ -228,7 +228,9 @@ for (const trigger of ['steer', 'shortcut', 'command'] as const) test(`${trigger
     else if (trigger === 'shortcut') await h.pi.shortcuts.get('ctrl+shift+b')!(h.pi.ctx);
     else await h.pi.commands.get('meantime')!('detach', h.pi.ctx);
     const released = await Promise.race([waiting, sleep(1000).then(() => { throw new Error('detach did not release wait'); })]);
-    assert.deepEqual(released.result, baseline.result); assert.equal(signal!.aborted, false);
+    const details = released.result.details as { waitOutcome: string; waitedMs: number; state: string };
+    assert.equal(details.waitOutcome, 'interrupted'); assert.ok(details.waitedMs >= 0);
+    assert.equal(details.state, (baseline.result.details as { state: string }).state); assert.equal(signal!.aborted, false);
     work.resolve(ok('later').result); await until(() => h.pi.notifications.length === 1);
   } finally { work.resolve(ok().result); await h.close(); }
 });

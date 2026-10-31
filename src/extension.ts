@@ -57,6 +57,10 @@ function commandOneLine(command: string): string {
   return commandPreview(command).replace(/\s+/g, ' ');
 }
 function elapsed(task: Snapshot): string {
+  // Active tasks tick; an inactive task without endedAt (outcome_unknown)
+  // has no honest runtime to show.
+  const active = task.localRunning === true || task.state === 'running' || task.state === 'cancel_requested';
+  if (!active && task.endedAt === undefined) return '';
   return `${Math.max(0, Math.floor(((task.endedAt ?? Date.now()) - task.createdAt) / 1000))}s`;
 }
 function taskHeader(task: Snapshot): string {
@@ -207,9 +211,8 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
           const rawCommand = task ? r.tasks.get(task.id)?.meta.command ?? task.command : undefined;
           const details = task ? [
             ...(rawCommand !== undefined ? [`Command: ${stripTerminalSequences(rawCommand)}`] : []),
-            ...(task.progress ? [`Progress: ${stripTerminalSequences(task.progress)}`] : []),
-            // The panel is for the human: show the raw tail, not the model's untrusted-output fence.
-            ...(!task.localRunning ? [clean(r.tasks.get(task.id)?.outputTail ?? '').trim()] : []),
+            // The panel is for the human: show terminal output, not receipt prose.
+            clean(r.tasks.get(task.id)?.outputTail ?? task.progress ?? '').trim(),
             ...(task.outputPath ? [`Output: ${task.outputPath}`] : []),
           ].filter(Boolean) : [];
           return [theme.fg('accent', 'Current session tasks'),
@@ -353,39 +356,72 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       if (!Array.isArray(ids) || ids.length < 1 || ids.length > 32 || !ids.every(id => typeof id === 'string')) throw new Error('ids must contain 1 to 32 task ids');
       // Snapshot the targets before blocking so the streaming update can name them.
       const targets = [...new Map(ids.map(id => { const t = r.get(id); return [t.id, t] as const; })).values()];
-      const previewTargets = targets.map(t => ({ ...withTail(withFullCommand(t)), state: cancel ? 'cancel_requested' : 'waiting' }));
-      try {
-        _update?.({
-          content: [{ type: 'text', text: targets.map(taskReceipt).join('\n') }],
-          details: { tasks: previewTargets },
-        });
-      } catch {}
-      if (ids.length === 1) {
-        const { task, result } = await r.wait(ids[0]!, cancel ? config.shutdownGraceMs : timeout, signal, cancel);
-        if (result) return storedResult(withTail(task), result);
-        const previewTask = withTail(withFullCommand(task));
-        return {
-          ...textResult(noResultReceipt(task), previewTask),
-          structuredContent: { task: json(previewTask), result_available: false },
-        };
-      }
-      const { tasks, pending } = cancel
-        ? await r.cancelMany(ids, config.shutdownGraceMs, signal)
-        : await r.waitMany(ids, params.mode === 'any' ? 'any' : 'all', timeout, signal);
-      const budget = { remaining: 32 * 1024 };
-      const views = tasks.map(({ task, result }) => result ? storedResult(task, result, budget) : textResult(noResultReceipt(task)));
-      const page = { tasks: tasks.map(({ task, result }, i) => {
-          const taskDetails = isRecord(views[i]!.details) && isRecord((views[i]!.details as Record<string, unknown>).task)
-            ? (views[i]!.details as { task: { output?: string } }).task : undefined;
-          return withTail({ ...withFullCommand(task), ...(taskDetails?.output !== undefined ? { output: taskDetails.output } : {}),
-            result_available: result !== undefined, result: (views[i]!.structuredContent as { result?: Json } | undefined)?.result });
-        }),
-        pending: pending.map(task => withFullCommand(task)) };
-      return {
-        content: [...views.flatMap(view => view.content), { type: 'text', text: `Pending: ${pending.map(task => task.id).join(', ') || '(none)'}` }],
-        details: page, structuredContent: json(page),
-        isError: views.some(view => view.isError),
+      const waitStartedAt = Date.now();
+      let lastPreview = '';
+      const emitPreview = () => {
+        try {
+          const snapshots = targets.map(t => r.get(t.id));
+          const previewTargets = snapshots.map(t => withTail(withFullCommand(t)));
+          const key = JSON.stringify(previewTargets);
+          if (key === lastPreview) return;
+          lastPreview = key;
+          _update?.({
+            content: [{ type: 'text', text: snapshots.map(taskReceipt).join('\n') }],
+            details: { tasks: previewTargets, waitStartedAt },
+          });
+        } catch { /* A dead renderer cannot interrupt the wait. */ }
       };
+      let timer: ReturnType<typeof setInterval> | undefined;
+      try {
+        emitPreview();
+        if (_update && (cancel ? config.shutdownGraceMs : timeout) > 0 && targets.some(t => t.localRunning)) {
+          timer = setInterval(emitPreview, 120);
+        }
+        if (ids.length === 1) {
+          const { task, result, waitOutcome } = await r.wait(ids[0]!, cancel ? config.shutdownGraceMs : timeout, signal, cancel);
+          // A single wait returns the task's own result (its error included);
+          // a cancel only observes the outcome — the cancelled task's failure
+          // is not the cancel call's failure.
+          if (result) {
+            const receipt = storedResult(withTail(task), result);
+            return cancel ? { ...receipt, isError: false } : receipt;
+          }
+          const previewTask = withTail(withFullCommand(task));
+          return {
+            ...textResult(noResultReceipt(task), { ...previewTask, ...(waitOutcome ? { waitedMs: Math.max(0, Date.now() - waitStartedAt), waitOutcome } : {}) }),
+            structuredContent: { task: json(previewTask), result_available: false },
+          };
+        }
+        const batch = cancel
+          ? await r.cancelMany(ids, config.shutdownGraceMs, signal)
+          : await r.waitMany(ids, params.mode === 'any' ? 'any' : 'all', timeout, signal);
+        const { tasks, pending } = batch;
+        const waitOutcome = 'waitOutcome' in batch ? batch.waitOutcome : undefined;
+        const budget = { remaining: 32 * 1024 };
+        const views = tasks.map(({ task, result }) => result ? storedResult(task, result, budget) : textResult(noResultReceipt(task)));
+        const page = { tasks: tasks.map(({ task, result }, i) => {
+            const taskDetails = isRecord(views[i]!.details) && isRecord((views[i]!.details as Record<string, unknown>).task)
+              ? (views[i]!.details as { task: { output?: string } }).task : undefined;
+            return withTail({ ...withFullCommand(task), ...(taskDetails?.output !== undefined ? { output: taskDetails.output } : {}),
+              result_available: result !== undefined, result: (views[i]!.structuredContent as { result?: Json } | undefined)?.result });
+          }),
+          pending: pending.map(task => withTail(withFullCommand(task))),
+          ...(waitOutcome ? { waitedMs: Math.max(0, Date.now() - waitStartedAt), waitOutcome } : {}) };
+        return {
+          content: [...views.flatMap(view => view.content), { type: 'text', text: `Pending: ${pending.map(task => task.id).join(', ') || '(none)'}` }],
+          details: page, structuredContent: json(page),
+          // Observing a failed task is a successful wait: the failure is the
+          // task's state (details.tasks[].isError), not this call's error.
+          isError: false,
+        };
+      } catch (error) {
+        if (cancel || !signal?.aborted) throw error;
+        const errMsg = error instanceof Error ? error.message : String(error);
+        const abortedTasks = targets.map(t => withTail(withFullCommand(r.get(t.id))));
+        return { content: [{ type: 'text', text: errMsg }], details: { tasks: abortedTasks, waitedMs: Math.max(0, Date.now() - waitStartedAt), waitOutcome: 'interrupted' as const }, isError: true };
+      } finally {
+        clearInterval(timer);
+      }
     },
   });
 
@@ -407,10 +443,15 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
         if (record) record.completion = change.completion;
       }
       else if (change && 'removed' in change) for (const id of change.removed) records.delete(id);
+      else if (change && 'observed' in change) {
+        const record = records.get(change.observed);
+        if (record) record.observed = true;
+      }
     }
     const created: TaskRuntime = new TaskRuntime(config, {
       notify(tasks) { return boundDelivery.send(tasks); },
       changed() { updateStatus(); refreshPanel?.(); },
+      observed(id) { boundDelivery.forget(id); },
       index(change) {
         if (!live || runtime !== created || currentOwner !== boundOwner) throw new Error('Stale task index target');
         if ('completion' in change && change.completion.result) {

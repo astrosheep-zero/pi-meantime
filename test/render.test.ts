@@ -136,13 +136,27 @@ test('multi-task waits render each task row and its structured output from detai
     '⊘ sleep 99 · 5s · mt_19202122', '', '✓ 42 passing', 'FINAL'].join('\n'), 'a blank line separates status rows from output');
 });
 
-test('partial wait results render only the task rows', () => {
+test('partial wait results render task rows without receipt prose when no output exists', () => {
   const streaming: TaskDisplay = { id: 'mt_a1b2c3d4', tool: 'bash', state: 'waiting',
     command: 'npm test', createdAt: Date.now() - 12_000 };
   const partial = renderTaskResult({ content: [{ type: 'text', text: 'Meantime mt_a1b2c3d4 waiting — npm test' }],
     details: { tasks: [streaming] } },
   { expanded: false, isPartial: true }, plain, { args: { action: 'wait' } }, false);
   assert.equal(render(partial), '● npm test · 12s · mt_a1b2c3d4', 'streaming rows do not repeat the receipt prose');
+});
+
+test('partial wait results show a bounded live tail with progress fallback and sanitized output', () => {
+  const tail = Array.from({ length: 25 }, (_, index) => `live ${index + 1}`).join('\n');
+  const task: TaskDisplay = { id: 'mt_a1b2c3d4', tool: 'bash', state: 'waiting', command: 'npm test',
+    outputTail: '\u001b[2J' + tail, progress: 'older progress', output: 'final output' };
+  const partial = (expanded: boolean, entry = task) => render(renderTaskResult({ content: [], details: { tasks: [entry] } },
+    { expanded, isPartial: true }, plain, { args: { action: 'wait' } }, false));
+  assert.equal(partial(false), ['● npm test · mt_a1b2c3d4', '', ...tail.split('\n').slice(-5)].join('\n'));
+  assert.equal(partial(true), ['● npm test · mt_a1b2c3d4', '', ...tail.split('\n').slice(-20)].join('\n'));
+  assert.match(partial(false, { ...task, outputTail: undefined, progress: 'fallback\nnewest' }), /fallback\nnewest$/);
+  const final = render(renderTaskResult({ content: [], details: { tasks: [task] } },
+    { expanded: false }, plain, { args: { action: 'wait' } }, false));
+  assert.match(final, /final output$/);
 });
 
 test('collapsed handle rows attribute the detach trigger concisely', () => {

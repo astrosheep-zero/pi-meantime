@@ -3,10 +3,10 @@ import { test } from 'node:test';
 import { install } from '../src/extension.ts';
 import { validateConfig } from '../src/config.ts';
 import type { Config } from '../src/config.ts';
-import type { Outcome } from '../src/protocol.ts';
+import type { Outcome, Update } from '../src/protocol.ts';
 import type { Snapshot } from '../src/runtime.ts';
 import { FakePi, basicTool } from './host.ts';
-import { deferred, until } from './helpers.ts';
+import { deferred, ok, until } from './helpers.ts';
 
 async function setup(config: Partial<Config> = {}) {
   const pi = new FakePi('A', 'tui');
@@ -43,25 +43,110 @@ test('background handles carry the complete command in details and structuredCon
 test('meantime wait streams an immediate partial snapshot of its targets', async () => {
   const h = await setup();
   try {
-    const handle = await h.pi.call('bash', { command: LONG_COMMAND.replace('echo second', 'sleep 0.4 && echo second'), __background__: 'yes' });
+    const command = `sleep 0.15\n${LONG_COMMAND.replace('echo second', 'sleep 0.4 && echo second')}`;
+    const handle = await h.pi.call('bash', { command, __background__: 'yes' });
     const task = snapshot(handle);
     const waiting = h.pi.call('meantime', { action: 'wait', ids: [task.id], timeout: 2 });
     await until(() => h.pi.updates.some(update => Array.isArray((update.details as { tasks?: unknown } | undefined)?.tasks)), 1000);
-    const partial = h.pi.updates.map(update => update.details as { tasks?: { id: string; tool: string; state: string; command?: string; createdAt?: number }[] } | undefined)
+    const partial = h.pi.updates.map(update => update.details as { waitStartedAt?: number; tasks?: { id: string; tool: string; state: string; command?: string; createdAt?: number }[] } | undefined)
       .find(details => Array.isArray(details?.tasks))!;
     assert.ok(Array.isArray(partial.tasks), 'the partial update carries task snapshots');
+    assert.equal(typeof partial.waitStartedAt, 'number');
     const preview = partial.tasks![0]!;
     assert.equal(preview.id, task.id);
     assert.equal(preview.tool, 'bash');
-    assert.equal(preview.state, 'waiting', 'the target is named before the wait resolves');
+    assert.equal(preview.state, 'running', 'previews keep the task\'s real state, the wait is expressed by the call itself');
     assert.equal(typeof preview.createdAt, 'number');
-    assertFull(preview.command, LONG_COMMAND.replace('echo second', 'sleep 0.4 && echo second'), 'streamed details.tasks[0].command');
+    assertFull(preview.command, command, 'streamed details.tasks[0].command');
+    await until(() => h.pi.updates.some(update => {
+      const tasks = (update.details as { tasks?: { outputTail?: string }[] } | undefined)?.tasks;
+      return tasks?.[0]?.outputTail === 'first\n';
+    }));
+    assert.equal((h.instance.inspect() as { tasks: Snapshot[] }).tasks.find(t => t.id === task.id)!.localRunning, true,
+      'real shell stdout reaches wait partials before the producer finishes');
     const settled = await waiting;
     assert.equal(settled.isError, false);
     const final = settled.result.details as { task: Snapshot };
-    assertFull(final.task.command, LONG_COMMAND.replace('echo second', 'sleep 0.4 && echo second'), 'settled wait details.task.command');
+    assertFull(final.task.command, command, 'settled wait details.task.command');
   } finally { await h.close(); }
 });
+
+for (const ending of ['completion', 'timeout', 'abort', 'any', 'all', 'cancel', 'cancel-many'] as const) {
+  test(`meantime streams changed live snapshots and stops after ${ending}`, async t => {
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const h = await setup({ shutdownGraceMs: 1000 });
+    const works = [deferred<Outcome>(), deferred<Outcome>()];
+    const producers: { update: Update; signal: AbortSignal }[] = [];
+    h.pi.registerTool(basicTool('stream', async (_id, _args, signal, update) => {
+      const index = producers.length;
+      producers.push({ update: update!, signal: signal! });
+      return (await works[index]!.promise).result;
+    }));
+    try {
+      const first = snapshot(await h.pi.call('stream', { __background__: 'yes' }));
+      const many = ending === 'any' || ending === 'all' || ending === 'cancel-many';
+      const ids = [first.id];
+      if (many) ids.push(snapshot(await h.pi.call('stream', { __background__: 'yes' })).id);
+      const caller = new AbortController();
+      const cancel = ending === 'cancel' || ending === 'cancel-many';
+      const waiting = h.pi.call('meantime', { action: cancel ? 'cancel' : 'wait', ids,
+        mode: ending === 'any' ? 'any' : 'all', timeout: ending === 'timeout' ? 0.05 : 5 }, caller.signal);
+      const partials = () => h.pi.updates.flatMap(update => {
+        const details = update.details as { tasks?: (Snapshot & { outputTail?: string })[] } | undefined;
+        return details?.tasks ? [details.tasks] : [];
+      });
+      await until(() => partials().length === 1);
+      assert.equal(partials()[0]![0]!.state, 'running', 'the first preview precedes any cancel request');
+      assert.equal(producers[0]!.signal.aborted, cancel);
+      producers[0]!.update(ok('stdout\nstderr').result);
+      t.mock.timers.tick(119);
+      assert.equal(partials().length, 1, 'updates are throttled');
+      t.mock.timers.tick(1);
+      assert.equal(partials().length, 2);
+      assert.equal(partials().at(-1)![0]!.outputTail, 'stdout\nstderr');
+      assert.equal(partials().at(-1)![0]!.progress, 'stdout\nstderr');
+      t.mock.timers.tick(360);
+      assert.equal(partials().length, 2, 'unchanged snapshots do not re-emit');
+      if (many) {
+        producers[1]!.update(ok('second task live').result);
+        t.mock.timers.tick(120);
+        assert.equal(partials().at(-1)![1]!.outputTail, 'second task live');
+      }
+      if (ending === 'abort') caller.abort(new Error('stop observing'));
+      else if (ending !== 'timeout') works[0]!.resolve(ok('first final'));
+      if (ending === 'all' || ending === 'cancel-many') {
+        await until(() => !(h.instance.inspect() as { tasks: Snapshot[] }).tasks.find(task => task.id === first.id)!.localRunning);
+        producers[1]!.update(ok('still streaming').result);
+        t.mock.timers.tick(120);
+        assert.equal(partials().at(-1)![1]!.outputTail, 'still streaming');
+        works[1]!.resolve(ok('second final'));
+      }
+      const outcome = await waiting;
+      assert.equal(outcome.isError, ending === 'abort');
+      if (ending === 'any') {
+        const page = outcome.result.details as { tasks: Snapshot[]; pending: Snapshot[] };
+        assert.deepEqual(page.tasks.map(task => task.id), [first.id]);
+        assert.deepEqual(page.pending.map(task => task.id), [ids[1]]);
+        assert.equal(producers[1]!.signal.aborted, false);
+      } else if (ending === 'timeout') {
+        const details = outcome.result.details as Snapshot & { waitOutcome: string; waitedMs: number };
+        assert.equal(details.state, 'running'); assert.equal(details.waitOutcome, 'timeout'); assert.ok(details.waitedMs >= 0);
+      } else if (ending === 'abort') {
+        const details = outcome.result.details as { waitOutcome: string; waitedMs: number; tasks: Snapshot[] };
+        assert.equal(details.waitOutcome, 'interrupted'); assert.ok(details.waitedMs >= 0); assert.equal(details.tasks[0]!.id, first.id);
+      }
+      else assert.match(JSON.stringify(outcome.result.content), /first final/);
+      const count = partials().length;
+      // A still-running producer would expose a leaked interval after return/abort.
+      for (const producer of producers) producer.update(ok('after observer left').result);
+      t.mock.timers.tick(1000);
+      assert.equal(partials().length, count);
+    } finally {
+      for (const work of works) work.resolve(ok());
+      await h.close();
+    }
+  });
+}
 
 test('multi-task waits preview both settled and pending snapshots', async () => {
   const h = await setup();
@@ -118,6 +203,31 @@ test('completion notices carry the complete command in details.tasks', async () 
     assert.match(h.pi.notifications[0]!.content, /^<system-reminder>\n[\s\S]*\n<\/system-reminder>$/);
     assert.doesNotMatch(h.pi.notifications[0]!.content, /Use meantime\(action="wait"/, 'short untruncated output omits the full-output hint');
   } finally { await h.close(); }
+});
+
+test('waiting on failed tasks is a successful wait: failure stays in the observed snapshots', async () => {
+  const h = await setup();
+  const gate = deferred<void>();
+  h.pi.registerTool(basicTool('release', async () => {
+    await gate.promise;
+    return { content: [{ type: 'text', text: 'boom' }], details: undefined, structuredContent: { exit_code: 7 }, isError: true };
+  }));
+  try {
+    const first = snapshot(await h.pi.call('release', { __background__: 'yes' }));
+    const second = snapshot(await h.pi.call('release', { __background__: 'yes' }));
+    gate.resolve();
+    const settled = await h.pi.call('meantime', { action: 'wait', ids: [first.id, second.id], timeout: 2 });
+    assert.equal(settled.isError, false, 'the wait call itself did not fail');
+    const tasks = (settled.result.details as unknown as { tasks: Snapshot[] }).tasks;
+    assert.equal(tasks.length, 2);
+    for (const task of tasks) {
+      assert.equal(task.state, 'failed');
+      assert.equal(task.isError, true, 'the observed task keeps its failure');
+      assert.equal(task.exitCode, 7);
+    }
+    const single = await h.pi.call('meantime', { action: 'wait', ids: [first.id], timeout: 0 });
+    assert.equal(single.isError, true, 'a single-id wait returns the task result itself, error included');
+  } finally { gate.resolve(); await h.close(); }
 });
 
 test('list receipts name the exit code when present and put running tasks first', async () => {

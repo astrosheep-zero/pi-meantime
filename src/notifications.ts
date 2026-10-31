@@ -111,6 +111,13 @@ export class CompletionDelivery {
     });
   }
 
+  /** A result was observed before its queued notification was consumed. The
+   * host message itself can't be unsent, but the volatile copy must not be
+   * returned and re-queued as a duplicate later. */
+  forget(id: string): void {
+    this.fastQueued.delete(id);
+  }
+
   close(): void {
     this.closed = true;
     this.fastQueued.clear();

@@ -29,6 +29,7 @@ export function runtimeHarness(overrides: Partial<Config> = {}) {
   const sink: RuntimeSink = { notify: tasks => { notifications.push(tasks); }, index(change) {
     if ('task' in change) records.set(change.task.id, structuredClone(change.task));
     else if ('completion' in change) records.get(change.completion.id)!.completion = structuredClone(change.completion);
+    else if ('observed' in change) { const r = records.get(change.observed); if (r) r.observed = true; }
     else for (const id of change.removed) records.delete(id);
   } };
   const runtime = new TaskRuntime(config, sink);

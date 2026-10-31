@@ -360,7 +360,7 @@ try {
   const list = await prompt('meantime', { action: 'list' }, 'capacity-list');
   const a = list.details.tasks.find(t => t.tool === 'codemode' && t.localRunning && t.id === taskId(session.messages.find(m => m.toolCallId === 'capacity-A' && m.role === 'toolResult')));
   const cancelled = await prompt('meantime', { action: 'cancel', ids: [a.id ]}, 'capacity-cancel');
-  assert.equal(cancelled.details.task.state, 'cancelled'); assert.equal(signals.get('A').aborted, true);
+  assert.equal(cancelled.details.task.state, 'failed'); assert.equal(signals.get('A').aborted, true);
   gates.get('B').resolve();
   const bId = taskId(session.messages.find(m => m.toolCallId === 'capacity-B' && m.role === 'toolResult'));
   await bounded(control({ action: 'wait', ids: [bId], timeout: 10 }), 'capacity-B completed');

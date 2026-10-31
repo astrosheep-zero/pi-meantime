@@ -8,7 +8,7 @@ import { truncateUtf8 } from './store.ts';
 export interface TaskDisplay {
   id: string; tool: string; state: string; command?: string;
   createdAt?: number; endedAt?: number; exitCode?: number;
-  output?: string; outputPath?: string; outputTail?: string; cancelRequestedAt?: number;
+  output?: string; outputPath?: string; outputTail?: string; progress?: string; cancelRequestedAt?: number;
   detachReason?: string;
   notification?: string;
   isError?: boolean;
@@ -42,6 +42,10 @@ function commandLabel(task: TaskDisplay): string {
 }
 export function elapsedText(task: TaskDisplay): string {
   if (task.createdAt === undefined) return '';
+  // A still-active task legitimately ticks; an inactive one without endedAt
+  // (outcome_unknown, recovered) must not bill the wall clock as a runtime.
+  const active = task.state === 'running' || task.state === 'waiting' || task.state === 'cancel_requested';
+  if (!active && task.endedAt === undefined) return '';
   return `${Math.max(0, Math.floor(((task.endedAt ?? Date.now()) - task.createdAt) / 1000))}s`;
 }
 function isAcknowledged(task: TaskDisplay): boolean {
@@ -124,14 +128,16 @@ export function renderTaskResult(result: ResultLike & { details?: unknown }, opt
   const lines: string[] = [];
   if (isWait && tasks.length) {
     for (const task of tasks) lines.push(taskLine(task, theme));
-    if (!options.isPartial) {
-      const body = tasks.flatMap(task => typeof task.output === 'string' ? tailLines(task.output) : []);
-      const shown = options.expanded ? body : body.slice(0, 10);
-      // A blank line keeps the status rows apart from the process's own output.
-      if (shown.length) lines.push('', ...shown.map(line => theme.fg('toolOutput', line)));
-      const remaining = body.length - shown.length;
-      if (remaining > 0) lines.push(theme.fg('muted', `… ${remaining} more lines, ${keyHint('app.tools.expand', 'to expand')}`));
-    }
+    const body = tasks.flatMap(task => {
+      const output = options.isPartial ? task.outputTail ?? task.progress : task.output;
+      return typeof output === 'string' ? tailLines(output) : [];
+    });
+    const shown = options.isPartial ? body.slice(-(options.expanded ? 20 : 5))
+      : options.expanded ? body : body.slice(0, 10);
+    // A blank line keeps the status rows apart from the process's own output.
+    if (shown.length) lines.push('', ...shown.map(line => theme.fg('toolOutput', line)));
+    const remaining = body.length - shown.length;
+    if (remaining > 0 && !options.isPartial) lines.push(theme.fg('muted', `… ${remaining} more lines, ${keyHint('app.tools.expand', 'to expand')}`));
   } else if (page && tasks.length) {
     const isCancel = isRecord(context.args) && context.args.action === 'cancel';
     if (!isCancel) {

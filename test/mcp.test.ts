@@ -39,13 +39,15 @@ test('cancelled MCP request keeps its native error without classifying remote ex
     const outcome = await h.pi.call('mcp__fixture__stubborn', { ms: 150, marker, __background__: 'yes' });
     const task = (outcome.result.structuredContent as { task: unknown }).task as Snapshot;
     const cancelled = await h.pi.call('meantime', { action: 'cancel', ids: [task.id ]});
-    assert.equal(cancelled.isError, true);
+    // The cancel call itself succeeded; the task's error stays in the snapshot.
+    assert.equal(cancelled.isError, false);
+    assert.equal((cancelled.result.details as { task: Snapshot }).task.isError, true);
     assert.match(JSON.stringify(cancelled.result.content), /MCP request cancelled locally/);
     assert.equal((cancelled.result.details as { task: Snapshot }).task.notification, 'observed');
     await sleep(20);
     assert.equal(h.pi.notifications.length, 0);
     const status = await h.pi.call('meantime', { action: 'wait', timeout: 0, ids: [task.id ]});
-    assert.equal(((status.result.structuredContent as { task: unknown }).task as Snapshot).state, 'cancelled');
+    assert.equal(((status.result.structuredContent as { task: unknown }).task as Snapshot).state, 'failed');
     await until(() => existsSync(marker)); assert.equal(readFileSync(marker, 'utf8'), 'REMOTE_SIDE_EFFECT_COMPLETED');
     assert.equal(h.client.sent.filter(m => m.method === 'tools/call').length, 1);
     assert.equal(h.client.sent.filter(m => m.method === 'notifications/cancelled').length, 1);

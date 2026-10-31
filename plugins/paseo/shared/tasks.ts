@@ -13,18 +13,16 @@ import { z } from "zod";
  *   (pi-meantime extension.ts). Paseo's pi provider preserves message
  *   details under `metadata.details`, so cards are built from that, never
  *   from parsing the receipt prose.
- * - Background `bash` returns the snapshot in details too, but Paseo's pi
- *   provider maps bash to a shell detail and drops details; the handle text
- *   ("Meantime mt_xxxxxxxx running in background; ...") is the only signal
- *   that survives. It is our own stable text, so matching it is fair game.
+ * - Background `bash` stays native: Paseo's pi provider maps bash to a shell
+ *   detail and drops details, and we do NOT rescue it by parsing handle text
+ *   (forged headers / misattribution). The task joins the board at the first
+ *   completion message or wait/list snapshot instead.
  *
  * Everything here is pure and runtime-neutral so node --test can cover it.
  */
 
 /** pi-meantime task id shape (src/store.ts TASK_ID). */
 export const TASK_ID = /^mt_[a-f0-9]{8}$/;
-/** First line of the background handle text (pi-meantime src/extension.ts). */
-const HANDLE_TEXT = /^Meantime (mt_[a-f0-9]{8}) running in background/;
 /** Client display budget, including the omission line; never changes the retained result. */
 export const OUTPUT_DISPLAY_MAX_CHARS = 32_000;
 export function outputPreview(text: string): string {
@@ -66,6 +64,8 @@ export const cardDataSchema = z.object({
   call: z.string().optional(),
   error: z.string().optional(),
   pending: z.boolean().optional(),
+  waitOutcome: z.enum(["timeout", "interrupted"]).optional(),
+  waitedSeconds: z.number().optional(),
 });
 export type MeantimeCardData = z.output<typeof cardDataSchema>;
 
@@ -101,9 +101,9 @@ export function simplifySnapshot(raw: unknown): TaskSummary | undefined {
   const output = text(raw.output);
   const outputPath = text(raw.outputPath);
   const rawTail = text(raw.outputTail);
-  const outputTail = rawTail && rawTail.length >= 1024 && rawTail.includes("\n")
-    ? rawTail.slice(rawTail.indexOf("\n") + 1).replace(/^\n+/, "") || rawTail
-    : rawTail;
+  // The producer (runtime sliceTail) already clips on a line boundary;
+  // dropping the first line here would delete valid content.
+  const outputTail = rawTail;
   const notification = raw.notification === "observed" || raw.notification === "delivered" ? raw.notification : undefined;
   return {
     id: raw.id,
@@ -184,10 +184,10 @@ export function recognizeToolCall(item: ToolCallItemLike): MeantimeCardData | un
         : Array.isArray(details.tasks) ? details.tasks
         : details.task !== undefined ? [details.task]
         : [];
-      // A wait only observes; nothing it reports has finished.
+      // Partial snapshots keep each task's real state; the running wait
+      // itself is already expressed by the timeline item's status.
       const observed = raws.map(simplifySnapshot)
-        .filter((task): task is TaskSummary => task !== undefined)
-        .map(task => ({ ...task, state: "waiting" }));
+        .filter((task): task is TaskSummary => task !== undefined);
       if (details !== undefined) return { source: "meantime", action, tasks: observed };
       // No partial snapshot yet. Current calls use ids (including prefixes);
       // keep id for historical timelines. No ids means wait-all, not an
@@ -199,11 +199,24 @@ export function recognizeToolCall(item: ToolCallItemLike): MeantimeCardData | un
       return { source: "meantime", action, tasks: [], pending: true };
     }
     const output = isRecord(detail.output) ? detail.output : undefined;
+    const details = unknownDetails(detail);
+    const waitedSeconds = typeof details?.waitedMs === "number" && Number.isFinite(details.waitedMs)
+      ? Math.max(0, Math.floor(details.waitedMs / 1000)) : undefined;
+    if (action === "wait" && (details?.waitOutcome === "interrupted" || item.status === "canceled")) {
+      const raws = Array.isArray(details?.tasks) ? details.tasks : details?.task !== undefined ? [details.task]
+        : typeof details?.id === "string" ? [details] : [];
+      let tasks = raws.map(simplifySnapshot).filter((task): task is TaskSummary => task !== undefined);
+      if (tasks.length === 0 && Array.isArray(input?.ids) && input.ids.length <= 32
+        && input.ids.every(id => typeof id === "string" && /^(?:mt_)?[a-f0-9]{1,8}$/.test(id))) {
+        tasks = input.ids.map(id => ({ id: id as string, state: "waiting" }));
+      }
+      return { source: "meantime", action, tasks: projectOutputs(detail, tasks), waitOutcome: "interrupted",
+        ...(waitedSeconds !== undefined ? { waitedSeconds } : {}) };
+    }
     if (item.status === "failed" || output?.isError === true) {
       const error = errorSentence(item.error) ?? errorSentence(detail.output) ?? "meantime call failed";
       return { source: "meantime", ...(action ? { action } : {}), tasks: [], call: meantimeCall(action, input), error };
     }
-    const details = unknownDetails(detail);
     if (!details) return undefined;
     const raws = Array.isArray(details.tasks) ? details.tasks
       : details.task !== undefined ? [details.task]
@@ -216,13 +229,14 @@ export function recognizeToolCall(item: ToolCallItemLike): MeantimeCardData | un
     if (tasks.length === 0) {
       // An empty list is still an answer. Paseo drops unrecognized rows to a
       // raw tool line, so a completed empty list must become a card instead.
-      return action === "list" && Array.isArray(details.tasks)
-        ? { source: "meantime", action: "list", tasks: [] }
+      return (action === "list" || action === "wait") && Array.isArray(details.tasks)
+        ? { source: "meantime", action, tasks: [], ...(action === "wait" && (details.waitOutcome === "timeout" || details.waitOutcome === "interrupted") ? { waitOutcome: details.waitOutcome } : {}), ...(waitedSeconds !== undefined ? { waitedSeconds } : {}) }
         : undefined;
     }
     const total = typeof details.total === "number" ? details.total : undefined;
     const moreOffset = typeof details.next_offset === "number" ? details.next_offset : undefined;
-    return { source: "meantime", ...(action ? { action } : {}), tasks, ...(total !== undefined ? { total } : {}), ...(moreOffset !== undefined ? { moreOffset } : {}) };
+    const waitOutcome = action === "wait" && (details.waitOutcome === "timeout" || details.waitOutcome === "interrupted") ? details.waitOutcome : undefined;
+    return { source: "meantime", ...(action ? { action } : {}), tasks, ...(waitOutcome ? { waitOutcome } : {}), ...(action === "wait" && waitedSeconds !== undefined ? { waitedSeconds } : {}), ...(total !== undefined ? { total } : {}), ...(moreOffset !== undefined ? { moreOffset } : {}) };
   }
 
   // Managed tools now retain their original names; old _mt rows still work.
@@ -230,23 +244,6 @@ export function recognizeToolCall(item: ToolCallItemLike): MeantimeCardData | un
   if (handle?.delivery === "background") {
     const task = simplifySnapshot(handle);
     return task ? { source: "handle", tasks: [task] } : undefined;
-  }
-
-  if (name === "bash" && detail.type === "shell" && typeof detail.output === "string") {
-    const match = HANDLE_TEXT.exec(detail.output);
-    if (!match) return undefined;
-    // A handle only proves the task STARTED. Reporting "running" here would
-    // stay on the timeline as a lie after the task finishes; terminal state
-    // arrives via the meantime-completion message or wait/list snapshots.
-    return {
-      source: "handle",
-      tasks: [{
-        id: match[1]!,
-        tool: "bash",
-        state: "started",
-        ...(text(detail.command) ? { command: detail.command as string } : {}),
-      }],
-    };
   }
 
   if (name === "meantime-completion" && detail.type === "plain_text") {
@@ -308,8 +305,16 @@ export function foldItem(byId: Map<string, TaskSummary>, item: unknown): boolean
   // Merge, don't replace: older completion messages predate details.tasks
   // and would otherwise erase the command/createdAt the handle provided.
   for (const task of data.tasks) {
-    // A wait call is observing a task, not changing its execution state.
-    if (task.state !== "waiting") byId.set(task.id, { ...byId.get(task.id), ...task });
+    const previous = byId.get(task.id);
+    // A terminal state never rolls back to an active one: late wait previews
+    // or stale snapshots may still arrive after the completion landed. Other
+    // fields from the late snapshot still merge; only the state is protected.
+    if (previous && !isActiveTask(previous) && isActiveTask(task)) {
+      const { state: _ignored, ...rest } = task;
+      byId.set(task.id, { ...previous, ...rest });
+      continue;
+    }
+    byId.set(task.id, { ...previous, ...task });
   }
   return true;
 }

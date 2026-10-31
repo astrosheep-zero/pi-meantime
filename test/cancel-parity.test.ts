@@ -42,13 +42,13 @@ test('cancelled lifecycle state preserves either native outcome without claiming
       work.resolve({ result: native, isError });
       await until(() => !h.runtime.get(view.task.id).localRunning);
       const final = h.runtime.result(view.task.id);
-      assert.equal(final.task.state, 'cancelled');
+      assert.equal(final.task.state, isError ? 'failed' : 'completed');
       assert.equal(final.task.isError, isError);
       assert.equal(final.task.cancelRequestedAt, cancelled.cancelRequestedAt);
       assert.deepEqual(final.result, native);
       assert.equal(h.runtime.cancel(view.task.id).state, final.task.state);
       const restored = new TaskRuntime(h.config, h.sink, [...h.records.values()]);
-      try { assert.equal(restored.get(view.task.id).state, 'cancelled'); }
+      try { assert.equal(restored.get(view.task.id).state, isError ? 'failed' : 'completed'); }
       finally { await restored.close(); }
     }
   } finally { await h.close(); }
@@ -61,7 +61,7 @@ test('foreground parent cancellation preserves its AbortSignal reason', async ()
     const wait = h.runtime.run({ tool: 'one', kind: 'tool', callId: 'c', mode: 'no', canDetach: true, parentSignal: parent.signal,
       execute: signal => new Promise((_resolve, reject) => signal.addEventListener('abort', () => { seen = signal.reason; reject(signal.reason); })) });
     await sleep(1); parent.abort(reason); const view = await wait;
-    assert.equal(seen, reason); assert.equal(view.task.state, 'cancelled');
+    assert.equal(seen, reason); assert.equal(view.task.state, 'failed');
     assert.equal(view.task.isError, true);
   } finally { await h.close(); }
 });
@@ -75,7 +75,7 @@ test('model cancellation observes settlement before even a synchronous notificat
       execute: signal => new Promise(resolve => signal.addEventListener('abort', () => resolve(native))) });
     h.runtime.published('c');
     const final = await h.runtime.wait(view.task.id, h.config.shutdownGraceMs, undefined, true);
-    assert.equal(final.task.state, 'cancelled');
+    assert.equal(final.task.state, 'completed');
     assert.equal(final.task.notification, 'observed');
     assert.equal(final.task.isError, false);
     assert.deepEqual(final.result, native.result);
@@ -91,7 +91,7 @@ test('model cancellation can collect a still-foreground task without losing its 
       execute: signal => new Promise(resolve => signal.addEventListener('abort', () => resolve(native))) });
     await sleep(1);
     const final = await h.runtime.wait(h.runtime.list()[0]!.id, h.config.shutdownGraceMs, undefined, true);
-    assert.equal(final.task.state, 'cancelled'); assert.equal(final.task.notification, 'observed');
+    assert.equal(final.task.state, 'completed'); assert.equal(final.task.notification, 'observed');
     assert.deepEqual(final.result, native.result);
     const original = await foreground;
     assert.equal(original.kind, 'result');
@@ -125,7 +125,7 @@ test('cancel grace timeout and interrupted cancel wait both preserve a later not
       await until(() => h.notifications.flat().some(t => t.id === view.task.id));
       h.runtime.flushNotifications();
       const notices = h.notifications.flat().filter(t => t.id === view.task.id);
-      assert.equal(notices.length, 1); assert.equal(notices[0]!.state, 'cancelled');
+      assert.equal(notices.length, 1); assert.equal(notices[0]!.state, 'completed');
     }
   } finally { await h.close(); }
 });
@@ -145,13 +145,16 @@ test('model cancel returns the single-wait stored result with native payload and
     const id = (handle.result.details as Snapshot).id;
     const cancelled = await pi.call('meantime', { action: 'cancel', ids: [id] });
     const wait = await pi.call('meantime', { action: 'wait', ids: [id], timeout: 0 });
-    assert.deepEqual(cancelled.result, wait.result);
+    // Same stored result, one difference: cancel observes (call succeeds),
+    // wait retrieves the task result itself (its error included).
+    assert.deepEqual({ ...cancelled.result, isError: true }, wait.result);
+    assert.equal(wait.isError, true);
     assert.deepEqual(cancelled.result.content.slice(1), native.content);
     assert.deepEqual(cancelled.result.details, { nativeDetails: native.details!, task: (wait.result.details as { task: Snapshot }).task });
     assert.deepEqual((cancelled.result.structuredContent as { result: unknown }).result, native.structuredContent);
-    assert.equal(cancelled.isError, true);
+    assert.equal(cancelled.isError, false, 'a successful cancel does not inherit the task error');
     const task = (cancelled.result.details as { task: Snapshot }).task;
-    assert.equal(task.state, 'cancelled'); assert.equal(task.notification, 'observed');
+    assert.equal(task.state, 'failed'); assert.equal(task.notification, 'observed');
     await sleep(10); assert.equal(pi.notifications.length, 0);
   } finally { await instance.dispose(); }
 });
@@ -199,9 +202,9 @@ test('real SDK: a script-created task is cancelled directly without a completion
     const result = await control.execute('cancel-control', { action: 'cancel', ids: [handle.task.id] }, new AbortController().signal);
     assert.notEqual(result.isError, true, JSON.stringify(result));
     assert.deepEqual((result.structuredContent as { result: unknown }).result, { marker: 'CODEMODE_CANCELLED_NATIVE' });
-    assert.match(JSON.stringify(result.content), /cancelled/);
+    assert.match(JSON.stringify(result.content), /completed/);
     const task = (instance!.inspect() as { tasks: Snapshot[] }).tasks[0]!;
-    assert.equal(task.state, 'cancelled'); assert.equal(task.notification, 'observed');
+    assert.equal(task.state, 'completed'); assert.equal(task.notification, 'observed');
     await sleep(10);
     assert.equal(session.messages.filter(message => message.role === 'custom' && message.customType === 'meantime-completion').length, 0);
   } finally {
@@ -256,9 +259,9 @@ test('TUI command cancellation leaves one cancelled completion for the model', a
     await h.command(`cancel ${id}`);
     h.work.resolve(ok('native success after cancellation'));
     await until(() => h.pi.notifications.length === 1);
-    assert.match(h.pi.notifications[0]!.content, new RegExp(`${id} · cancelled`));
+    assert.match(h.pi.notifications[0]!.content, new RegExp(`${id} · completed`));
     const list = await h.pi.call('meantime', { action: 'list' });
-    assert.equal((list.result.details as { tasks: Snapshot[] }).tasks[0]!.state, 'cancelled');
+    assert.equal((list.result.details as { tasks: Snapshot[] }).tasks[0]!.state, 'completed');
     await sleep(10); assert.equal(h.pi.notifications.length, 1);
   } finally { await h.close(); }
 });
@@ -347,7 +350,7 @@ test('batch cancel validates every target before aborting any of them', async ()
     const batch = await h.runtime.cancelMany([view.task.id, other.task.id.slice(3), view.task.id], h.config.shutdownGraceMs);
     assert.equal(aborts, 1);
     assert.deepEqual(batch.tasks.map(pair => pair.task.id), [view.task.id, other.task.id], 'duplicates collapse, order follows the batch');
-    assert.deepEqual(batch.tasks.map(pair => pair.task.state), ['cancelled', 'cancelled']);
+    assert.deepEqual(batch.tasks.map(pair => pair.task.state), ['completed', 'completed']);
     assert.deepEqual(batch.tasks.map(pair => pair.result?.structuredContent), [native.result.structuredContent, { value: 'second settled' }]);
     assert.deepEqual(batch.pending, []);
     assert.equal(h.runtime.get(view.task.id).notification, 'observed');
@@ -369,7 +372,7 @@ test('batch cancel rejects an ambiguous prefix without aborting a valid sibling'
     assert.equal(runtime.get(view.task.id).state, 'running');
     const single = await runtime.cancelMany([view.task.id], h.config.shutdownGraceMs);
     assert.equal(aborts, 1);
-    assert.deepEqual(single.tasks.map(pair => pair.task.state), ['cancelled']);
+    assert.deepEqual(single.tasks.map(pair => pair.task.state), ['completed']);
   } finally { work.resolve(ok()); await runtime.close(); await h.close(); }
 });
 
@@ -419,7 +422,7 @@ test('model batch cancel refuses an unknown id before cancelling valid producers
     const batch = await pi.call('meantime', { action: 'cancel', ids: [id, other] });
     assert.notEqual(batch.isError, true);
     const page = batch.result.details as { tasks: Snapshot[]; pending: Snapshot[] };
-    assert.deepEqual(page.tasks.map(task => [task.id, task.state]), [[id, 'cancelled'], [other, 'cancelled']]);
+    assert.deepEqual(page.tasks.map(task => [task.id, task.state]), [[id, 'completed'], [other, 'completed']]);
     assert.deepEqual(page.pending, []);
     assert.equal(aborts, 2);
     assert.match(JSON.stringify(batch.result.content), /native settled 1/);

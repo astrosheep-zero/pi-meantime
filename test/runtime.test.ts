@@ -173,7 +173,7 @@ for (const ending of ['completion', 'cancel', 'close', 'shortcut', 'explicit'] a
     assert.equal(h.records.size, view.kind === 'handle' ? 1 : 0, 'no delayed/spurious handle after the original view');
     if (view.kind === 'handle') assert.equal(view.task.detachReason, ending === 'explicit' ? 'explicit' : 'shortcut');
     else if (ending === 'completion') assert.match(JSON.stringify(view.result), /fast result/);
-    else assert.equal(view.task.state, 'cancelled');
+    else assert.equal(view.task.state, 'completed');
   } finally { work.resolve(ok()); await h.close(); }
 });
 test('no mode disables timed detachment but remains cancellable', async () => {
@@ -185,7 +185,7 @@ test('no mode disables timed detachment but remains cancellable', async () => {
     assert.equal(h.runtime.detachAll('timeout'), 0);
     assert.equal(h.runtime.list()[0]!.delivery, 'foreground'); assert.equal(h.records.size, 0);
     const id = h.runtime.list()[0]!.id; h.runtime.cancel(id); const view = await wait;
-    assert.equal(aborted, true); assert.equal(view.task.state, 'cancelled'); assert.equal(view.task.isError, true);
+    assert.equal(aborted, true); assert.equal(view.task.state, 'failed'); assert.equal(view.task.isError, true);
   } finally { await h.close(); }
 });
 test('no-mode pending steer at its deadline still waits for approval and its continuation turn', async t => {
@@ -420,7 +420,7 @@ test('capacity counts actual live producers, not foreground waiters', async () =
     assert.equal(h.runtime.get(view.task.id).state, 'cancel_requested');
     assert.throws(() => h.runtime.run({ tool: 'two', kind: 'tool', callId: 'c2', mode: 'yes', canDetach: true, execute: async () => ok() }), /capacity/);
     work.resolve(ok()); await until(() => TaskRuntime.liveProducerCount() === 0);
-    assert.equal(h.runtime.get(view.task.id).state, 'cancelled');
+    assert.equal(h.runtime.get(view.task.id).state, 'completed');
     assert.equal(h.runtime.get(view.task.id).isError, false); // Late native success is retained, not relabelled as an error.
   } finally { work.resolve(ok()); await h.close(); }
 });
@@ -467,6 +467,31 @@ test('progress stops being sent to the old foreground callback after detach', as
       onUpdate: r => visible.push(r.content[0]!.type), execute: (_s, u) => { update = u; return work.promise; } });
     await sleep(1); update!(ok('first').result); h.runtime.detachAll('shortcut'); const view = await wait;
     update!(ok('second').result); assert.equal(visible.length, 1); assert.equal(h.runtime.get(view.task.id).progress, 'second');
+  } finally { work.resolve(ok()); await h.close(); }
+});
+
+test('live output tail follows the full partial text and is replaced by finalized output', async () => {
+  const h = runtimeHarness(); const work = deferred<Outcome>();
+  let update!: import('../src/protocol.ts').Update;
+  try {
+    const view = await h.runtime.run({ tool: 'one', kind: 'tool', callId: 'live', mode: 'yes', canDetach: true,
+      execute: (_signal, onUpdate) => { update = onUpdate; return work.promise; } });
+    const text = 'HEAD\n' + '🦈'.repeat(2000) + '\nlatest stdout\nlatest stderr';
+    update(ok(text).result);
+    assert.ok(Buffer.byteLength(h.runtime.get(view.task.id).progress!) <= 2048);
+    assert.ok(h.runtime.get(view.task.id).progress!.startsWith('HEAD\n'));
+    const tail = () => h.runtime.tasks.get(view.task.id)!.outputTail!;
+    assert.ok(tail().length <= 1026);
+    assert.equal(tail(), 'latest stdout\nlatest stderr', 'tail is taken before progress truncation');
+    update(ok('replacement partial').result);
+    assert.equal(tail(), 'replacement partial', 'partials are snapshots, not appended chunks');
+    work.resolve(ok('finalized output'));
+    const final = await h.runtime.wait(view.task.id, 1000);
+    assert.equal(final.task.progress, undefined);
+    assert.deepEqual(final.result, ok('finalized output').result);
+    assert.equal(tail(), 'finalized output');
+    update(ok('too late').result);
+    assert.equal(tail(), 'finalized output');
   } finally { work.resolve(ok()); await h.close(); }
 });
 
@@ -571,6 +596,15 @@ test('wait handles timeouts, cancellation and long waits without cancelling the 
     assert.match(view.task.id, /^mt_[a-f0-9]{8}$/);
     const early = await h.runtime.wait(view.task.id, 10);
     assert.equal(early.result, undefined); assert.equal(early.task.state, 'running');
+    assert.equal(early.waitOutcome, 'timeout');
+    assert.equal((await h.runtime.wait(view.task.id, 0)).waitOutcome, undefined);
+    const released = h.runtime.wait(view.task.id, 5000);
+    h.runtime.releaseWaiters();
+    assert.equal((await released).waitOutcome, 'interrupted');
+    assert.equal((await h.runtime.waitMany([view.task.id], 'all', 5)).waitOutcome, 'timeout');
+    const many = h.runtime.waitMany([view.task.id], 'any', 5000);
+    h.runtime.releaseWaiters();
+    assert.equal((await many).waitOutcome, 'interrupted');
     const aborted = new AbortController(); aborted.abort(new Error('stop waiting'));
     await assert.rejects(h.runtime.wait(view.task.id, 5000, aborted.signal), /stop waiting/);
     const controller = new AbortController();
@@ -614,4 +648,32 @@ test('CodeMode close coalesces, really drains late pipelines and persists comple
     try { assert.deepEqual(reopened.result(view.task.id).result, native); }
     finally { await reopened.close(); }
   } finally { work.resolve(ok()); await h.close(); }
+});
+
+test('a crash between completion and notification re-queues the notice on recovery, and observation persists', async () => {
+  const h = runtimeHarness({ notifyDebounceMs: 0 });
+  try {
+    const work = deferred<Outcome>();
+    const view = await h.runtime.run({ tool: 'one', kind: 'tool', callId: 'c1', mode: 'yes', canDetach: true,
+      execute: () => work.promise });
+    h.runtime.published('c1');
+    work.resolve(ok('done while nobody watched'));
+    // The task may be pruned once its notification settles; wait on the index.
+    await until(() => h.records.get(view.task.id)?.completion !== undefined);
+    // Crash before any notification was consumed: the record has a completion
+    // and no observed marker.
+    const record = h.records.get(view.task.id)!;
+    assert.ok(record.completion);
+    const recovered = new TaskRuntime(h.config, h.sink, [record]);
+    try {
+      assert.equal(recovered.get(view.task.id).notification, 'pending', 'unobserved terminal work re-queues');
+      recovered.flushNotifications();
+      assert.ok(h.notifications.flat().some(task => task.id === view.task.id), 'the missed notification is delivered after recovery');
+      // Observing the result persists the marker: a second recovery stays quiet.
+      recovered.result(view.task.id);
+      const again = new TaskRuntime(h.config, h.sink, [...h.records.values()]);
+      try { assert.equal(again.get(view.task.id).notification, 'observed', 'observed tasks never re-notify'); }
+      finally { await again.close(); }
+    } finally { await recovered.close(); }
+  } finally { await h.close(); }
 });

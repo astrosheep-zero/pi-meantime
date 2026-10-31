@@ -14,14 +14,13 @@ const { formatElapsed, stateLabel, stateColor, doneColor, taskStateLabel, second
 const surfaces = await build({ stdin: { contents: `
 import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
-import {TaskCommand, TaskDetailInline, TaskLine, TaskTable} from './client/task-view.tsx';
+import {TaskCommand, TaskLine, TaskTable} from './client/task-view.tsx';
 import {MeantimeTaskCard} from './client/task-card.tsx';
 const theme = {colors:{surface0:'#fff',surface1:'#f4f5f4',foreground:'#111',foregroundMuted:'#777',border:'#ccc',statusWarning:'#b7791f',statusDanger:'#c2412d'}};
 const layout = {compact:true,platform:'web'};
 const draw = (element) => renderToStaticMarkup(element);
 export const row = (task) => draw(<TaskLine task={task} colors={theme.colors} layout={layout}/>);
-export const detail = (task) => draw(<TaskDetailInline task={task} colors={theme.colors} layout={layout}/>);
-export const openCommand = (task) => draw(<TaskCommand task={task} colors={theme.colors} layout={layout} open/>);
+export const detail = (task) => draw(<TaskLine task={task} colors={theme.colors} layout={layout} defaultOpen/>);
 export const openRow = (task) => draw(<TaskLine task={task} colors={theme.colors} layout={layout} defaultOpen/>);
 export const table = (tasks) => draw(<TaskTable tasks={tasks} colors={theme.colors} layout={layout}/>);
 export const emptyWait = () => draw(<MeantimeTaskCard item={{data:{source:'meantime',action:'wait',tasks:[]}}} theme={theme} layout={layout}/>);`,
@@ -34,7 +33,6 @@ export const emptyWait = () => draw(<MeantimeTaskCard item={{data:{source:'meant
 const ui = { exports: {} as {
   row: (task: unknown) => string;
   detail: (task: unknown) => string;
-  openCommand: (task: unknown) => string;
   openRow: (task: unknown) => string;
   table: (tasks: unknown[]) => string;
   emptyWait: () => string;
@@ -42,7 +40,7 @@ const ui = { exports: {} as {
 // Bundled CJS keeps React's node builtins available without writing build artifacts.
 const { createRequire } = await import("node:module");
 new Function("require", "module", "exports", surfaces.outputFiles[0]!.text)(createRequire(import.meta.url), ui, ui.exports);
-const { row, detail, openCommand, openRow, table, emptyWait } = ui.exports;
+const { row, detail, openRow, table, emptyWait } = ui.exports;
 
 test("elapsed is a fixed snapshot, never inferred from a start alone", () => {
   const task = { id: "mt_a1b2c3d4", state: "running", createdAt: 1000 };
@@ -90,21 +88,24 @@ test("washed-out host tokens gain contrast without using border or a fixed palet
   assert.equal(readableColor("#e9b45a", dark), "#e9b45a");
 });
 
-test("a collapsed row flattens newlines; an open row unfolds the full command in its header", () => {
+test("a collapsed row flattens newlines; an open row shows the full script in the drawer", () => {
   const task = { id: "mt_a1b2c3d4", state: "running", command: "npm test\n  --  --watch" };
   const collapsed = row(task);
   assert.match(collapsed, /npm<span[^>]*> test -- --watch<\/span>/);
   assert.doesNotMatch(collapsed, /npm test\n/);
-  assert.match(openCommand(task), /\$ <\/span>npm<span[^>]*> test\n  --  --watch<\/span>/);
   const open = openRow({ ...task, progress: "2/5" });
-  assert.equal(open.match(/> test\n  --  --watch</g)?.length, 1, "the command is printed once, in the header");
+  // The header keeps the flattened one-liner; the script unfolds once, in the drawer.
+  assert.match(open, /npm<span[^>]*> test -- --watch<\/span>/);
+  assert.equal(open.match(/npm test\n  --  --watch/g)?.length, 1);
   assert.match(open, /2\/5/);
-  assert.doesNotMatch(detail(task), /npm/, "the drawer never repeats the command");
+
 });
 
-test("the trailing slot is never empty: elapsed time, else an honest state word", () => {
+test("the meter always names the state and pairs the elapsed time when known", () => {
   for (const state of ["running", "started", "waiting", "queued"]) assert.match(row({ id: "mt_a1b2c3d4", state, command: "npm test" }), new RegExp(`>${state}<`));
-  assert.doesNotMatch(row({ id: "mt_a1b2c3d4", state: "running", command: "npm test", createdAt: 0, endedAt: 45_000 }), />running</);
+  const timed = row({ id: "mt_a1b2c3d4", state: "running", command: "npm test", createdAt: 0, endedAt: 45_000 });
+  assert.match(timed, />running</);
+  assert.match(timed, />00:45</);
   assert.match(row({ id: "mt_a1b2c3d4", state: "completed", exitCode: 2, command: "npm test" }), />exit 2</);
   assert.match(row({ id: "mt_a1b2c3d4", state: "cancelled", command: "npm test" }), />cancelled</);
 });

@@ -119,8 +119,8 @@ describe("recognizeToolCall: meantime tool", () => {
     });
     assert.equal(data?.source, "meantime");
     assert.equal(data?.action, "wait");
-    // The wait observes: a partial snapshot can only ever read as waiting,
-    // and its command/tool/createdAt beat the bare id from the input.
+    // A partial snapshot keeps the task's real state; the running wait is
+    // expressed by the call itself. command/tool/createdAt beat the bare id.
     assert.deepEqual(data?.tasks, [{ id: SNAPSHOT.id, tool: "bash", state: "waiting",
       command: "npm test -- --watch", createdAt: SNAPSHOT.createdAt }]);
   });
@@ -131,7 +131,7 @@ describe("recognizeToolCall: meantime tool", () => {
       detail: { type: "unknown", input: { action: "wait", id: SNAPSHOT.id }, output: {
         content: [], details: { task: { ...SNAPSHOT, state: "running" } } } },
     });
-    assert.deepEqual(data?.tasks, [{ id: SNAPSHOT.id, tool: "bash", state: "waiting",
+    assert.deepEqual(data?.tasks, [{ id: SNAPSHOT.id, tool: "bash", state: "running",
       command: "sleep 60", createdAt: SNAPSHOT.createdAt }]);
   });
 
@@ -197,7 +197,7 @@ describe("recognizeToolCall: meantime tool", () => {
   });
 
   it("rejects empty non-list and unparseable results", () => {
-    assert.equal(recognizeToolCall(unknownItem("meantime", { action: "wait" }, { details: { tasks: [] } })), undefined);
+    assert.deepEqual(recognizeToolCall(unknownItem("meantime", { action: "wait" }, { details: { tasks: [] } })), { source: "meantime", action: "wait", tasks: [] });
     assert.equal(recognizeToolCall(unknownItem("meantime", { action: "cancel" }, { details: { tasks: [] } })), undefined);
     assert.equal(recognizeToolCall(unknownItem("meantime", { action: "list" }, { content: [{ type: "text", text: "none" }] })), undefined);
   });
@@ -224,17 +224,16 @@ describe("recognizeToolCall: _mt proxies", () => {
 });
 
 describe("recognizeToolCall: bash background handles", () => {
-  it("recovers the task id and command from the handle text", () => {
-    const data = recognizeToolCall({
+  it("stays native: shell details are never rescued by parsing handle text", () => {
+    // Paseo's pi provider drops bash details; we deliberately accept a late
+    // board registration (first completion/wait/list) over text scraping.
+    assert.equal(recognizeToolCall({
       type: "tool_call", name: "bash", status: "completed",
       detail: {
         type: "shell", command: "npm test", exitCode: null,
         output: `Meantime ${SNAPSHOT.id} running in background; execution continues independently. Do not restart or poll in a loop.`,
       },
-    });
-    assert.equal(data?.source, "handle");
-    // Handles report "started": terminal state belongs to completion/wait/list.
-    assert.deepEqual(data?.tasks[0], { id: SNAPSHOT.id, tool: "bash", state: "started", command: "npm test" });
+    }), undefined);
   });
 
   it("ignores ordinary bash output", () => {
@@ -355,6 +354,31 @@ describe("foldTimeline", () => {
     });
   });
 
+  it("merges running wait output into the board without replacing execution state", () => {
+    const live = { ...SNAPSHOT, state: "waiting", progress: "first\nlatest", outputTail: "live stdout\nlive stderr" };
+    const waiting: ToolCallItemLike = { type: "tool_call", name: "meantime", status: "running",
+      detail: { type: "unknown", input: { action: "wait", ids: [SNAPSHOT.id] },
+        output: { content: [], details: { tasks: [live] } } } };
+    for (const state of ["running", "cancel_requested"]) {
+      const previous = unknownItem("meantime", { action: "list" }, { details: { tasks: [{ ...SNAPSHOT, state }] } });
+      const [task] = foldTimeline([{ item: previous }, { item: waiting }]);
+      // Active-after-active merges the late snapshot wholesale (latest mention wins).
+      assert.equal(task?.state, "waiting");
+      assert.equal(task?.progress, live.progress);
+      assert.equal(task?.outputTail, live.outputTail);
+      assert.equal(task?.command, SNAPSHOT.command);
+    }
+    const completed = unknownItem("meantime", { action: "list" }, { details: { tasks: [
+      { ...SNAPSHOT, state: "completed", localRunning: false, outputTail: "final output" },
+    ] } });
+    const [settled] = foldTimeline([{ item: completed }, { item: waiting }]);
+    assert.equal(settled?.state, "completed");
+    assert.equal(settled?.outputTail, "live stdout\nlive stderr", "non-state fields from a late observation still merge");
+    const [observed] = foldTimeline([{ item: waiting }]);
+    assert.equal(observed?.state, "waiting", "an observation alone cannot invent execution state");
+    assert.equal(observed?.outputTail, live.outputTail);
+  });
+
   it("ignores non-tool items", () => {
     assert.deepEqual(foldTimeline([{ item: { type: "assistant_message", text: "hi" } }]), []);
   });
@@ -390,5 +414,22 @@ describe("sortTasks", () => {
       { id: "mt_00000003", tool: "bash", state: "completed", createdAt: 300 },
     ]);
     assert.deepEqual(sorted.map(task => task.id), ["mt_00000002", "mt_00000003", "mt_00000001"]);
+  });
+});
+
+
+describe("wait outcomes", () => {
+  for (const outcome of ["timeout", "interrupted"] as const) it(`recognizes ${outcome} with wait duration`, () => {
+    const data = recognizeToolCall(unknownItem("meantime", { action: "wait" }, { details: { ...SNAPSHOT, waitOutcome: outcome, waitedMs: 12345 } }));
+    assert.equal(data?.waitOutcome, outcome); assert.equal(data?.waitedSeconds, 12); assert.equal(data?.tasks[0]?.state, "running");
+  });
+  it("preserves abort details on failed results", () => {
+    const item = unknownItem("meantime", { action: "wait" }, { isError: true, details: { tasks: [SNAPSHOT], waitOutcome: "interrupted", waitedMs: 2300 } });
+    item.status = "failed";
+    const data = recognizeToolCall(item); assert.equal(data?.waitOutcome, "interrupted"); assert.equal(data?.waitedSeconds, 2); assert.equal(data?.tasks[0]?.id, SNAPSHOT.id); assert.equal(data?.error, undefined);
+  });
+  it("recognizes canceled waits even without details", () => {
+    const item = unknownItem("meantime", { action: "wait", ids: [SNAPSHOT.id] }, null); item.status = "canceled";
+    const data = recognizeToolCall(item); assert.equal(data?.waitOutcome, "interrupted"); assert.deepEqual(data?.tasks, [{ id: SNAPSHOT.id, state: "waiting" }]);
   });
 });

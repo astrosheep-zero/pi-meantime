@@ -58,34 +58,34 @@ export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps)
   const styles = useMemo(() => ({
     screen: {
       flexGrow: 1,
-      padding: layout.compact ? 14 : 24,
-      gap: 12,
-      backgroundColor: colors.surface0,
+      padding: layout.compact ? 12 : 20,
+      gap: 10,
+      backgroundColor: theme.colors.surface0,
       maxWidth: 720,
       width: "100%" as const,
       alignSelf: "center" as const,
     },
-    title: { color: colors.foreground, fontSize: 13, lineHeight: 16, fontWeight: "500" as const, letterSpacing: -0.2 },
-    muted: { color: secondaryColor(colors), fontSize: 12, lineHeight: 16 },
-    error: { color: stateColor("failed", colors), fontSize: 12 },
-  }), [colors, layout.compact]);
+    title: { color: colors.foreground, fontSize: 12, lineHeight: 15, fontWeight: "500" as const, letterSpacing: -0.15 },
+    cardMuted: { color: secondaryColor(colors), fontSize: 11, lineHeight: 15 },
+    muted: { color: secondaryColor(theme.colors), fontSize: 11.5, lineHeight: 16 },
+    error: { color: stateColor("failed", theme.colors), fontSize: 11.5 },
+  }), [colors, theme.colors, layout.compact]);
 
   return (
     <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.screen}>
-      <Card colors={colors}>
-        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12,
-          paddingHorizontal: 12, paddingVertical: 9,
-          borderBottomWidth: tasks.length > 0 ? 1 : 0, borderBottomColor: dividerColor(colors) }}>
+      <Card colors={colors} layout={layout}>
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10,
+          paddingBottom: tasks.length > 0 ? 7 : 0,
+          borderBottomWidth: tasks.length > 0 ? 0.5 : 0, borderBottomColor: dividerColor(colors) }}>
           <Text style={styles.title}>Background tasks</Text>
-          <Text style={styles.muted}>
+          <Text style={styles.cardMuted}>
             {tasks.length === 0 ? "None" : `${tasks.length} task${tasks.length === 1 ? "" : "s"}`}
           </Text>
         </View>
         {tasks.length === 0
-          ? <Text style={{ ...styles.muted, paddingHorizontal: 12, paddingVertical: 9 }}>No background tasks</Text>
+          ? <Text style={{ ...styles.cardMuted, paddingVertical: 8 }}>No background tasks</Text>
           : tasks.map((task, index) => (
-            <View key={task.id} style={index > 0
-              ? { borderTopWidth: 1, borderTopColor: dividerColor(colors) } : undefined}>
+            <View key={task.id} style={{ paddingVertical: 6, ...(index > 0 ? { borderTopWidth: 0.5, borderTopColor: dividerColor(colors) } : undefined) }}>
               <TaskLine task={task} colors={colors} layout={layout} showId muted={!isActiveTask(task)} />
             </View>
           ))}
