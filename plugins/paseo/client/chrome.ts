@@ -54,7 +54,7 @@ export function glassChrome(colors: Colors, platform: "ios" | "android" | "web",
       ? { backgroundImage: images.join(", ") }
       : { experimental_backgroundImage: images.join(", ") }),
     boxShadow: dark
-      ? "inset 0 1px 0 rgba(255,255,255,0.09), 0 1px 2px rgba(0,0,0,0.4), 0 6px 14px -6px rgba(0,0,0,0.55)"
+      ? "inset 0 1px 0 rgba(255,255,255,0.09), 0 1px 2px rgba(0,0,0,0.22), 0 6px 14px -6px rgba(0,0,0,0.3)"
       : "inset 0 1px 0 rgba(255,255,255,0.98), inset 0 -1px 0 rgba(255,255,255,0.55), 0 1px 2px rgba(15,20,30,0.04), 0 6px 14px -6px rgba(15,20,30,0.08)",
     paddingHorizontal: 11.5,
     paddingVertical: 8.5,
