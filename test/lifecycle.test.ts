@@ -97,14 +97,21 @@ test('retention protects pending and unconfirmed queued notifications until cons
     assert.equal(h.notifications.flat().length, 2);
     assert.equal(h.records.size, 2, 'handoff alone cannot prune an unconfirmed result');
     assert.ok(handles.every(handle => h.runtime.get(handle.task.id).notification === 'queued'));
-    h.runtime.notificationConsumed(h.notifications.flat().map(task => task.id));
-    assert.equal(h.records.size, 1, 'consumption releases both result and index retention');
+    const ids = h.notifications.flat().map(task => task.id);
+    h.runtime.notificationConsumed(ids);
+    assert.equal(h.records.size, 2, 'volatile consumption cannot release records before the message is durable');
     assert.equal(h.runtime.get(handles[1]!.task.id).notification, 'delivered');
+    assert.equal(h.runtime.notificationDurable(ids), true);
+    assert.equal(h.records.size, 1, 'a persisted delivery receipt releases retention');
+    assert.ok(h.records.get(handles[1]!.task.id)?.delivered);
+    const notificationCount = h.notifications.length;
     await h.runtime.close();
     const restored = new TaskRuntime(h.config, h.sink, [...h.records.values()]);
     try {
       assert.equal(restored.list().length, 1);
       assert.throws(() => restored.get(handles[0]!.task.id), /No task/);
+      restored.flushNotifications();
+      assert.equal(h.notifications.length, notificationCount, 'a recovered delivered receipt is not notified again');
       assert.ok(restored.result(handles[1]!.task.id).result);
     } finally { await restored.close(); }
   } finally { jobs.forEach(w => w.resolve(ok())); await h.close(); }

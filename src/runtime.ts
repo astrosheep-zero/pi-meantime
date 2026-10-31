@@ -24,8 +24,8 @@ export interface Completion {
   /** Late linked update; only this nested delta is new accounting. */
   lateScope?: boolean; nestedUsage?: Result['usage'];
 }
-export type TaskRecord = TaskIndex & { completion?: Completion; observed?: boolean };
-export type IndexChange = { task: TaskIndex } | { completion: Completion } | { observed: string } | { removed: string[] };
+export type TaskRecord = TaskIndex & { completion?: Completion; observed?: boolean; delivered?: boolean };
+export type IndexChange = { task: TaskIndex } | { completion: Completion } | { observed: string } | { delivered: string[] } | { removed: string[] };
 export type View = { kind: 'result'; task: Snapshot; result: Result; isError?: boolean; thrown?: { error: unknown } } | { kind: 'handle'; task: Snapshot };
 export interface RunRequest {
   tool: string; kind: 'bash' | 'tool'; callId: string; mode: Mode; command?: string;
@@ -44,6 +44,8 @@ interface Task {
   cleanupParent?: () => void; autoTimer?: ReturnType<typeof setTimeout>;
   cancelTimer?: ReturnType<typeof setTimeout>;
   done?: Promise<void>; codemodeRootId?: string; onDetach?(): void; notifyAttempts: number; finishSequence?: number; waiters: number;
+  /** Host consumption and a durable delivery receipt are separate acknowledgements. */
+  deliveryPersisted: boolean;
 }
 export interface RuntimeSink {
   /** false defers handoff until the host can accept messages. */
@@ -98,9 +100,10 @@ export class TaskRuntime {
         state: completion.isError ? 'failed' : 'completed',
         // A crash between the completion write and the notification would
         // otherwise silence it forever: requeue terminal, unobserved tasks.
-        notification: record.observed ? 'observed' : 'pending' });
+        notification: record.observed ? 'observed' : record.delivered ? 'delivered' : 'pending' });
       this.tasks.set(meta.id, { meta, outputTail: completion ? sliceTail(completion.text) : undefined, result: completion?.result ?? (completion ? { content: [{ type: 'text', text: completion.text }], details: undefined } : undefined),
-        callId: '', published: true, observed: false, viewSettled: true, canDetach: false, notifyAttempts: 0, waiters: 0 });
+        callId: '', published: true, observed: false, viewSettled: true, canDetach: false, notifyAttempts: 0, waiters: 0,
+        deliveryPersisted: record.delivered === true });
     }
   }
 
@@ -115,7 +118,7 @@ export class TaskRuntime {
       ...(request.command !== undefined ? { command: request.command } : {}),
       state: 'running', delivery: 'foreground', createdAt: Date.now(), localRunning: true, notification: 'none' };
     const task: Task = { meta, callId: request.callId, controller: new AbortController(), published: false,
-      observed: false, viewSettled: false, canDetach: request.canDetach, notifyAttempts: 0, waiters: 0,
+      observed: false, viewSettled: false, canDetach: request.canDetach, notifyAttempts: 0, waiters: 0, deliveryPersisted: false,
       codemodeRootId: request.codemodeRootId, onDetach: request.onDetach,
       steerAfter: performance.now() + 3000 };
     const view = new Promise<View>(resolve => { task.resolveView = resolve; });
@@ -481,9 +484,33 @@ export class TaskRuntime {
     if (!this.open) return;
     for (const id of ids) {
       const task = this.tasks.get(id);
-      if (task?.meta.notification === 'queued') task.meta.notification = 'delivered';
+      if (task?.meta.notification === 'queued') {
+        task.meta.notification = 'delivered';
+        task.deliveryPersisted = false;
+      }
     }
+    // A volatile consumption receipt still protects the record. Pruning waits
+    // for notificationDurable(), after the host has persisted the message.
     this.prune(); this.changed();
+  }
+  /** Persist consumption only after the host's message append barrier. Until
+   * this succeeds, delivered remains volatile and retention-protected. */
+  notificationDurable(ids: readonly string[]): boolean {
+    if (!this.open) return false;
+    const tasks = ids.flatMap(id => {
+      const task = this.tasks.get(id);
+      return task?.meta.notification === 'delivered' && !task.deliveryPersisted ? [task] : [];
+    });
+    if (tasks.length === 0) return true;
+    try { this.sink.index({ delivered: tasks.map(task => task.meta.id) }); }
+    catch (error) {
+      for (const task of tasks) task.meta.indexError = `Delivery receipt could not be saved: ${String(error)}`;
+      this.changed();
+      return false;
+    }
+    for (const task of tasks) task.deliveryPersisted = true;
+    this.prune(); this.changed();
+    return true;
   }
   /** Return notices discarded with a volatile host queue. Queue removal is not
    * a send failure and must not consume the asynchronous retry budget. */
@@ -567,7 +594,8 @@ export class TaskRuntime {
       .sort((a, b) => Number(b.meta.id === retainId) - Number(a.meta.id === retainId)
         || (b.meta.endedAt ?? 0) - (a.meta.endedAt ?? 0) || (b.finishSequence ?? 0) - (a.finishSequence ?? 0));
     for (const task of ended.slice(this.config.maxRetained)) {
-      if (!task.published || task.waiters || (task.meta.notification === 'pending' || task.meta.notification === 'queued') || leases().has(task.meta.id) || this.scopes.has(task.meta.id)) continue;
+      if (!task.published || task.waiters || (task.meta.notification === 'pending' || task.meta.notification === 'queued')
+        || (task.meta.notification === 'delivered' && !task.deliveryPersisted) || leases().has(task.meta.id) || this.scopes.has(task.meta.id)) continue;
       try {
         this.sink.index({ removed: [task.meta.id] }); this.tasks.delete(task.meta.id);
       } catch (error) { task.meta.indexError = String(error); }

@@ -30,6 +30,7 @@ export function runtimeHarness(overrides: Partial<Config> = {}) {
     if ('task' in change) records.set(change.task.id, structuredClone(change.task));
     else if ('completion' in change) records.get(change.completion.id)!.completion = structuredClone(change.completion);
     else if ('observed' in change) { const r = records.get(change.observed); if (r) r.observed = true; }
+    else if ('delivered' in change) for (const id of change.delivered) { const r = records.get(id); if (r) r.delivered = true; }
     else for (const id of change.removed) records.delete(id);
   } };
   const runtime = new TaskRuntime(config, sink);

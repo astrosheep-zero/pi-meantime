@@ -34,7 +34,7 @@ async function fixture(workCount = 1, hooks: Hooks = {}) {
   let unsubscribe: (() => void) | undefined;
   const settings = SettingsManager.inMemory({ defaultTools: ['notification_work', 'notification_front'],
     compaction: { enabled: false, keepRecentTokens: 1, reserveTokens: 1024 } });
-  const loader = new DefaultResourceLoader({
+  const makeLoader = () => new DefaultResourceLoader({
     cwd: root, agentDir: root, settingsManager: settings,
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true,
     extensionFactories: [pi => {
@@ -102,17 +102,13 @@ async function fixture(workCount = 1, hooks: Hooks = {}) {
       pi.on('turn_end', () => hooks.turnEnd?.());
     }],
   });
-  async function close() {
-    release.resolve(); completed.resolve(); unsubscribe?.();
-    try { await session?.abort(); await plugin?.dispose(); }
-    finally { session?.dispose(); rmSync(root, { recursive: true, force: true }); }
-  }
-  try {
+  let modelRuntime: Awaited<ReturnType<typeof ModelRuntime.create>>;
+  async function open(sessionManager: SessionManager) {
+    const loader = makeLoader();
     await loader.reload();
     assert.deepEqual(loader.getExtensions().errors, []);
-    const modelRuntime = await ModelRuntime.create({ authPath: join(root, 'auth.json'), modelsPath: join(root, 'models.json') });
     ({ session } = await createAgentSession({ cwd: root, agentDir: root, resourceLoader: loader, settingsManager: settings,
-      sessionManager: SessionManager.inMemory(root), modelRuntime }));
+      sessionManager, modelRuntime }));
     await session.bindExtensions({ mode: 'rpc', onError: error => { errors.push(error); } });
     await session.setModel(modelRuntime.getModel('notification-fixture', 'fixture')!);
     unsubscribe = session.subscribe(event => {
@@ -122,6 +118,22 @@ async function fixture(workCount = 1, hooks: Hooks = {}) {
       if (id && expected.has(id)) indexed.add(id);
       if (indexed.size === workCount) completed.resolve();
     });
+  }
+  async function restart() {
+    const file = session?.sessionManager.getSessionFile();
+    assert.ok(file, 'the restart fixture uses a real session file');
+    unsubscribe?.();
+    await session?.abort(); await plugin?.dispose(); session?.dispose();
+    await open(SessionManager.open(file));
+  }
+  async function close() {
+    release.resolve(); completed.resolve(); unsubscribe?.();
+    try { await session?.abort(); await plugin?.dispose(); }
+    finally { session?.dispose(); rmSync(root, { recursive: true, force: true }); }
+  }
+  try {
+    modelRuntime = await ModelRuntime.create({ authPath: join(root, 'auth.json'), modelsPath: join(root, 'models.json') });
+    await open(SessionManager.create(root, join(root, 'sessions')));
     const tasks = () => (plugin!.inspect() as { tasks: Snapshot[] }).tasks;
     const batches = () => session!.messages.flatMap(message => message.role === 'custom' && message.customType === 'meantime-completion'
       ? [(message.details as { taskIds: string[] }).taskIds] : []);
@@ -130,8 +142,21 @@ async function fixture(workCount = 1, hooks: Hooks = {}) {
       assert.deepEqual(batches().flat().sort(), [...expected].sort(), 'each task has exactly one host-consumed message');
       assert.ok(batches().every(ids => ids.length > 0 && ids.length <= 16));
       assert.ok(tasks().every(task => task.notification === 'delivered'));
+      const entries = session!.sessionManager.getEntries();
+      const messageOrder = new Map<string, number>(), receiptOrder = new Map<string, number>();
+      entries.forEach((entry, order) => {
+        if (entry.type === 'custom_message' && entry.customType === 'meantime-completion') {
+          for (const id of (entry.details as { taskIds: string[] }).taskIds) messageOrder.set(id, order);
+        }
+        if (entry.type === 'custom' && entry.customType === 'meantime-index') {
+          const change = (entry.data as { change: { delivered?: string[] } }).change;
+          for (const id of change.delivered ?? []) receiptOrder.set(id, order);
+        }
+      });
+      assert.deepEqual([...receiptOrder.keys()].sort(), [...expected].sort(), 'each consumed notification has one durable receipt');
+      for (const id of expected) assert.ok(messageOrder.get(id)! < receiptOrder.get(id)!, 'the message is persisted before its delivery receipt');
     };
-    return { session, release, completed, expected, indexed, requests, tasks, batches, assertConsumedOnce, close };
+    return { get session() { return session!; }, release, completed, expected, indexed, requests, tasks, batches, assertConsumedOnce, restart, close };
   } catch (error) { await close(); throw error; }
 }
 
@@ -344,6 +369,25 @@ test('SDK: idle preparation failure waits for a legal prompt and recovers exactl
     assert.equal(h.requests.length, 3, 'recovery needs only the user-requested answer');
     assert.deepEqual(h.requests[2], [...h.expected]);
     h.assertConsumedOnce();
+  } finally { await h.close(); }
+});
+
+test('SDK: reopening the session file does not replay a consumed completion', { timeout: 15_000 }, async t => {
+  const h = await fixture();
+  const completionMessages = () => h.session.sessionManager.getEntries().filter(entry =>
+    entry.type === 'custom_message' && entry.customType === 'meantime-completion').length;
+  try {
+    await h.session.prompt('start background work');
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    h.release.resolve(); await h.completed.promise;
+    t.mock.timers.tick(5000); await nextTurn(); await h.session.waitForIdle();
+    h.assertConsumedOnce();
+    const before = completionMessages();
+    await h.restart();
+    assert.deepEqual(h.tasks().map(task => task.notification), ['delivered']);
+    await h.session.prompt('continue the reopened session');
+    h.assertConsumedOnce();
+    assert.equal(completionMessages(), before, 'recovery adds no duplicate completion message');
   } finally { await h.close(); }
 });
 

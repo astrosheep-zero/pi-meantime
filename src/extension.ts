@@ -447,6 +447,10 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
         const record = records.get(change.observed);
         if (record) record.observed = true;
       }
+      else if (change && 'delivered' in change) for (const id of change.delivered) {
+        const record = records.get(id);
+        if (record) record.delivered = true;
+      }
     }
     const created: TaskRuntime = new TaskRuntime(config, {
       notify(tasks) { return boundDelivery.send(tasks); },

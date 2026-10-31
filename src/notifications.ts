@@ -18,13 +18,16 @@ export interface DeliveryHost {
  * boundaries, and acknowledge only message_end consumption, never enqueue
  * success. Unconsumed fast-path messages return once the host queue is empty.
  * Stop and failed wakeups suppress only automatic turns; idle delivery remains
- * append-only. Receipts are not disk durability (idle sends emit before persistence). */
+ * append-only. Agent-emitted messages emit message_end before persistence, so
+ * durable receipts cross a separate setImmediate barrier after consumption. */
 export class CompletionDelivery {
   private boundaries = 0;
   private staged = 0;
   private wakePaused = false;
   private closed = false;
   private fastQueued = new Set<string>();
+  private consumed = new Set<string>();
+  private acknowledge?: ReturnType<typeof setImmediate>;
   private ready?: ReturnType<typeof setImmediate>;
   private unsubscribe: () => void;
 
@@ -43,7 +46,8 @@ export class CompletionDelivery {
       const ids = message.details.taskIds;
       if (Array.isArray(ids) && ids.every(id => typeof id === 'string')) {
         runtime.notificationConsumed(ids);
-        for (const id of ids) this.fastQueued.delete(id);
+        for (const id of ids) { this.fastQueued.delete(id); this.consumed.add(id); }
+        this.scheduleDurability();
       }
     });
   }
@@ -63,6 +67,10 @@ export class CompletionDelivery {
     // Pausing wakeups must not pause safe delivery: idle recovery is append-only.
     const triggerTurn = !boundary && !this.wakePaused;
     const pending = this.host.sendCustomMessage(this.message(tasks), { deliverAs: 'steer', triggerTurn });
+    // Append-only hosts persist before their synchronous message_end receipt.
+    // Agent-emitted messages have not consumed anything yet and still wait for
+    // scheduleDurability()'s post-append barrier.
+    this.flushDurable();
     if (boundary) this.staged += tasks.length;
     void pending.catch(() => {
       if (streaming) for (const id of ids) this.fastQueued.delete(id);
@@ -78,6 +86,7 @@ export class CompletionDelivery {
     if (this.closed) return false;
     this.wakePaused = false;
     const before = this.staged;
+    this.flushDurable();
     this.boundaries++;
     try {
       await this.runtime.flushNotificationsAtBoundary();
@@ -107,8 +116,25 @@ export class CompletionDelivery {
     // decides whether the host state permits steering, a wakeup or append-only.
     this.ready = setImmediate(() => {
       this.ready = undefined;
-      if (!this.closed) this.runtime.flushNotifications();
+      if (!this.closed) { this.flushDurable(); this.runtime.flushNotifications(); }
     });
+  }
+
+  private scheduleDurability(): void {
+    if (this.closed || this.acknowledge || this.consumed.size === 0) return;
+    // AgentSession awaits extension message_end handlers before appending the
+    // custom message. Append-only delivery is already durable at this point;
+    // the same deferred barrier is harmless for that path.
+    this.acknowledge = setImmediate(() => {
+      this.acknowledge = undefined;
+      this.flushDurable();
+    });
+  }
+
+  private flushDurable(): void {
+    if (this.closed || this.consumed.size === 0) return;
+    const ids = [...this.consumed];
+    if (this.runtime.notificationDurable(ids)) for (const id of ids) this.consumed.delete(id);
   }
 
   /** A result was observed before its queued notification was consumed. The
@@ -116,11 +142,14 @@ export class CompletionDelivery {
    * returned and re-queued as a duplicate later. */
   forget(id: string): void {
     this.fastQueued.delete(id);
+    this.consumed.delete(id);
   }
 
   close(): void {
     this.closed = true;
     this.fastQueued.clear();
+    this.consumed.clear();
+    clearImmediate(this.acknowledge); this.acknowledge = undefined;
     clearImmediate(this.ready); this.ready = undefined;
     this.unsubscribe();
   }

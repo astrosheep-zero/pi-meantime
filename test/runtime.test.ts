@@ -314,6 +314,28 @@ test('notification handoff reserves queued before synchronous reentry and consum
   } finally { await h.close(); }
 });
 
+test('a failed durable receipt neither resends nor prunes, and can be retried', async () => {
+  const h = await notificationBatch(1); const id = h.ids[0]!;
+  const index = h.sink.index; let fail = true;
+  h.sink.index = change => {
+    if (fail && 'delivered' in change) throw new Error('receipt disk full');
+    index(change);
+  };
+  try {
+    h.runtime.flushNotifications();
+    h.runtime.notificationConsumed([id]);
+    assert.equal(h.runtime.notificationDurable([id]), false);
+    assert.equal(h.runtime.get(id).notification, 'delivered');
+    assert.match(h.runtime.get(id).indexError!, /receipt disk full/);
+    assert.equal(h.records.get(id)!.delivered, undefined);
+    h.runtime.flushNotifications();
+    assert.equal(h.notifications.length, 1, 'a volatile consumption receipt still suppresses resend');
+    fail = false;
+    assert.equal(h.runtime.notificationDurable([id]), true);
+    assert.equal(h.records.get(id)!.delivered, true);
+  } finally { await h.close(); }
+});
+
 for (const outcome of ['false', 'throw'] as const) test(`notification ${outcome} rolls back only still-queued members`, async () => {
   const h = await notificationBatch(3);
   const [delivered, observed, retry] = h.ids as [string, string, string];
