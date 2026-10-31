@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #e8ecf2; font: 13px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; padding: 28px; color: #18181b; -webkit-font-smoothing: antialiased; display: inline-block; }
+.win { width: 540px; background: #ffffff; border-radius: 12px; box-shadow: 0 12px 32px rgba(15,23,42,0.10), 0 1px 3px rgba(15,23,42,0.06), 0 0 0 1px rgba(15,23,42,0.06); overflow: hidden; }
+.bar { height: 38px; padding: 0 14px; display: flex; align-items: center; gap: 7px; border-bottom: 1px solid #eef0f4; background: #fafbfc; }
+.dot { width: 10px; height: 10px; border-radius: 50%; }
+.bar-title { margin-left: 6px; font-size: 12px; font-weight: 500; color: #646b78; }
+.stream { padding: 18px 20px 22px; display: flex; flex-direction: column; gap: 12px; }
+.msg { font-size: 13px; line-height: 20px; color: #27272a; }
+.msg code { font-family: Menlo, ui-monospace, monospace; font-size: 11.5px; background: #f2f4f7; padding: 1.5px 5px; border-radius: 4px; color: #18181b; }
+
+/* 亮色宿主下的烟熏折光黑玻璃窗 */
+.st-ok { --c:130,188,108; } .st-bad { --c:242,128,110; } .st-run { --c:236,184,92; }
+.m { font-family: Menlo, ui-monospace, "SF Mono", monospace; font-size: 11.5px; line-height: 16px; font-variant-numeric: tabular-nums; }
+.card {
+  border-radius: 6px; padding: 8.5px 11px;
+  background-color: #191e27;
+  background-clip: padding-box;
+  background-image:
+    radial-gradient(62% 45% at 18% 0%, rgba(255,255,255,0.095), transparent 72%),
+    radial-gradient(90% 95% at 0% 0%, rgba(var(--c),0.20), transparent 60%),
+    linear-gradient(166deg, rgba(255,255,255,0.085) 0%, rgba(255,255,255,0.022) 38%, rgba(8,10,15,0.22) 100%),
+    linear-gradient(180deg, rgba(var(--c),0.065), rgba(var(--c),0.015));
+  border: 1px solid rgba(18,23,32,0.86);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.16),
+    inset 0 0 0 1px rgba(var(--c),0.27),
+    inset 0 -1px 0 rgba(0,0,0,0.30),
+    0 4px 12px -2px rgba(15,23,42,0.14),
+    0 1px 2.5px rgba(15,23,42,0.10);
+}
+.head { display: flex; align-items: flex-start; gap: 7.5px; }
+.sdot { width: 5.5px; height: 5.5px; border-radius: 50%; background: rgb(var(--c)); margin-top: 5.25px; flex: none; box-shadow: 0 0 5px rgba(var(--c),.45); }
+.st-run .sdot { box-shadow: 0 0 6px rgba(var(--c),.6), 0 0 1.5px rgba(var(--c),.85); }
+.cmd { flex: 1; min-width: 0; font-weight: 600; color: #f2f4f7; letter-spacing: -0.1px; white-space: pre-wrap; overflow-wrap: break-word; }
+.cmd .arg { color: #9fa6b0; font-weight: 400; }
+.meta { flex: none; display: flex; align-items: center; gap: 6px; height: 16px; color: #9198a1; font-size: 11px; }
+.chip {
+  font-size: 10px; line-height: 14px; padding: 0 4.5px; border-radius: 3px; font-weight: 500; letter-spacing: 0.1px;
+  color: rgb(var(--c));
+  background: linear-gradient(180deg, rgba(255,255,255,0.09), transparent), rgba(var(--c),0.155);
+  box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.22), inset 0 0 0 0.5px rgba(var(--c),0.42);
+}
+.waited { color: #737b85; } .waited b { color: #d0d5dc; font-weight: 400; }
+.chev { width: 10px; height: 10px; stroke: #666d77; fill: none; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.rule { height: 1px; margin: 6px 0 5.5px; background: linear-gradient(90deg, rgba(var(--c),0.32), rgba(255,255,255,0.08) 55%, transparent 94%); }
+.out { color: #aeb4bd; white-space: pre-wrap; }
+.out .d { color: #666e78; } .out .ok { color: #82bc6c; } .out .bad { color: #f2806e; }
+.foot { margin-top: 6.5px; font-size: 10px; line-height: 14px; color: #5f6772; }
+.foot .sep { color: #3e444e; margin: 0 4px; }
+</style></head><body>
+<div class="win">
+  <div class="bar">
+    <span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span>
+    <span class="bar-title">pi-meantime · Light Timeline</span>
+  </div>
+  <div class="stream">
+    <div class="msg">先跑一轮全量单测，同时把构建监听挂在后台：</div>
+
+    <div class="card m st-bad">
+      <div class="head"><span class="sdot"></span><div class="cmd">for<span class="arg"> f in test/*.test.ts; do
+  node --test "$f" || exit 1
+done</span></div><span class="meta"><span class="chip">exit 1</span><span>00:12</span><svg class="chev" style="transform:rotate(180deg)" viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5"/></svg></span></div>
+      <div class="rule"></div>
+      <div class="out"><span class="ok">✔</span> board renders (4ms)
+<span class="bad">✖</span> drawer shows command once
+  AssertionError: 2 !== 1</div>
+      <div class="foot">mt_77d0c9aa<span class="sep">·</span>19:44:10 → 19:44:22</div>
+    </div>
+
+    <div class="msg">修掉 <code>task-card.test.ts</code> 里的断言后重跑通过，构建监听还在跑：</div>
+
+    <div class="card m st-ok">
+      <div class="head"><span class="sdot"></span><div class="cmd">npm<span class="arg"> test</span></div><span class="meta"><span>00:45</span><svg class="chev" viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5"/></svg></span></div>
+      <div class="rule"></div>
+      <div class="out"><span class="d">ℹ</span> fail 0
+<span class="d">ℹ</span> duration_ms 336.6</div>
+    </div>
+
+    <div class="card m st-run">
+      <div class="head"><span class="sdot"></span><div class="cmd">npm<span class="arg"> run e2e -- --shard=2/4</span></div><span class="meta"><span class="chip">timeout</span><span class="waited">waited <b>12:00</b></span><svg class="chev" viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5"/></svg></span></div>
+      <div class="rule"></div>
+      <div class="out"><span class="d">ℹ</span> pass 24
+<span class="d">ℹ</span> running shard 2/4…</div>
+    </div>
+  </div>
+</div>
+</body></html>

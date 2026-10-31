@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>meantime · v21 · 去水印对比</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #08090b; font: 12px -apple-system, "SF Pro Text", sans-serif; padding: 28px; color: #e4e7ec; -webkit-font-smoothing: antialiased; }
+  h1 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .intro { color: #899097; font-size: 12px; margin-bottom: 20px; max-width: 900px; line-height: 18px; }
+  .cols { display: grid; grid-template-columns: repeat(3, 390px); gap: 22px; align-items: start; }
+  .col > .title { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .col > .sub { color: #899097; font-size: 11px; margin-bottom: 12px; min-height: 32px; }
+  .cell { margin-bottom: 14px; }
+  .lab { color: #5c6167; font-size: 10px; letter-spacing: .6px; margin-bottom: 5px; }
+  .chat { background: #0f1114; border-radius: 10px; padding: 11px 13px; }
+
+  .st-ok   { --c:127,178,106; } .st-bad { --c:239,125,107; } .st-run { --c:233,180,90; }
+  .st-wto  { --c:233,180,90; }  .st-wint { --c:137,148,163; }
+
+  .card { position: relative; overflow: hidden; border-radius: 7px; padding: 11px 13px 11px;
+    background:
+      radial-gradient(120% 90% at 100% 0%, rgba(var(--c),.11), transparent 60%),
+      linear-gradient(180deg, rgba(var(--c),.05), rgba(var(--c),.015));
+    border: 1px solid rgba(var(--c),.20);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.035), 0 1px 2px rgba(0,0,0,.4); }
+  .card > * { position: relative; }
+
+  .wm { position: absolute !important; right: -4px; bottom: -13px; pointer-events: none;
+        font: 800 54px/1 "SF Pro Display", -apple-system, sans-serif; letter-spacing: -1.5px;
+        background: linear-gradient(180deg, rgba(var(--c),.16), rgba(var(--c),.03));
+        -webkit-background-clip: text; color: transparent; }
+
+  .m { font-family: Menlo, ui-monospace, monospace; font-size: 12px; line-height: 18px; font-variant-numeric: tabular-nums; }
+  .head { display: flex; align-items: flex-start; gap: 8px; }
+  .cmd { flex: 1; min-width: 0; font-weight: 600; color: #eef0f3; }
+  .cmd.clip { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cmd.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .cmd .arg { color: #9aa0a8; font-weight: 400; }
+
+  .meta { flex: none; display: flex; align-items: center; gap: 7px; height: 18px; color: #899097; }
+  .chip { font-size: 10.5px; line-height: 15px; padding: 0 5px; border-radius: 3px;
+          color: rgb(var(--c)); background: rgba(var(--c),.12); box-shadow: inset 0 0 0 .5px rgba(var(--c),.3); }
+  .waited { color: #6b7178; } .waited b { color: #c3c8ce; font-weight: 400; }
+  .chev { width: 10px; height: 10px; stroke: #5c6167; fill: none; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+  .card.open .chev { transform: rotate(180deg); }
+
+  .rule { height: 1px; margin: 8px 0 7px; background: linear-gradient(90deg, rgba(var(--c),.22), rgba(var(--c),0) 85%); }
+  .out { color: #a3a9b1; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .with-wm .out { padding-right: 22%; }
+  .out .d { color: #5c6167; } .out .ok { color: #7fb26a; } .out .bad { color: #ef7d6b; }
+
+  .foot { margin-top: 9px; display: flex; gap: 6px; font-size: 10.5px; line-height: 15px; color: #4d5258; }
+  .with-wm .foot { max-width: 70%; }
+  .foot .sep { color: #33363b; }
+
+  /* C3: 去大字 + 命令前状态圆点 + 左上染色锚点 */
+  .dot-anchor .card {
+    background:
+      radial-gradient(90% 90% at 0% 0%, rgba(var(--c),.12), transparent 58%),
+      linear-gradient(180deg, rgba(var(--c),.045), rgba(var(--c),.012));
+  }
+  .sdot { width: 6px; height: 6px; border-radius: 50%; background: rgb(var(--c)); margin-top: 6px; flex: none;
+          box-shadow: 0 0 6px rgba(var(--c),.45); }
+</style>
+</head>
+<body>
+<h1>v21 · 大水印字留不留？三列对比</h1>
+<div class="intro">左边是 v20（保留右下角 PASS/FAIL/LIVE/WAIT 大字），中间直接拔掉大字，右边拔掉大字但加一颗 6px 状态圆点（光晕改为从左上角散开，输出和 footer 不再让位）。</div>
+<div class="cols" id="cols"></div>
+<script>
+const esc = s => s.replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const cases = [
+ {lab:"短命令 · 收起", cmd:"npm test", st:"ok", t:"00:45", open:false, out:"ℹ fail 0\nℹ duration_ms 336.6"},
+ {lab:"短命令 · 展开", cmd:"npm test", st:"ok", t:"00:45", open:true, out:"ℹ tests 25\nℹ suites 7\nℹ pass 25\nℹ fail 0\nℹ duration_ms 336.6", foot:["mt_9cec1234","19:31:28 → 19:32:13"]},
+ {lab:"多行失败 · 展开", cmd:"for f in test/*.test.ts; do\n  node --test \"$f\" || exit 1\ndone", st:"bad", t:"00:12", chip:"exit 1", open:true, out:"✔ board renders (4ms)\n✖ drawer shows command once\n  AssertionError: 2 !== 1", foot:["mt_77d0c9aa","19:44:10 → 19:44:22"]},
+ {lab:"运行中 · 收起", cmd:"npm run build -- --watch", st:"run", t:"02:13", open:false, out:"[watch] build started\n  dist/client.js  41.2kb\n  dist/server.js  12.8kb\n[watch] build finished\n[watch] waiting for changes…"},
+ {lab:"wait 到期 · 收起", cmd:"wait mt_9cec1234", st:"wto", t:"12:00", chip:"timeout", wm:"WAIT", wait:true, open:false, out:"still running after 720s\nlast: ℹ pass 25"},
+ {lab:"wait 被打断 · 展开", cmd:"wait mt_51ab07e2", st:"wint", t:"04:32", chip:"interrupted", wm:"WAIT", wait:true, open:true, out:"wait interrupted by user\ntask still running", foot:["mt_8b21f0d3","20:11:03 → 20:15:35"]},
+];
+const chev = `<svg class="chev" viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5"/></svg>`;
+const W = c => c.wm || ({ok:"PASS",bad:"FAIL",run:"LIVE"})[c.st];
+const cmdHtml = c => {
+  const s = c.open ? c.cmd : c.cmd.replace(/\s+/g," ");
+  const [first, ...rest] = esc(s).split(" ");
+  return first + (rest.length ? ` <span class="arg">${rest.join(" ")}</span>` : "");
+};
+const colorOut = s => esc(s).replace(/^(\s*)ℹ/gm,'$1<span class="d">ℹ</span>').replace(/^(\s*)✔/gm,'$1<span class="ok">✔</span>').replace(/^(\s*)✖/gm,'$1<span class="bad">✖</span>');
+const outHtml = c => {
+  const lines = c.open ? c.out.split("\n") : c.out.split("\n").slice(c.st==="run"?-4:-2);
+  return `<div class="out">${colorOut(lines.join("\n"))}</div>`;
+};
+const meta = c => `<span class="meta">${c.chip?`<span class="chip">${c.chip}</span>`:""}${c.wait?`<span class="waited">waited <b>${c.t}</b></span>`:`<span>${c.t}</span>`}${chev}</span>`;
+const card = (c, mode) => `<div class="card m st-${c.st}${c.open?" open":""}${mode==="wm"?" with-wm":""}">
+  ${mode==="wm"?`<div class="wm">${W(c)}</div>`:""}
+  <div class="head">${mode==="dot"?`<span class="sdot"></span>`:""}<div class="cmd ${c.open?"wrap":"clip"}">${cmdHtml(c)}</div>${meta(c)}</div>
+  <div class="rule"></div>${outHtml(c)}
+  ${c.open?`<div class="foot"><span>${c.foot[0]}</span><span class="sep">·</span><span>${c.foot[1]}</span></div>`:""}</div>`;
+
+const cols = [
+  {title:"A · 保留右下大字（v20）", sub:"有海报感，但输出和 footer 必须给右下角让位。", mode:"wm", cls:""},
+  {title:"B · 纯去掉大字", sub:"最干净，100% 宽度给输出；靠整卡染色 + 右上 chip 表达状态。", mode:"none", cls:""},
+  {title:"C · 去大字 + 命令前状态圆点", sub:"去掉大字，命令前补一颗 6px 状态点，光晕从左上散开。", mode:"dot", cls:"dot-anchor"},
+];
+document.getElementById("cols").innerHTML = cols.map(col=>`<div class="col ${col.cls}"><div class="title">${col.title}</div><div class="sub">${col.sub}</div>${
+  cases.map(c=>`<div class="cell"><div class="lab">${c.lab}</div><div class="chat">${card(c, col.mode)}</div></div>`).join("")}</div>`).join("");
+</script>
+</body>
+</html>

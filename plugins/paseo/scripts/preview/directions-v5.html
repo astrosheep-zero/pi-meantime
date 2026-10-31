@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>meantime card · v5 phosphor, refined</title>
+<style>
+  :root { --mono: ui-monospace, "SF Mono", Menlo, monospace; --sans: -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: var(--sans); background: #555; }
+  .sheet { display: flex; align-items: flex-start; }
+  .col { width: 400px; flex: none; padding: 34px 30px 70px; }
+  .col.light { --ink:24,27,31; --s0:#ffffff; background: var(--s0); }
+  .col.dark  { --ink:233,236,240; --s0:#0e1013; background: var(--s0); }
+  .theme-tag { font-size: 9px; letter-spacing: 3px; color: rgba(var(--ink),.35); margin-bottom: 30px; font-family: var(--mono); }
+  .dir { margin-bottom: 60px; }
+  .dir-name { font-size: 14px; font-weight: 650; color: rgb(var(--ink)); margin-bottom: 2px; letter-spacing: -.2px; }
+  .dir-cn { font-size: 11px; color: rgba(var(--ink),.35); margin-bottom: 24px; }
+  .stack { display: flex; flex-direction: column; gap: 22px; }
+
+  /* ============ PHOSPHOR skeleton ============ */
+  /* five luminance steps of one hue; the console is always dark */
+  .ph {
+    --r: 7px;
+    border-radius: var(--r);
+    font-family: var(--mono);
+    padding: 9px 12px 10px;
+    line-height: 1.45;
+    position: relative;
+    overflow: hidden;
+    background-image: repeating-linear-gradient(0deg, transparent 0 2px, rgba(0,0,0,.10) 2px 3px);
+  }
+  .ph.green { background-color: #090d09; border: 1px solid rgba(130,220,150,.11);
+    --b:#d9f7e0; --m:#92c19e; --d:#55795f; --f:#2e4536; --hot:#f2c66d; --bad:#ee7a6b;
+    box-shadow: inset 0 0 28px rgba(80,200,120,.03); }
+  .ph.amber { background-color: #100c06; border: 1px solid rgba(230,190,110,.12);
+    --b:#fbe9c4; --m:#d4b078; --d:#8a7048; --f:#4d3e26; --hot:#ffd479; --bad:#ee7a6b;
+    box-shadow: inset 0 0 28px rgba(220,170,80,.03); }
+  .ph.ice { background-color: #080b10; border: 1px solid rgba(150,200,255,.11);
+    --b:#dcedff; --m:#8fb4d9; --d:#54708c; --f:#2c3c4d; --hot:#ffd479; --bad:#ee7a6b;
+    box-shadow: inset 0 0 28px rgba(110,170,240,.03); }
+
+  .ph .head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 7px; }
+  .ph .head .l { font-size: 8px; letter-spacing: 2.2px; color: var(--d); font-weight: 600; }
+  .ph .head .r { font-size: 8px; letter-spacing: 1.2px; color: var(--d); }
+  .ph .head .r .rec { color: var(--hot); }
+  .ph .hr { border-top: 1px solid; border-color: color-mix(in srgb, var(--d) 30%, transparent); margin: 0 -12px 8px; }
+
+  .ph .cmd { font-size: 11.5px; font-weight: 500; color: var(--b); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ph .cmd .cur { color: var(--hot); text-shadow: 0 0 9px var(--hot); font-weight: 400; }
+  .ph .prompt { color: var(--f); margin-right: 8px; }
+
+  .ph .meta { display: flex; justify-content: space-between; align-items: baseline; margin-top: 5px; }
+  .ph .meta .l { font-size: 9.5px; color: var(--d); letter-spacing: .3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: none; }
+  .ph .meta .dots { flex: 1; margin: 0 10px; border-bottom: 1px dotted; border-color: color-mix(in srgb, var(--d) 55%, transparent); transform: translateY(-3px); min-width: 16px; }
+  .ph .meta .r { font-size: 9.5px; color: var(--m); font-variant-numeric: tabular-nums; flex: none; letter-spacing: .6px; }
+  .ph .meta .r .st.ok { color: var(--m); } .ph .meta .r .st.hot { color: var(--hot); } .ph .meta .r .st.bad { color: var(--bad); }
+
+  /* list: strict column grid, the ps-table discipline */
+  .ph .cols { display: grid; grid-template-columns: minmax(0,1fr) 6ch 8ch; column-gap: 10px; margin-bottom: 5px; }
+  .ph .cols span { font-size: 7.5px; letter-spacing: 1.8px; color: var(--f); font-weight: 600; }
+  .ph .cols .r { text-align: right; }
+  .ph .rows { display: grid; grid-template-columns: minmax(0,1fr) 6ch 8ch; column-gap: 10px; row-gap: 5px; align-items: baseline; }
+  .ph .rows .c-cmd { font-size: 10.5px; color: var(--b); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ph .rows .c-cmd .prompt { margin-right: 6px; }
+  .ph .rows .c-t { font-size: 9.5px; color: var(--m); font-variant-numeric: tabular-nums; }
+  .ph .rows .c-s { font-size: 9.5px; text-align: right; letter-spacing: .6px; }
+  .ph .rows .c-s.ok { color: var(--m); } .ph .rows .c-s.hot { color: var(--hot); } .ph .rows .c-s.bad { color: var(--bad); }
+  .ph .rowrule { grid-column: 1 / -1; border-top: 1px solid color-mix(in srgb, var(--d) 18%, transparent); }
+</style>
+</head>
+<body>
+<div class="sheet" id="sheet"></div>
+<script>
+const RUN = { id:"mt_9cec89b4", tool:"bash", state:"running", cmd:"npm test -- --watch", time:"00:45" };
+const OK  = { id:"mt_a1b2c3d4", tool:"bash", state:"completed", cmd:"sleep 45 && echo done", time:"00:45", exit:0 };
+const BAD = { id:"mt_deadbeef", tool:"web_fetch", state:"failed", cmd:"curl https://api.example.com/v2/endpoint", time:"00:03", exit:1 };
+const LONG= { id:"mt_1234abcd", tool:"bash", state:"completed", cmd:"npm run build:production -- --analyze --output=dist/final/bundle.js", time:"12:04", exit:0 };
+const LIST = [RUN, OK, BAD];
+const pal = [ ["green","Phosphor","磷光 · 绿"], ["amber","Amber","磷光 · 琥珀"], ["ice","Ice","磷光 · 冰蓝"] ];
+const esc = s => s.replace(/&/g,"&amp;").replace(/</g,"&lt;");
+
+function single(p, t, head){
+  const running = t.state === "running";
+  const st = running ? `<span class="st hot">running</span>`
+    : t.state === "failed" ? `<span class="st bad">failed E${t.exit}</span>`
+    : `<span class="st ok">exit ${t.exit}</span>`;
+  return `<div class="ph ${p}">
+    <div class="head"><span class="l">MEANTIME</span><span class="r">${running?`<span class="rec">●</span> rec · `:""}${head}</span></div>
+    <div class="hr"></div>
+    <div class="cmd"><span class="prompt">›</span>${esc(t.cmd)}${running?` <span class="cur">▮</span>`:""}</div>
+    <div class="meta"><span class="l">${t.id} · ${t.tool}</span><span class="dots"></span><span class="r">T+${t.time} · ${st}</span></div>
+  </div>`;
+}
+function list(p){
+  const row = (t, last) => {
+    const st = t.state === "running" ? `<span class="c-s hot">running</span>`
+      : t.state === "failed" ? `<span class="c-s bad">failed E${t.exit}</span>`
+      : `<span class="c-s ok">exit ${t.exit}</span>`;
+    return `<span class="c-cmd"><span class="prompt">›</span>${esc(t.cmd)}</span><span class="c-t">T+${t.time}</span>${st}${last?"":'<span class="rowrule"></span>'}`;
+  };
+  return `<div class="ph ${p}">
+    <div class="head"><span class="l">MEANTIME · LIST</span><span class="r">3 procs</span></div>
+    <div class="hr"></div>
+    <div class="cols"><span>command</span><span>time</span><span class="r">state</span></div>
+    <div class="rows">${LIST.map((t,i)=>row(t, i===LIST.length-1)).join("")}</div>
+  </div>`;
+}
+
+const sheet = document.getElementById("sheet");
+for (const cls of ["light","dark"]){
+  const col = document.createElement("div");
+  col.className = "col " + cls;
+  col.innerHTML = `<div class="theme-tag">${cls.toUpperCase()} · 390PT</div>` + pal.map(([p,en,cn])=>`
+    <div class="dir">
+      <div class="dir-name">${en}</div>
+      <div class="dir-cn">${cn}</div>
+      <div class="stack">
+        ${single(p, RUN, "tty01")}
+        ${single(p, OK, "completion")}
+        ${single(p, BAD, "completion")}
+        ${single(p, LONG, "completion")}
+        ${list(p)}
+      </div>
+    </div>`).join("");
+  sheet.appendChild(col);
+}
+</script>
+</body>
+</html>

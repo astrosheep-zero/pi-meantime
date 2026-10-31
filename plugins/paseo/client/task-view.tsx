@@ -40,7 +40,7 @@ function useNow(active: boolean): number {
 }
 
 /** The right-hand meter: a status word plus tabular time, nothing boxed. */
-export function Clock({ task, colors, waitOutcome, waitedSeconds }: { task: TaskSummary; colors: Colors; waitOutcome?: WaitOutcome; waitedSeconds?: number }) {
+export function Clock({ task, colors, layout, waitOutcome, waitedSeconds }: { task: TaskSummary; colors: Colors; layout: Layout; waitOutcome?: WaitOutcome; waitedSeconds?: number }) {
   const active = isActiveTask(task) || task.state === "queued";
   const tone = taskTone(task, waitOutcome);
   // A handle only proves a task STARTED; ticking from createdAt would lie.
@@ -54,7 +54,7 @@ export function Clock({ task, colors, waitOutcome, waitedSeconds }: { task: Task
   const glyph = tone === "ok" && chip === undefined ? "✓" : undefined;
   const dark = isDarkSurface(colors);
   const labelColor = tone === "neutral" ? secondaryColor(colors) : toneColor(tone, colors);
-  const meta: TextStyle = { fontSize: 11.5, lineHeight: 16, fontVariant: ["tabular-nums"] };
+  const meta: TextStyle = { fontSize: 11.5, lineHeight: 16, fontFamily: monoFont(layout.platform), fontVariant: ["tabular-nums"] };
   return <View style={{ flexDirection: "row", alignItems: "baseline", gap: 5 }}>
     {glyph
       ? <Text style={{ ...meta, fontWeight: "600", color: labelColor }}>{glyph}</Text>
@@ -105,7 +105,7 @@ export function TaskLine({ task, colors, layout, showId, muted: quiet = false, d
         <Pip tone={tone} colors={colors} />
         <View style={{ flex: 1, minWidth: 0 }}><TaskCommand task={task} colors={colors} quiet={quiet && tone === "ok"} /></View>
         {idTag}
-        <Clock task={task} colors={colors} waitOutcome={effectiveWaitOutcome} waitedSeconds={waitedSeconds} />
+        <Clock task={task} colors={colors} layout={layout} waitOutcome={effectiveWaitOutcome} waitedSeconds={waitedSeconds} />
         <Icon name={open ? "ChevronUp" : "ChevronDown"} size={11} color={chevColor} />
       </View>
       {open ? <StatusRule colors={colors} /> : null}

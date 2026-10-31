@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>meantime monitor prototypes · v8</title>
+<style>
+  :root { --mono: ui-monospace, "SF Mono", Menlo, monospace; --sans: -apple-system, "SF Pro Text", sans-serif; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f1114; color: #e8eaee; font-family: var(--sans); padding: 34px 18px 70px; }
+  main { width: 394px; margin: 0 auto; }
+  h1 { font: 600 13px/1.4 var(--sans); letter-spacing: -.1px; margin-bottom: 6px; }
+  .intro { color: #8b929c; font-size: 11px; margin-bottom: 34px; }
+  .proto { margin-bottom: 46px; }
+  .name { font: 600 11px/1.2 var(--sans); margin-bottom: 4px; }
+  .name span { color: #707782; font-weight: 400; margin-left: 7px; }
+  .panel { width: 100%; overflow: hidden; position: relative; font-family: var(--mono); }
+  .top { display: flex; justify-content: space-between; align-items: baseline; }
+  .kicker { font-size: 8px; letter-spacing: 2.2px; text-transform: uppercase; }
+  .status { font-size: 9px; letter-spacing: 1.4px; text-transform: uppercase; }
+  .cmd { font-size: 11px; line-height: 1.45; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cmd b { font-weight: 650; }
+  .meta { display: flex; justify-content: space-between; align-items: baseline; font-size: 9px; }
+  .done { display: flex; gap: 8px; align-items: baseline; font-size: 9px; white-space: nowrap; }
+  .done .dc { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .done .ds, .done .dx { flex: none; }
+
+  /* 01 phosphor scope */
+  .p1 { background: radial-gradient(circle at 50% 0%, rgba(107,255,171,.07), transparent 55%), #050805; border: 1px solid rgba(119,255,177,.18); border-radius: 6px; padding: 11px 13px 10px; box-shadow: 0 0 24px rgba(74,255,143,.05), inset 0 0 28px rgba(74,255,143,.035); }
+  .p1:before { content:""; position:absolute; inset:0; background: repeating-linear-gradient(0deg, transparent 0 2px, rgba(120,255,170,.025) 2px 3px); pointer-events:none; }
+  .p1 .kicker { color: rgba(147,255,188,.38); }
+  .p1 .status { color: #9effc2; text-shadow: 0 0 8px rgba(117,255,171,.8); }
+  .p1 .cmd { margin: 13px 0 18px; color: #c9ffd9; text-shadow: 0 0 7px rgba(117,255,171,.28); }
+  .p1 .cmd b { color: #edfff2; }
+  .p1 .meta { color: rgba(147,255,188,.5); }
+  .p1 .meta strong { color: #9effc2; font-weight: 500; font-size: 13px; text-shadow: 0 0 9px rgba(117,255,171,.55); }
+  .p1 .done { border-top: 1px solid rgba(119,255,177,.12); margin-top: 10px; padding-top: 7px; color: rgba(190,215,197,.48); }
+
+  /* 02 amber deck */
+  .p2 { background: linear-gradient(180deg, #17110a, #0b0805); border: 1px solid rgba(255,190,92,.23); border-radius: 3px; padding: 0 13px 10px; box-shadow: inset 0 1px rgba(255,220,150,.08), 0 0 18px rgba(255,177,64,.04); }
+  .p2 .top { margin: 0 -13px 15px; padding: 7px 13px; border-bottom: 1px solid rgba(255,190,92,.14); background: rgba(255,180,80,.025); }
+  .p2 .kicker { color: rgba(255,204,128,.42); }
+  .p2 .status { color: #ffd083; text-shadow: 0 0 8px rgba(255,184,77,.7); }
+  .p2 .cmd { color: #f4dfbd; }
+  .p2 .cmd b { color: #fff0d2; }
+  .p2 .meta { margin-top: 16px; color: rgba(244,210,157,.44); }
+  .p2 .meta strong { color: #ffd083; font-size: 16px; font-weight: 300; letter-spacing: -.4px; text-shadow: 0 0 12px rgba(255,184,77,.5); }
+  .p2 .done { margin-top: 9px; color: rgba(244,210,157,.42); }
+
+  /* 03 ice telemetry */
+  .p3 { background: #050b12; border: 1px solid rgba(100,205,255,.22); border-radius: 8px; padding: 12px; box-shadow: 0 0 30px rgba(60,180,255,.06), inset 0 0 0 1px rgba(190,235,255,.035); }
+  .p3 .top { align-items: center; }
+  .p3 .kicker { color: rgba(157,220,255,.42); }
+  .p3 .status { color: #80ddff; text-shadow: 0 0 10px rgba(75,205,255,.8); }
+  .p3 .body { display: grid; grid-template-columns: minmax(0,1fr) 72px; gap: 14px; margin-top: 16px; }
+  .p3 .cmd { color: #d6f2ff; }
+  .p3 .cmd b { color: white; }
+  .p3 .metric { text-align: right; border-left: 1px solid rgba(100,205,255,.16); padding-left: 12px; }
+  .p3 .metric small { display:block; font-size: 7px; letter-spacing: 1.5px; color: rgba(157,220,255,.35); margin-bottom: 4px; }
+  .p3 .metric strong { font-size: 15px; font-weight: 400; color: #80ddff; text-shadow: 0 0 10px rgba(75,205,255,.55); }
+  .p3 .done { margin-top: 15px; padding-top: 8px; border-top: 1px solid rgba(100,205,255,.12); color: rgba(180,220,235,.45); }
+
+  /* 04 reactor glass */
+  .p4 { background: linear-gradient(145deg, rgba(22,31,37,.94), rgba(5,8,10,.98)); border: 1px solid rgba(185,240,255,.15); border-radius: 12px; padding: 14px; box-shadow: 0 14px 36px rgba(0,0,0,.3), 0 0 26px rgba(105,220,255,.05), inset 0 1px rgba(255,255,255,.06); }
+  .p4 .kicker { color: rgba(210,241,255,.35); }
+  .p4 .status { color: #a8edff; text-shadow: 0 0 10px rgba(105,220,255,.72); }
+  .p4 .cmd { margin-top: 19px; color: #edfaff; font-size: 12px; }
+  .p4 .meta { margin-top: 18px; color: rgba(210,241,255,.4); }
+  .p4 .meta strong { color: #a8edff; font-weight: 500; }
+  .p4 .done { margin-top: 10px; color: rgba(210,241,255,.38); }
+
+  /* 05 rack mount */
+  .p5 { background: linear-gradient(180deg, #17191d, #0b0c0f); border: 1px solid #34383f; border-radius: 4px; padding: 10px 12px; box-shadow: inset 0 1px #2d3138, inset 0 -1px #050608, 0 2px 8px rgba(0,0,0,.32); }
+  .p5:before, .p5:after { content:""; position:absolute; top: 8px; width: 4px; height: 4px; border-radius: 50%; background: #3f444c; box-shadow: inset 0 1px #111; }
+  .p5:before { left: 7px; } .p5:after { right: 7px; }
+  .p5 .top { padding: 0 12px; }
+  .p5 .kicker { color: #767e89; }
+  .p5 .status { color: #ffc36b; text-shadow: 0 0 8px rgba(255,183,77,.6); }
+  .p5 .cmd { margin: 15px 0; color: #e5e8ec; }
+  .p5 .meta { color: #828a94; }
+  .p5 .meta strong { color: #ffc36b; font-weight: 500; }
+  .p5 .done { margin-top: 10px; padding-top: 7px; border-top: 1px solid #282c32; color: #68707a; }
+
+  /* 06 oscilloscope */
+  .p6 { background-color: #040705; background-image: linear-gradient(rgba(89,255,155,.045) 1px, transparent 1px), linear-gradient(90deg, rgba(89,255,155,.045) 1px, transparent 1px); background-size: 24px 24px; border: 1px solid rgba(89,255,155,.2); border-radius: 2px; padding: 12px; box-shadow: inset 0 0 30px rgba(42,255,127,.035); }
+  .p6 .kicker { color: rgba(139,255,183,.38); }
+  .p6 .status { color: #78ff9f; text-shadow: 0 0 9px rgba(89,255,155,.9); }
+  .p6 .cmd { margin: 17px 0; color: #d4ffdf; text-shadow: 0 0 5px rgba(89,255,155,.28); }
+  .p6 .meta { color: rgba(139,255,183,.48); }
+  .p6 .meta strong { color: #78ff9f; font-weight: 500; text-shadow: 0 0 8px rgba(89,255,155,.55); }
+  .p6 .done { margin-top: 11px; color: rgba(174,217,187,.42); }
+
+  /* 07 HUD */
+  .p7 { background: rgba(4,10,13,.94); border: 1px solid rgba(70,225,255,.28); clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px)); padding: 12px 13px; box-shadow: 0 0 24px rgba(70,225,255,.06); }
+  .p7 .kicker { color: rgba(147,231,255,.42); }
+  .p7 .status { color: #67e8ff; text-shadow: 0 0 9px rgba(70,225,255,.8); }
+  .p7 .cmd { margin: 18px 0; color: #e5fbff; }
+  .p7 .meta { color: rgba(147,231,255,.45); }
+  .p7 .meta strong { color: #67e8ff; font-weight: 500; }
+  .p7 .done { margin-top: 10px; color: rgba(147,231,255,.36); }
+
+  /* 08 night ledger */
+  .p8 { background: #090b10; border: 1px solid rgba(148,163,184,.18); border-radius: 10px; padding: 12px 13px; box-shadow: inset 0 1px rgba(255,255,255,.035), 0 0 22px rgba(120,150,255,.035); }
+  .p8 .top { border-bottom: 1px solid rgba(148,163,184,.13); padding-bottom: 8px; }
+  .p8 .kicker { color: #68707d; }
+  .p8 .status { color: #a8c7ff; text-shadow: 0 0 8px rgba(133,168,255,.52); }
+  .p8 .cmd { margin-top: 13px; color: #e6e9ef; }
+  .p8 .meta { margin-top: 16px; color: #707786; }
+  .p8 .meta strong { color: #a8c7ff; font-weight: 500; text-shadow: 0 0 8px rgba(133,168,255,.35); }
+  .p8 .done { margin-top: 10px; color: #5f6672; }
+
+  /* 09 analog instrument */
+  .p9 { background: linear-gradient(180deg, #111318, #08090c); border: 1px solid #2f333b; border-radius: 7px; padding: 13px; box-shadow: inset 0 1px rgba(255,255,255,.045), 0 0 20px rgba(255,190,92,.035); }
+  .p9 .top { align-items: center; }
+  .p9 .lamp { width: 7px; height: 7px; border-radius: 50%; background: #ffc46b; box-shadow: 0 0 10px #ffb84d, 0 0 22px rgba(255,184,77,.4); }
+  .p9 .status-wrap { display: flex; align-items: center; gap: 7px; }
+  .p9 .status { color: #ffd28a; }
+  .p9 .big { margin: 13px 0 8px; font: 300 27px/1 var(--sans); letter-spacing: -1px; color: #ffd28a; text-shadow: 0 0 15px rgba(255,190,92,.32); }
+  .p9 .cmd { color: #d9dde3; }
+  .p9 .done { margin-top: 13px; padding-top: 8px; border-top: 1px solid #252932; color: #69707b; }
+
+  /* 10 dual pane */
+  .p10 { background: #050607; border: 1px solid rgba(134,255,190,.2); border-radius: 5px; display: grid; grid-template-columns: 82px minmax(0,1fr); box-shadow: 0 0 24px rgba(75,255,153,.045); }
+  .p10 .side { padding: 11px 10px; border-right: 1px solid rgba(134,255,190,.14); background: rgba(95,255,165,.025); }
+  .p10 .side .status { color: #8cffb7; text-shadow: 0 0 9px rgba(95,255,165,.7); }
+  .p10 .side .elapsed { margin-top: 16px; color: #8cffb7; font-size: 13px; text-shadow: 0 0 8px rgba(95,255,165,.45); }
+  .p10 .main { padding: 11px 12px; min-width: 0; }
+  .p10 .kicker { color: rgba(174,255,205,.35); }
+  .p10 .cmd { margin: 15px 0; color: #ddffE9; }
+  .p10 .done { color: rgba(196,224,205,.42); }
+</style>
+</head>
+<body>
+<main>
+  <h1>meantime monitor prototypes</h1>
+  <div class="intro">同一内容：一个 running 任务 + 一个 done 任务。只看监视面板质感与微光层级。</div>
+  <div id="root"></div>
+</main>
+<script>
+const names = [
+  ["01 / Phosphor Scope", "绿磷光 · 扫描线"],
+  ["02 / Amber Deck", "琥珀仪表台"],
+  ["03 / Ice Telemetry", "冰蓝遥感"],
+  ["04 / Reactor Glass", "深色玻璃舱"],
+  ["05 / Rack Mount", "机架设备"],
+  ["06 / Oscilloscope", "示波器网格"],
+  ["07 / Command HUD", "切角 HUD"],
+  ["08 / Night Ledger", "夜间台账"],
+  ["09 / Analog Instrument", "模拟仪器"],
+  ["10 / Dual Pane", "双格监视器"],
+];
+const root = document.getElementById("root");
+root.innerHTML = names.map(([name, cn], i) => `
+  <section class="proto">
+    <div class="name">${name}<span>${cn}</span></div>
+    <div class="panel p${i + 1}">
+      ${i === 9 ? `
+        <div class="side"><div class="status">running</div><div class="elapsed">00:45</div></div>
+        <div class="main"><div class="kicker">monitor</div><div class="cmd"><b>npm</b> test -- --watch</div>
+        <div class="done"><span class="ds">done</span><span class="dc">sleep 45 && echo done</span><span class="dx">exit 0</span></div></div>`
+      : i === 8 ? `
+        <div class="top"><span class="kicker">monitor</span><span class="status-wrap"><span class="lamp"></span><span class="status">running</span></span></div>
+        <div class="big">00:45</div><div class="cmd"><b>npm</b> test -- --watch</div>
+        <div class="done"><span class="ds">done</span><span class="dc">sleep 45 && echo done</span><span class="dx">exit 0</span></div>`
+      : i === 2 ? `
+        <div class="top"><span class="kicker">monitor</span><span class="status">running</span></div>
+        <div class="body"><div class="cmd"><b>npm</b> test -- --watch</div><div class="metric"><small>elapsed</small><strong>00:45</strong></div></div>
+        <div class="done"><span class="ds">done</span><span class="dc">sleep 45 && echo done</span><span class="dx">exit 0</span></div>`
+      : `
+        <div class="top"><span class="kicker">monitor</span><span class="status">running</span></div>
+        <div class="cmd"><b>npm</b> test -- --watch</div>
+        <div class="meta"><span>elapsed</span><strong>00:45</strong></div>
+        <div class="done"><span class="ds">done</span><span class="dc">sleep 45 && echo done</span><span class="dx">exit 0</span></div>`}
+    </div>
+  </section>`).join("");
+</script>
+</body>
+</html>

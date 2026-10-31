@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8"><title>meantime · Dark Glass</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #08090b; font: 12px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; padding: 28px; color: #eef0f3; -webkit-font-smoothing: antialiased; }
+h1 { font-size: 15px; font-weight: 600; margin-bottom: 4px; color: #f0f2f5; }
+.intro { color: #8a9199; font-size: 12px; margin-bottom: 20px; max-width: 1120px; line-height: 18px; }
+.cols { display: grid; grid-template-columns: repeat(3, 392px); gap: 22px; align-items: start; }
+.col > .title { font-size: 13px; font-weight: 600; margin-bottom: 2px; color: #f0f2f5; }
+.col > .sub { color: #8a9199; font-size: 11px; margin-bottom: 14px; min-height: 32px; line-height: 16px; }
+.cell { margin-bottom: 12px; }
+.lab { color: #5c6167; font-size: 10px; letter-spacing: .5px; margin-bottom: 4px; }
+.chat { background: #0f1114; border-radius: 9px; padding: 10px 12px; }
+.st-ok { --c:127,178,106; } .st-bad { --c:239,125,107; } .st-run { --c:233,180,90; } .st-wto { --c:233,180,90; } .st-wint { --c:141,153,168; }
+.m { font-family: Menlo, ui-monospace, "SF Mono", monospace; font-size: 11.5px; line-height: 16px; font-variant-numeric: tabular-nums; }
+.card { border-radius: 6px; padding: 8.5px 11px; }
+.head { display: flex; align-items: flex-start; gap: 7.5px; }
+.sdot { width: 5.5px; height: 5.5px; border-radius: 50%; background: rgb(var(--c)); margin-top: 5.25px; flex: none; box-shadow: 0 0 4.5px rgba(var(--c),.38); }
+.st-run .sdot, .st-wto .sdot { box-shadow: 0 0 6px rgba(var(--c),.55), 0 0 1.5px rgba(var(--c),.8); }
+.cmd { flex: 1; min-width: 0; font-weight: 600; color: #f0f2f5; letter-spacing: -0.1px; }
+.cmd.clip { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cmd.wrap { white-space: pre-wrap; overflow-wrap: break-word; }
+.cmd .arg { color: #9ca3ad; font-weight: 400; }
+.meta { flex: none; display: flex; align-items: center; gap: 6px; height: 16px; color: #8a9199; font-size: 11px; }
+.chip { font-size: 10px; line-height: 14px; padding: 0 4.5px; border-radius: 3px; font-weight: 500; letter-spacing: 0.1px; color: rgb(var(--c)); background: rgba(var(--c),.135); box-shadow: inset 0 0 0 .5px rgba(var(--c),.35); }
+.waited { color: #6b727b; } .waited b { color: #cbd0d6; font-weight: 400; }
+.chev { width: 10px; height: 10px; stroke: #5e646d; fill: none; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.card.open .chev { transform: rotate(180deg); }
+.rule { height: 1px; margin: 6px 0 5.5px; background: linear-gradient(90deg, rgba(var(--c),.25), rgba(var(--c),.04) 65%, rgba(var(--c),0) 92%); }
+.out { color: #a8aeb7; white-space: pre-wrap; overflow-wrap: break-word; }
+.out .d { color: #5f666f; } .out .ok { color: #7fb26a; } .out .bad { color: #ef7d6b; }
+.foot { margin-top: 6.5px; font-size: 10px; line-height: 14px; color: #565d66; }
+.foot .sep { color: #383d45; margin: 0 4px; }
+.col-0 .card { background-color: rgba(16,19,24,0.78); background-image: radial-gradient(92% 95% at 0% 0%, rgba(var(--c),0.13), transparent 58%), linear-gradient(180deg, rgba(var(--c),0.05), rgba(var(--c),0.014)); border: 1px solid rgba(var(--c),0.21); box-shadow: inset 0 1px 0 rgba(255,255,255,0.042), 0 1px 2px rgba(0,0,0,0.42); }
+.col-0 .list-card { border-radius: 6px; background: #13161b; border: 1px solid #252a33; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 1px 2px rgba(0,0,0,0.4); }
+.col-1 .card { background-color: rgba(22, 26, 34, 0.52); backdrop-filter: blur(14px) saturate(130%); -webkit-backdrop-filter: blur(14px) saturate(130%); background-image: radial-gradient(88% 92% at 0% 0%, rgba(var(--c),0.16), transparent 58%), linear-gradient(165deg, rgba(255,255,255,0.055) 0%, rgba(255,255,255,0.016) 42%, rgba(0,0,0,0.06) 100%), linear-gradient(180deg, rgba(var(--c),0.055), rgba(var(--c),0.012)); border: 1px solid rgba(var(--c),0.24); box-shadow: inset 0 1px 0 rgba(255,255,255,0.105), inset 0 0 0 0.5px rgba(255,255,255,0.045), 0 4px 12px -2px rgba(0,0,0,0.48), 0 1px 2px rgba(0,0,0,0.45); }
+.col-1 .chip { background: linear-gradient(180deg, rgba(255,255,255,0.06), transparent), rgba(var(--c),0.14); box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.14), inset 0 0 0 0.5px rgba(var(--c),0.38); }
+.col-1 .rule { background: linear-gradient(90deg, rgba(var(--c),0.28), rgba(255,255,255,0.05) 58%, transparent 94%); }
+.col-1 .list-card { border-radius: 6px; background-color: rgba(22, 26, 34, 0.56); background-image: linear-gradient(165deg, rgba(255,255,255,0.052) 0%, rgba(255,255,255,0.014) 45%, rgba(0,0,0,0.06) 100%); border: 1px solid rgba(255,255,255,0.095); box-shadow: inset 0 1px 0 rgba(255,255,255,0.095), 0 4px 12px -2px rgba(0,0,0,0.48), 0 1px 2px rgba(0,0,0,0.45); }
+.col-2 .card { background-color: rgba(26, 31, 41, 0.44); backdrop-filter: blur(18px) saturate(145%); -webkit-backdrop-filter: blur(18px) saturate(145%); background-image: radial-gradient(65% 42% at 18% 0%, rgba(255,255,255,0.075), transparent 72%), radial-gradient(92% 96% at 0% 0%, rgba(var(--c),0.19), transparent 60%), linear-gradient(168deg, rgba(255,255,255,0.075) 0%, rgba(255,255,255,0.02) 38%, rgba(8,10,14,0.18) 100%), linear-gradient(180deg, rgba(var(--c),0.065), rgba(var(--c),0.015)); border: 1px solid rgba(var(--c),0.28); box-shadow: inset 0 1px 0 rgba(255,255,255,0.15), inset 1px 0 0 rgba(255,255,255,0.05), inset 0 -1px 0 rgba(0,0,0,0.28), 0 6px 16px -3px rgba(0,0,0,0.55), 0 1px 3px rgba(0,0,0,0.5); }
+.col-2 .chip { background: linear-gradient(180deg, rgba(255,255,255,0.09), transparent), rgba(var(--c),0.155); box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.20), inset 0 0 0 0.5px rgba(var(--c),0.42); }
+.col-2 .rule { background: linear-gradient(90deg, rgba(var(--c),0.32), rgba(255,255,255,0.075) 55%, transparent 94%); }
+.col-2 .list-card { border-radius: 6px; background-color: rgba(26, 31, 41, 0.48); background-image: radial-gradient(65% 42% at 18% 0%, rgba(255,255,255,0.065), transparent 72%), linear-gradient(168deg, rgba(255,255,255,0.07) 0%, rgba(255,255,255,0.018) 40%, rgba(8,10,14,0.18) 100%); border: 1px solid rgba(255,255,255,0.12); box-shadow: inset 0 1px 0 rgba(255,255,255,0.14), inset 0 -1px 0 rgba(0,0,0,0.28), 0 6px 16px -3px rgba(0,0,0,0.55), 0 1px 3px rgba(0,0,0,0.5); }
+.list-hdr { display: flex; justify-content: space-between; align-items: center; padding: 6.5px 11px; border-bottom: 1px solid rgba(255,255,255,0.065); font-size: 11px; line-height: 15px; color: #969da6; }
+.list-row { padding: 8.5px 11px; } .list-row + .list-row { border-top: 1px solid rgba(255,255,255,0.06); }
+.sid { color: #5e646d; font-size: 10.5px; }
+</style></head><body>
+<h1>meantime · 深色玻璃质感两档对比（均置于纯黑 #0f1114 聊天底上）</h1>
+<div class="intro">纯黑聊天底没有花哨背景可供模糊，真玻璃质感靠的是<b>面板自身的光学折射</b>：冷烟灰透光底、165° 斜向漫反射、顶棱折射高光（上亮下沉的玻璃厚度感）以及悬浮景深阴影。</div>
+<div class="cols" id="cols"></div>
+<script>
+const esc = s => s.replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const cases = [
+ {lab:"短命令 · 收起", cmd:"npm test", st:"ok", t:"00:45", open:false, out:"ℹ fail 0\nℹ duration_ms 336.6"},
+ {lab:"短命令 · 展开", cmd:"npm test", st:"ok", t:"00:45", open:true, out:"ℹ tests 25\nℹ suites 7\nℹ pass 25\nℹ fail 0\nℹ duration_ms 336.6", foot:["mt_9cec1234","19:31:28 → 19:32:13"]},
+ {lab:"多行失败 · 展开", cmd:"for f in test/*.test.ts; do\n  node --test \"$f\" || exit 1\ndone", st:"bad", t:"00:12", chip:"exit 1", open:true, out:"✔ board renders (4ms)\n✖ drawer shows command once\n  AssertionError: 2 !== 1", foot:["mt_77d0c9aa","19:44:10 → 19:44:22"]},
+ {lab:"运行中 · 收起", cmd:"npm run build -- --watch", st:"run", t:"02:13", open:false, out:"[watch] build started\n  dist/client.js  41.2kb\n  dist/server.js  12.8kb\n[watch] build finished\n[watch] waiting for changes…"},
+ {lab:"wait 到期 · 收起", cmd:"npm run e2e -- --shard=...", st:"wto", t:"12:00", chip:"timeout", wait:true, open:false, out:"ℹ pass 24\nℹ running shard 2/4…"},
+ {lab:"wait 被打断 · 展开", cmd:"python3 scripts/train_eval.py --epochs 20", st:"wint", t:"04:32", chip:"interrupted", wait:true, open:true, out:"epoch 4/20 · loss 0.184\nepoch 5/20 · loss 0.161", foot:["mt_51ab07e2","started 20:11:03","/tmp/mt_51ab07e2.log"]},
+];
+const chev = '<svg class="chev" viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5"/></svg>';
+const cmdHtml = (cmd, open, quiet) => {
+  const s = open ? cmd : cmd.replace(/\s+/g," ");
+  const [first, ...rest] = esc(s).split(" ");
+  if (quiet) return '<span class="arg" style="font-weight:600">' + first + '</span>' + (rest.length ? ' <span class="arg">' + rest.join(" ") + '</span>' : "");
+  return first + (rest.length ? ' <span class="arg">' + rest.join(" ") + '</span>' : "");
+};
+const colorOut = s => esc(s).replace(/^(\s*)ℹ/gm,"$1<span class=\"d\">ℹ</span>").replace(/^(\s*)✔/gm,"$1<span class=\"ok\">✔</span>").replace(/^(\s*)✖/gm,"$1<span class=\"bad\">✖</span>");
+const meta = c => '<span class="meta">' + (c.chip?'<span class="chip">'+c.chip+'</span>':"") + (c.wait?'<span class="waited">waited <b>'+c.t+'</b></span>':'<span>'+c.t+'</span>') + chev + '</span>';
+const card = c => '<div class="card m st-'+c.st+(c.open?" open":"")+'">' +
+  '<div class="head"><span class="sdot"></span><div class="cmd '+(c.open?"wrap":"clip")+'">'+cmdHtml(c.cmd, c.open)+'</div>'+meta(c)+'</div>' +
+  '<div class="rule"></div><div class="out">'+colorOut(c.out)+'</div>' +
+  (c.open?'<div class="foot">'+c.foot.map((p,i)=>(i?'<span class="sep">·</span>':"")+p).join("")+'</div>':"") + '</div>';
+const listCard = () => '<div class="list-card"><div class="list-hdr"><span style="font-weight:500">Background tasks</span><span class="m" style="font-size:11px">2 tasks</span></div>' +
+  '<div class="list-row m st-run"><div class="head"><span class="sdot"></span><div class="cmd clip">'+cmdHtml("npm run build -- --watch", false)+'</div><span class="meta"><span class="sid">44ab</span><span>running</span>'+chev+'</span></div><div class="rule"></div><div class="out">[watch] waiting for changes…</div></div>' +
+  '<div class="list-row m st-ok"><div class="head"><span class="sdot"></span><div class="cmd clip">'+cmdHtml("npm test", false, true)+'</div><span class="meta"><span class="sid">9cec</span><span>00:45</span>'+chev+'</span></div></div></div>';
+const cols = [
+  {title:"基准 · 当前哑光碳黑", sub:"不透明感较强（0.78 炭底 + 0.04 顶线），质感偏磨砂实心炭板。", cls:"col-0"},
+  {title:"G1 · 微透烟熏玻璃（克制耐看）", sub:"冷烟灰半透 + 165° 斜向柔光漫反射 + 0.105 顶棱折射高光，低调通透不抢代码。", cls:"col-1"},
+  {title:"G2 · 清透折光玻璃（棱线更亮）", sub:"左上顶光漫射带 + 上亮下沉的玻璃厚度棱线（0.15 顶棱）+ 更通透的彩色光晕。", cls:"col-2"},
+];
+document.getElementById("cols").innerHTML = cols.map(col => '<div class="col '+col.cls+'"><div class="title">'+col.title+'</div><div class="sub">'+col.sub+'</div>' +
+  cases.map(c => '<div class="cell"><div class="lab">'+c.lab+'</div><div class="chat">'+card(c)+'</div></div>').join("") +
+  '<div class="cell"><div class="lab">list 容器 · 混合任务</div><div class="chat">'+listCard()+'</div></div></div>').join("");
+</script></body></html>

@@ -19,7 +19,6 @@ export function MeantimeTaskCard(props: PluginTimelineItemProps<MeantimeCardData
 function MeantimeTaskCardBody(props: PluginTimelineItemProps<MeantimeCardData>) {
   const { item, theme, layout } = props;
   const colors = useMemo(() => meantimeTheme(theme).colors, [theme]);
-  const outerMuted = secondaryColor(theme.colors);
   const data = item.data;
   if (data.pending) return <WaitSkeleton colors={colors} layout={layout} />;
   if (data.error !== undefined) return <ErrorCard data={data} colors={colors} layout={layout} />;
@@ -27,24 +26,12 @@ function MeantimeTaskCardBody(props: PluginTimelineItemProps<MeantimeCardData>) 
     return <WaitAllCard data={data} colors={colors} layout={layout} />;
   }
   if (data.source === "meantime" && data.action === "list") {
-    return (
-      <View style={{ gap: 4 }}>
-        <ListCard data={data} colors={colors} layout={layout} />
-        {data.moreOffset !== undefined ? <Text style={{ color: outerMuted, fontSize: 10,
-          fontFamily: monoFont(layout.platform) }}>More tasks not shown (offset {data.moreOffset})</Text> : null}
-      </View>
-    );
+    return <ListCard data={data} colors={colors} layout={layout} />;
   }
   const tasks = data.source === "handle"
     ? data.tasks.map(task => task.state === "running" ? { ...task, state: "started" } : task)
     : data.tasks;
-  return (
-    <View style={{ gap: 4 }}>
-      <TaskTable tasks={tasks} colors={colors} layout={layout} waitOutcome={data.waitOutcome} waitedSeconds={data.waitedSeconds} />
-      {data.moreOffset !== undefined ? <Text style={{ color: outerMuted, fontSize: 10,
-        fontFamily: monoFont(layout.platform) }}>More tasks not shown (offset {data.moreOffset})</Text> : null}
-    </View>
-  );
+  return <TaskTable tasks={tasks} colors={colors} layout={layout} waitOutcome={data.waitOutcome} waitedSeconds={data.waitedSeconds} />;
 }
 
 /** A failed meantime call: one bad lamp, the call line, one human sentence. */
@@ -54,8 +41,10 @@ function ErrorCard({ data, colors, layout }: { data: MeantimeCardData; colors: C
     <TintedCard colors={colors} tone="bad" layout={layout}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
         <Pip tone="bad" colors={colors} />
-        <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, color: colors.foreground, fontFamily: monoFont(layout.platform), fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT, fontWeight: "600", letterSpacing: -0.1 }}>{data.call ?? "meantime"}</Text>
-        <Text style={{ fontSize: 10.5, lineHeight: 16, fontWeight: "500", color: toneColor("bad", colors) }}>failed</Text>
+        <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: 13, lineHeight: 17, fontWeight: "600", letterSpacing: -0.2 }}>
+          {(data.call ?? "meantime").split(" ")[0]}<Text style={{ color: secondaryColor(colors), fontWeight: "400" }}>{(data.call ?? "meantime").replace(/^\S+/, "")}</Text>
+        </Text>
+        <Text style={{ fontSize: 11.5, lineHeight: 16, fontFamily: monoFont(layout.platform), fontVariant: ["tabular-nums"], fontWeight: "500", color: toneColor("bad", colors) }}>failed</Text>
       </View>
       <StatusRule colors={colors} />
       <Text selectable style={{ color: dark ? "#a8aeb7" : secondaryColor(colors), fontFamily: monoFont(layout.platform), fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>{data.error}</Text>
@@ -72,9 +61,9 @@ function WaitAllCard({ data, colors, layout }: { data: MeantimeCardData; colors:
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
         <Pip tone={tone} colors={colors} />
         <Text style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: 13, lineHeight: 17, fontWeight: "600", letterSpacing: -0.2 }}>All pending tasks</Text>
-        {data.waitOutcome ? <Text style={{ fontSize: 10.5, lineHeight: 16, fontWeight: "500", color: toneColor(tone, colors) }}>{data.waitOutcome}</Text> : null}
+        {data.waitOutcome ? <Text style={{ fontSize: 11.5, lineHeight: 16, fontFamily: monoFont(layout.platform), fontVariant: ["tabular-nums"], fontWeight: "500", color: toneColor(tone, colors) }}>{data.waitOutcome}</Text> : null}
         {data.waitedSeconds !== undefined
-          ? <Text numberOfLines={1} style={{ fontSize: 11.5, lineHeight: 16, fontVariant: ["tabular-nums"], color: dark ? "#6b727b" : secondaryColor(colors) }}>waited <Text style={{ fontWeight: "600", color: dark ? "#cbd0d6" : colors.foreground }}>{formatSeconds(data.waitedSeconds)}</Text></Text>
+          ? <Text numberOfLines={1} style={{ fontSize: 11.5, lineHeight: 16, fontFamily: monoFont(layout.platform), fontVariant: ["tabular-nums"], color: dark ? "#6b727b" : secondaryColor(colors) }}>waited <Text style={{ fontWeight: "600", color: dark ? "#cbd0d6" : colors.foreground }}>{formatSeconds(data.waitedSeconds)}</Text></Text>
           : null}
       </View>
     </TintedCard>
@@ -101,9 +90,9 @@ export function ListCard({ data, colors, layout, defaultOpen = false, openTask =
           {empty ? "No background tasks" : "Background tasks"}
         </Text>
         {empty
-          ? <Text style={{ fontSize: 11.5, lineHeight: 16, fontVariant: ["tabular-nums"], color: muted }}>none</Text>
+          ? <Text style={{ fontSize: 11.5, lineHeight: 16, fontFamily: monoFont(layout.platform), fontVariant: ["tabular-nums"], color: muted }}>none</Text>
           : running > 0
-            ? <Text style={{ fontSize: 11.5, lineHeight: 16, fontVariant: ["tabular-nums"], color: muted }}>{running} running</Text>
+            ? <Text style={{ fontSize: 11.5, lineHeight: 16, fontFamily: monoFont(layout.platform), fontVariant: ["tabular-nums"], color: muted }}>{running} running</Text>
             : null}
         {!empty ? <Icon name={open ? "ChevronUp" : "ChevronDown"} size={11} color={chevColor} /> : null}
       </Pressable>
@@ -112,6 +101,10 @@ export function ListCard({ data, colors, layout, defaultOpen = false, openTask =
           <TaskLine task={task} colors={colors} layout={layout} showId muted={!isActiveTask(task)} defaultOpen={openTask} />
         </View>
       )) : null}
+      {open && data.moreOffset !== undefined
+        ? <Text style={{ marginTop: 4, paddingTop: 6, borderTopWidth: 0.5, borderTopColor: divider,
+          color: muted, fontSize: 10, lineHeight: 14, fontFamily: monoFont(layout.platform) }}>More tasks not shown (offset {data.moreOffset})</Text>
+        : null}
     </Card>
   );
 }

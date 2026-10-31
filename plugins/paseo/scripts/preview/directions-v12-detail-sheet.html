@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>meantime · v12 · detail sheet</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #000; font: 12px -apple-system, "SF Pro Text", sans-serif; padding: 30px 16px 60px; }
+  h1 { color: #eee; font-size: 14px; font-weight: 600; width: 390px; margin: 0 auto 4px; }
+  .intro { color: #777; font-size: 11px; width: 390px; margin: 0 auto 30px; }
+  .case { width: 390px; margin: 0 auto 44px; }
+  .name { color: #ddd; font-size: 12px; font-weight: 600; margin-bottom: 3px; }
+  .name span { color: #777; font-weight: 400; margin-left: 8px; }
+  .backdrop { background: #17181b; border-radius: 14px; padding: 26px 10px 10px; }
+  .sheet { background: #0f1114; border-radius: 12px 12px 0 0; padding: 10px 16px 18px; min-height: 320px; color: #e4e7ec; }
+  .grab { width: 36px; height: 4px; border-radius: 2px; background: #3a3c40; margin: 0 auto 14px; }
+  .m { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+  .lamp { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: #7fb26a; }
+  .ok { color: #7fb26a; } .dim { color: #899097; } .dimmer { color: #5c6167; }
+
+  /* A · 终端回放：一个块讲完一个故事 */
+  .a .head { display: flex; align-items: baseline; gap: 8px; font-size: 10px; margin-bottom: 10px; }
+  .a .head .t { margin-left: auto; color: #899097; }
+  .a .term { background: #08090b; border-radius: 6px; padding: 10px 11px; font-size: 10.5px; line-height: 16px; }
+  .a .term .ps { color: #5c6167; }
+  .a .term .out { color: #9aa0a8; margin-top: 8px; white-space: pre-wrap; }
+  .a .term .out b { color: #7fb26a; font-weight: 400; }
+  .a .foot { margin-top: 10px; font-size: 9.5px; color: #5c6167; }
+
+  /* B · 日志查看器：它就是来看输出的，行号、顶栏、复制输出 */
+  .b .bar { display: flex; align-items: center; gap: 8px; font-size: 10px; padding-bottom: 8px; border-bottom: 0.5px solid #26282c; margin-bottom: 2px; }
+  .b .bar .fn { color: #899097; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .b .bar .act { margin-left: auto; color: #6ea8fe; font-size: 9.5px; }
+  .b .log { font-size: 10px; line-height: 16px; white-space: pre; padding-top: 8px; }
+  .b .log .ln { display: inline-block; width: 22px; color: #3f434a; text-align: right; margin-right: 10px; user-select: none; }
+  .b .log .hl { color: #7fb26a; }
+  .b .foot { margin-top: 10px; font-size: 9.5px; color: #5c6167; }
+
+  /* C · 尾巴：输出是一条正在淡出的尾巴，强调"这是末尾"，没有容器 */
+  .c .head { display: flex; align-items: baseline; gap: 8px; font-size: 10px; margin-bottom: 12px; }
+  .c .head .t { margin-left: auto; color: #899097; }
+  .c .tail { font-size: 10.5px; line-height: 17px; white-space: pre-wrap; position: relative; }
+  .c .tail .fade { background: linear-gradient(180deg, rgba(154,160,168,.15), rgba(154,160,168,1) 45%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .c .tail .rest { color: #9aa0a8; }
+  .c .tail .end { color: #e4e7ec; }
+  .c .foot { margin-top: 12px; font-size: 9.5px; color: #5c6167; }
+
+  /* D · 回执单：一张打印出来的凭条，居中虚线裁切 */
+  .d .paper { background: #0a0b0d; border: 0.5px dashed #2c2f34; border-radius: 2px; padding: 14px 13px; font-size: 10px; line-height: 16px; }
+  .d .paper .r1 { display: flex; justify-content: space-between; color: #899097; }
+  .d .paper .cmdl { color: #e4e7ec; margin: 10px 0 2px; }
+  .d .hr { color: #3f434a; margin: 8px 0; overflow: hidden; white-space: nowrap; }
+  .d .out { color: #9aa0a8; white-space: pre-wrap; }
+  .d .out b { color: #7fb26a; font-weight: 400; }
+  .d .verdict { display: flex; justify-content: space-between; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>v12 · 详情弹层</h1>
+<div class="intro">四种不同的东西：回放、查看器、尾巴、凭条。同一份真实输出。</div>
+
+<div class="case"><div class="name">A · 终端回放<span>命令进去，输出出来，一个块讲完</span></div>
+<div class="backdrop"><div class="sheet a m"><div class="grab"></div>
+  <div class="head"><span class="lamp"></span><span class="ok">completed · exit 0</span><span class="t">00:45</span></div>
+  <div class="term"><span class="ps">$</span> npm test<div class="out">ℹ tests 25
+ℹ suites 7
+<b>ℹ pass 25</b>
+ℹ fail 0
+ℹ duration_ms 336.6</div></div>
+  <div class="foot">mt_9cec1234 · 19:31:28 → 19:32:13</div>
+</div></div></div>
+
+<div class="case"><div class="name">B · 日志查看器<span>弹层就是个看 log 的工具：行号、复制输出</span></div>
+<div class="backdrop"><div class="sheet b m"><div class="grab"></div>
+  <div class="bar"><span class="lamp"></span><span class="fn">npm test · exit 0 · 00:45</span><span class="act">copy output</span></div>
+  <div class="log"><span class="ln">1</span>ℹ tests 25
+<span class="ln">2</span>ℹ suites 7
+<span class="ln">3</span><span class="hl">ℹ pass 25</span>
+<span class="ln">4</span>ℹ fail 0
+<span class="ln">5</span>ℹ duration_ms 336.6</div>
+  <div class="foot">mt_9cec1234 · 19:31:28 → 19:32:13 · npm test</div>
+</div></div></div>
+
+<div class="case"><div class="name">C · 尾巴<span>没有容器，输出向上淡去——你只看得见结尾</span></div>
+<div class="backdrop"><div class="sheet c m"><div class="grab"></div>
+  <div class="head"><span class="lamp"></span><span class="ok">completed · exit 0</span><span class="t">00:45</span></div>
+  <div class="tail"><span class="fade">ℹ tests 25
+ℹ suites 7</span>
+<span class="rest">ℹ pass 25
+ℹ fail 0</span>
+<span class="end">ℹ duration_ms 336.6</span></div>
+  <div class="foot">mt_9cec1234 · npm test · 19:31:28 → 19:32:13</div>
+</div></div></div>
+
+<div class="case"><div class="name">D · 回执单<span>一张打印凭条：命令、输出、结论，虚线裁边</span></div>
+<div class="backdrop"><div class="sheet d m"><div class="grab"></div>
+  <div class="paper">
+    <div class="r1"><span>mt_9cec1234</span><span>19:31:28 → 19:32:13</span></div>
+    <div class="cmdl">npm test</div>
+    <div class="hr">- - - - - - - - - - - - - - - - - - - - - - - -</div>
+    <div class="out">ℹ tests 25
+ℹ suites 7
+<b>ℹ pass 25</b>
+ℹ fail 0
+ℹ duration_ms 336.6</div>
+    <div class="hr">- - - - - - - - - - - - - - - - - - - - - - - -</div>
+    <div class="verdict"><span class="ok">completed · exit 0</span><span class="dim">00:45</span></div>
+  </div>
+</div></div></div>
+
+</body>
+</html>

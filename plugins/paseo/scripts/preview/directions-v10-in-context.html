@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>meantime · v10 · in-context quiet monitor</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #1a1c20; color: #ddd; font: 12px -apple-system, "SF Pro Text", sans-serif; padding: 28px 20px 60px; }
+  header { width: 820px; margin: 0 auto 26px; }
+  header h1 { font-size: 14px; font-weight: 600; }
+  header p { color: #8a9099; font-size: 11px; margin-top: 4px; line-height: 1.5; }
+  .proto { width: 820px; margin: 0 auto 34px; }
+  .label { font-size: 12px; font-weight: 600; color: #eee; margin-bottom: 3px; }
+  .label span { color: #8a9099; font-weight: 400; margin-left: 8px; }
+  .rn { font-size: 10px; color: #6f757e; margin-bottom: 8px; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+
+  /* host tokens (same values as render-a4.mjs) */
+  .dark  { --bg:#0f1114; --fg:#e4e7ec; --muted:#899097; --border:#3a3c40; --warn:#e9b45a; --danger:#ef7d6b; --lift:#16181c; --glow:rgba(233,180,90,.55); }
+  .light { --bg:#ffffff; --fg:#202124; --muted:#7d8187; --border:#e6e7e9; --warn:#a8741a; --danger:#c2493a; --lift:#f6f6f7; --glow:transparent; }
+
+  .chat { background: var(--bg); color: var(--fg); border-radius: 10px; padding: 16px 16px 14px; }
+  .msg { font-size: 12.5px; line-height: 1.5; margin-bottom: 10px; }
+  .tool { font: 10.5px ui-monospace, Menlo, monospace; color: var(--muted); margin-top: 10px; }
+  .tool b { color: var(--fg); font-weight: 600; }
+  .m { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10px; line-height: 16px; font-variant-numeric: tabular-nums; }
+  .cmd { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
+  .cmd b { font-weight: 600; }
+  .cmd i { font-style: normal; color: var(--muted); }
+  .mu { color: var(--muted); }
+  .warn { color: var(--warn); }
+  .row { display: flex; align-items: baseline; gap: 10px; }
+
+  /* 01 Pilot lamp — no frame; one static lamp next to the live row */
+  .p1 .row { padding: 1px 0; }
+  .p1 .lamp { width: 5px; height: 5px; border-radius: 50%; flex: none; align-self: center; background: var(--border); }
+  .p1 .lamp.on { background: var(--warn); box-shadow: 0 0 6px var(--glow), 0 0 1px var(--warn); }
+
+  /* 02 Recessed slot — sunk into the page, not floating */
+  .p2 { background: var(--lift); border-radius: 6px; padding: 7px 10px; box-shadow: inset 0 1px 3px rgba(0,0,0,.35), inset 0 -1px 0 rgba(255,255,255,.03); }
+  .light .p2 { box-shadow: inset 0 1px 2px rgba(0,0,0,.08); }
+
+  /* 03 Scanline — running command sits on a faint warm line */
+  .p3 .live { background: linear-gradient(0deg, transparent 0 1px, color-mix(in srgb, var(--warn) 9%, transparent) 1px 100%) ; border-bottom: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); box-shadow: 0 1px 6px -2px var(--glow); }
+  .p3 .row { padding: 1px 4px; }
+
+  /* 04 Ticket stub — perforation splits command from verdict */
+  .p4 { display: grid; grid-template-columns: minmax(0,1fr) 64px; border: 0.5px solid var(--border); border-radius: 4px; }
+  .p4 .l { padding: 5px 9px; min-width: 0; }
+  .p4 .r { padding: 5px 8px; border-left: 1px dashed var(--border); text-align: right; }
+
+  /* 05 Gutter — status lives in a left margin, like editor line numbers */
+  .p5 .row { gap: 0; }
+  .p5 .g { width: 52px; flex: none; text-align: right; padding-right: 9px; margin-right: 9px; border-right: 0.5px solid var(--border); }
+
+  /* 06 Reticle — only four corner marks, no box */
+  .p6 { position: relative; padding: 7px 11px; }
+  .p6 i.c { position: absolute; width: 7px; height: 7px; border-color: var(--muted); border-style: solid; opacity: .7; }
+  .p6 .tl { top:0; left:0; border-width: 1px 0 0 1px; } .p6 .tr { top:0; right:0; border-width: 1px 1px 0 0; }
+  .p6 .bl { bottom:0; left:0; border-width: 0 0 1px 1px; } .p6 .br { bottom:0; right:0; border-width: 0 1px 1px 0; }
+  .p6 .live .cmd b { color: var(--warn); }
+
+  /* 07 Phosphor — the live command itself glows; finished rows go cold */
+  .p7 .live .cmd { text-shadow: 0 0 7px var(--glow); }
+  .p7 .live .cmd b { color: var(--warn); }
+  .p7 .cold { opacity: .55; }
+
+  /* 08 Spine tab — a tiny tab carries the count, panel stays mute */
+  .p8 { position: relative; border-top: 0.5px solid var(--border); padding-top: 7px; }
+  .p8 .tab { position: absolute; top: -9px; right: 0; padding: 0 6px; border: 0.5px solid var(--border); border-bottom: none; border-radius: 3px 3px 0 0; background: var(--bg); font-size: 9px; line-height: 9px; padding-top: 3px; }
+  .p8 .tab b { color: var(--warn); font-weight: 600; text-shadow: 0 0 5px var(--glow); }
+
+  /* 09 Strata — live band tinted, finished band plain; no border at all */
+  .p9 { border-radius: 4px; overflow: hidden; }
+  .p9 .row { padding: 2px 9px; }
+  .p9 .live { background: color-mix(in srgb, var(--warn) 7%, var(--bg)); }
+  .p9 .cold { background: var(--lift); }
+
+  /* 10 Readout footer — plain list; one glowing number at the bottom */
+  .p10 .foot { margin-top: 4px; padding-top: 4px; border-top: 0.5px solid var(--border); text-align: right; color: var(--muted); }
+  .p10 .foot b { color: var(--warn); font-weight: 600; text-shadow: 0 0 6px var(--glow); }
+</style>
+</head>
+<body>
+<header>
+  <h1>v10 · 放进对话里看</h1>
+  <p>每个原型左深右浅，夹在一条普通回复和一条原生工具行之间。数据都是真实可得的：running 没有时长（不造计时器），done 只显示真实 start→end。每张只留一个“骚点”；浅色下没有光，就退成有色墨水。灰字一行是 RN 能不能直接做。</p>
+</header>
+<div id="out"></div>
+
+<template id="t">
+  <!-- one task snapshot, two rows: running + done -->
+</template>
+
+<script>
+const RUN = '<span class="cmd"><b>npm</b><i> test -- --watch</i></span>';
+const DONE = '<span class="cmd"><b>sleep</b><i> 45 &amp;&amp; echo done</i></span>';
+const protos = [
+  ['01 · Pilot lamp', '没有框，只有 live 行前一颗静态指示灯', 'RN ✓ View + shadow（iOS 原生 shadow；Android 用 elevation 近似）',
+    `<div class="p1 m"><div class="row"><i class="lamp on"></i>${RUN}<span class="warn">running</span></div>
+     <div class="row"><i class="lamp"></i>${DONE}<span class="mu">00:45</span><span class="mu">done</span></div></div>`],
+  ['02 · Recessed slot', '不浮起来，往下凹一格', 'RN ✓ 0.76+ boxShadow inset（新架构）',
+    `<div class="p2 m"><div class="row">${RUN}<span class="warn">running</span></div>
+     <div class="row">${DONE}<span class="mu">00:45</span><span class="mu">done</span></div></div>`],
+  ['03 · Scanline', 'live 行底下一根暖色扫描线', 'RN ✓ borderBottom + shadow；渐变改纯色底',
+    `<div class="p3 m"><div class="row live">${RUN}<span class="warn">running</span></div>
+     <div class="row">${DONE}<span class="mu">00:45</span><span class="mu">done</span></div></div>`],
+  ['04 · Ticket stub', '一条打孔线把命令和结论撕开', 'RN ✓ borderStyle dashed（单边虚线需包一层 View）',
+    `<div class="p4 m"><div class="l"><div class="row">${RUN}</div><div class="row">${DONE}</div></div>
+     <div class="r"><div class="warn">running</div><div class="mu">done</div></div></div>`],
+  ['05 · Gutter', '状态挪进左边槽，像编辑器行号', 'RN ✓ 纯布局',
+    `<div class="p5 m"><div class="row"><span class="g warn">running</span>${RUN}</div>
+     <div class="row"><span class="g mu">done</span>${DONE}<span class="mu">00:45</span></div></div>`],
+  ['06 · Reticle', '只有四个角标，像取景框', 'RN ✓ 四个绝对定位小 View',
+    `<div class="p6 m"><i class="c tl"></i><i class="c tr"></i><i class="c bl"></i><i class="c br"></i>
+     <div class="row live">${RUN}<span class="warn">running</span></div>
+     <div class="row">${DONE}<span class="mu">00:45</span><span class="mu">done</span></div></div>`],
+  ['07 · Phosphor', '正在跑的命令自己发光，跑完的冷掉', 'RN ✓ textShadow',
+    `<div class="p7 m"><div class="row live">${RUN}<span class="warn">running</span></div>
+     <div class="row cold">${DONE}<span>00:45</span><span>done</span></div></div>`],
+  ['08 · Spine tab', '面板是哑的，右上角小书签带计数', 'RN ✓ 绝对定位 + 半边框',
+    `<div class="p8 m"><div class="tab m"><b>1</b> <span class="mu">/ 2</span></div>
+     <div class="row">${RUN}<span class="warn">running</span></div>
+     <div class="row">${DONE}<span class="mu">00:45</span><span class="mu">done</span></div></div>`],
+  ['09 · Strata', '没有边框，live 和 done 是两层不同色温', 'RN ✓ mixColor 预计算底色（已有）',
+    `<div class="p9 m"><div class="row live">${RUN}<span class="warn">running</span></div>
+     <div class="row cold">${DONE}<span class="mu">00:45</span><span class="mu">done</span></div></div>`],
+  ['10 · Readout footer', '列表素到底，只在页脚亮一个数', 'RN ✓ textShadow',
+    `<div class="p10 m"><div class="row">${RUN}<span class="mu">running</span></div>
+     <div class="row">${DONE}<span class="mu">00:45</span><span class="mu">done</span></div>
+     <div class="foot"><b>1</b> running · 2 tasks</div></div>`],
+];
+const chat = (theme, card) => `<div class="chat ${theme}">
+  <div class="msg">测试已经放到后台了，本大爷先去看 lint。</div>${card}
+  <div class="tool"><b>bash</b> npm run lint</div></div>`;
+document.getElementById('out').innerHTML = protos.map(([n, d, rn, card]) => `
+  <section class="proto"><div class="label">${n}<span>${d}</span></div><div class="rn">${rn}</div>
+  <div class="pair">${chat('dark', card)}${chat('light', card)}</div></section>`).join('');
+</script>
+</body>
+</html>

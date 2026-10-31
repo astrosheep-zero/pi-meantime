@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>meantime · v19 · W1 细化 + wait 时长</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #000; font: 12px -apple-system, "SF Pro Text", sans-serif; padding: 24px; color: #e4e7ec; }
+  h1 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .intro { color: #899097; font-size: 12px; margin-bottom: 22px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 390px); gap: 22px; align-items: start; }
+  .col > .title { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .col > .sub { color: #899097; font-size: 11px; margin-bottom: 12px; min-height: 44px; }
+  .cell { margin-bottom: 14px; }
+  .cell .lab { color: #5c6167; font-size: 10px; letter-spacing: .5px; margin-bottom: 4px; }
+  .chat { background: #0f1114; border-radius: 10px; padding: 12px 16px; }
+  .m { font-family: Menlo, ui-monospace, monospace; font-size: 12px; line-height: 18px; font-variant-numeric: tabular-nums; }
+  .pre { white-space: pre-wrap; word-break: break-all; }
+  .out { color: #9aa0a8; }
+  .row { display: flex; gap: 8px; align-items: flex-start; }
+  .grow { flex: 1; min-width: 0; }
+  .clip { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meta { flex: none; color: #899097; display: flex; gap: 8px; }
+  .chev { color: #3f434a; }
+  .foot { font-size: 11px; line-height: 16px; color: #5c6167; }
+  .st-ok  { --c:127,178,106; } .st-bad { --c:239,125,107; } .st-run { --c:233,180,90; }
+  .st-wto { --c:233,180,90; }  .st-wint { --c:137,148,163; }
+  .g { position: relative; overflow: hidden; border-radius: 8px; padding: 10px 14px 12px;
+       background: linear-gradient(135deg, rgba(var(--c),.15), rgba(var(--c),.02) 65%); border: 1px solid rgba(var(--c),.34); }
+  .g.st-bad { border-color: rgba(var(--c),.38); }
+  .g .cmdl { font-size: 14px; line-height: 20px; font-weight: 700; color: #f2f4f7; }
+  .g .body { margin-top: 5px; position: relative; } .g .foot { margin-top: 6px; position: relative; }
+  .g .wm { position: absolute; right: -10px; top: -6px; pointer-events: none; font-weight: 900; font-family: -apple-system, sans-serif;
+           font-size: 88px; line-height: 1; letter-spacing: -5px; color: rgba(var(--c),.10); }
+  .g .cmdl, .g .body, .g .foot { max-width: 78%; }
+  .g .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: rgb(var(--c)); margin: 6px 0 0; flex: none; }
+
+  /* T1 微调：hairline 分隔 + footer 更灰 */
+  .T1 .body { border-top: 0.5px solid rgba(var(--c),.18); padding-top: 6px; }
+  .T1 .foot { color: #4a4e54; }
+  /* T2 质感：水印描边 + 卡片顶部高光 + 圆角收 6 */
+  .T2 { border-radius: 6px; box-shadow: inset 0 1px 0 rgba(255,255,255,.05); }
+  .T2 .wm { color: rgba(var(--c),.07); -webkit-text-stroke: 1px rgba(var(--c),.16); }
+  /* T3 状态点：命令前小圆点回归，水印再淡一号 */
+  .T3 .wm { color: rgba(var(--c),.07); }
+</style>
+</head>
+<body>
+<h1>v19 · W1 细化 + wait 时长</h1>
+<div class="intro">W1 为底做三档质感微调；新增 wait 到期 / wait 被打断两种态， waited 时长进右上 meta，水印用 WAIT。</div>
+<div class="grid" id="grid"></div>
+<script>
+const esc = s => s.replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const cases = [
+ {lab:"短命令 · 收起", cmd:"npm test", st:"ok", t:"00:45", open:false, out:"ℹ fail 0\nℹ duration_ms 336.6"},
+ {lab:"短命令 · 展开", cmd:"npm test", st:"ok", t:"00:45", open:true, out:"ℹ tests 25\nℹ suites 7\nℹ pass 25\nℹ fail 0\nℹ duration_ms 336.6", foot:"mt_9cec1234 · 19:31:28 → 19:32:13"},
+ {lab:"多行失败 · 展开", cmd:"for f in test/*.test.ts; do\n  node --test \"$f\" || exit 1\ndone", st:"bad", t:"00:12", word:"exit 1", open:true, out:"✔ board renders (4ms)\n✖ drawer shows command once\n  AssertionError: 2 !== 1", foot:"mt_77d0c9aa · 19:44:10 → 19:44:22"},
+ {lab:"运行中 · 收起", cmd:"npm run build -- --watch", st:"run", t:"02:13", open:false, out:"[watch] build started\n  dist/client.js  41.2kb\n  dist/server.js  12.8kb\n[watch] build finished\n[watch] waiting for changes…"},
+ {lab:"wait 到期 · 收起", cmd:"meantime wait mt_9cec1234", st:"wto", t:"12:00", word:"timeout", wm:"WAIT", open:false, out:"still running after 720s\nlast: ℹ pass 25"},
+ {lab:"wait 被打断 · 展开", cmd:"meantime wait mt_51ab07e2", st:"wint", t:"04:32", word:"interrupted", wm:"WAIT", open:true, out:"wait interrupted by user\ntask still running", foot:"mt_8b21f0d3 · 20:11:03 → 20:15:35"},
+];
+const flat = cmd => cmd.replace(/\s+/g," ");
+const wordColor = { bad:"#ef7d6b", wto:"#e9b45a", wint:"#8994a3" };
+const meta = c => `<span class="meta">${c.word?`<span style="color:${wordColor[c.st]||"#899097"}">${c.word}</span>`:""}<span>${c.st.startsWith("w")?"waited ":""}${c.t}</span><span class="chev">${c.open?"⌃":"⌄"}</span></span>`;
+const outText = c => esc(c.open ? c.out : c.out.split("\n").slice(c.st==="run"?-5:-2).join("\n"));
+const W = c => c.wm || (c.st==="ok"?"PASS":c.st==="bad"?"FAIL":"LIVE");
+const cmdH = c => c.open?esc(c.cmd):esc(flat(c.cmd));
+const styles = {
+ T1:{title:"T1 · hairline 分隔",sub:"命令和输出之间加一条状态色 hairline，footer 再灰一号。最干净。",r:c=>`<div class="g T1 st-${c.st} m"><div class="wm">${W(c)}</div><div class="row"><div class="grow cmdl ${c.open?"pre":"clip"}">${cmdH(c)}</div>${meta(c)}</div><div class="body pre out">${outText(c)}</div>${c.open?`<div class="foot">${c.foot}</div>`:""}</div>`},
+ T2:{title:"T2 · 描边水印 + 高光",sub:"水印空心描边，卡片顶部一道 inset 高光，圆角收到 6。最有质感但最吵。",r:c=>`<div class="g T2 st-${c.st} m"><div class="wm">${W(c)}</div><div class="row"><div class="grow cmdl ${c.open?"pre":"clip"}">${cmdH(c)}</div>${meta(c)}</div><div class="body pre out">${outText(c)}</div>${c.open?`<div class="foot">${c.foot}</div>`:""}</div>`},
+ T3:{title:"T3 · 状态点回归",sub:"命令前加回小圆点，水印再淡。状态有两个锚点：点和字。",r:c=>`<div class="g T3 st-${c.st} m"><div class="wm">${W(c)}</div><div class="row"><span class="dot"></span><div class="grow cmdl ${c.open?"pre":"clip"}">${cmdH(c)}</div>${meta(c)}</div><div class="body pre out">${outText(c)}</div>${c.open?`<div class="foot">${c.foot}</div>`:""}</div>`},
+};
+document.getElementById("grid").innerHTML = Object.values(styles).map(s=>`<div class="col"><div class="title">${s.title}</div><div class="sub">${s.sub}</div>${
+  cases.map(c=>`<div class="cell"><div class="lab">${c.lab}</div><div class="chat">${s.r(c)}</div></div>`).join("")}</div>`).join("");
+</script>
+</body>
+</html>
