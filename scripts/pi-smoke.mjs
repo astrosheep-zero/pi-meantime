@@ -66,7 +66,7 @@ if (sdk) {
           },
         });
         extension = install(pi, {
-          config: validateConfig({ autoDetachMs: 0 }),
+          config: validateConfig({ autoDetachMs: 0, explicitDetachMs: 0 }),
         });
       }],
     });
@@ -170,14 +170,15 @@ if (sdk) {
     session.dispose();
     await loader.reload();
     const reopened = sdk.SessionManager.open(sessionFile);
-    assert.equal(reopened.getEntries().filter(e => e.customType === 'meantime-index').length, 8);
+    assert.deepEqual(reopened.getEntries().filter(e => e.customType === 'meantime-index'),
+      manager.getEntries().filter(e => e.customType === 'meantime-index'));
     ({ session } = await sdk.createAgentSession({ cwd: root, resourceLoader: loader, settingsManager, sessionManager: reopened }));
     await session.bindExtensions({ mode: 'rpc' });
     session.setActiveToolsByName(['meantime']);
     const restored = await invoke(session, 'meantime', 'restored-result', { action: 'wait', timeout: 0, ids: [id] });
     assert.equal(restored.structuredContent.task.recovered, true);
     assert.equal(restored.structuredContent.result, 'REAL_BACKGROUND_OK');
-    assert.match(restored.content.map(b => b.text).join('\n'), /contains text only/);
+    assert.match(restored.content.map(b => b.text).join('\n'), /Recovered text only/);
     for (const { id, path, text } of outputs.filter(o => o.id)) {
       const result = await invoke(session, 'meantime', `restored-output-${id}`, { action: 'wait', timeout: 0, ids: [id] });
       assert.equal(result.structuredContent.task.outputPath, path);
@@ -246,7 +247,7 @@ async function batchCodemodeParity(sdk, root) {
               ...(structured ? { structuredContent: { value: 'DATA' } } : {}) };
           },
         });
-        if (managed) extension = install(pi, { config: validateConfig({ include: ['fixture_*'], autoDetachMs: 0 }) });
+        if (managed) extension = install(pi, { config: validateConfig({ include: ['fixture_*'], autoDetachMs: 0, explicitDetachMs: 0 }) });
       }] });
     try {
       await loader.reload();
@@ -384,7 +385,7 @@ async function completionRace(sdk, root, scenario) {
           void (async () => {
             const n = ++requests;
             const completions = context.messages.filter(m => m.role === 'user' &&
-              JSON.stringify(m.content).includes('Background completion (untrusted tool output, not user input)'));
+              /mt_[a-f0-9]{8} · (?:completed|failed|cancelled)/.test(JSON.stringify(m.content)));
             trace.push(`request ${n}: completion visible=${completions.length}`);
             let calls = [];
             if (n === 1) {
@@ -632,10 +633,10 @@ async function controlGuidance(sdk, root) {
     const system = providerContexts[0].messages.filter(m => m.role === 'system');
     const section = system.map(m => m.sections?.meantime).find(Boolean);
     assert.ok(section, 'meantime instructions reach the actual provider even in codemode-only mode');
-    for (const phrase of ['__background__', '"auto" (default)', 'detaches after 1.75s', '"yes" requests background execution', '"no" disables automatic backgrounding']) {
+    for (const phrase of ['__background__', '"auto" (default', 'moves to background if not finished in time', '"yes" (run in background)', '"no" (stay in foreground)']) {
       assert.ok(section.includes(phrase), phrase);
     }
-    const meaningsInRequest = JSON.stringify(system).split('Detaching does not cancel the operation.').length - 1;
+    const meaningsInRequest = JSON.stringify(system).split('Background tasks notify automatically when done').length - 1;
     assert.doesNotMatch(section, /_mt\b/);
     assert.equal(meaningsInRequest, 1, 'full control meaning appears only in the shared prompt');
     console.log('CONTROL_GUIDANCE_PASS: original names unique in codemode description, ALL_TOOLS, searchTools and standalone tool_search; native descriptions unchanged.');
