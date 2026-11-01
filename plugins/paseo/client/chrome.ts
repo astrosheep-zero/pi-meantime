@@ -26,10 +26,11 @@ export function toneRgb(tone: Tone, colors: Colors): string {
 }
 
 /**
- * The frost rail every meantime card shares: a thin, compact glass strip that
- * reads as one instrument. A corner wash carries the tone; the surface itself is
- * a near-flat cool gradient with a hairline border and a single soft shadow.
- * Next to Square's square-edged matte slip, this is the rounded frosted piece.
+ * The rail every meantime card shares. It sits in one timeline family with
+ * Square's slate slip and notesoup's paper note: same 4px corner, same hairline,
+ * no drop shadow. Meantime is the frequent one, so it is the lightest of the
+ * three — a neutral graphite veil a shade off the surface, a slightly brighter
+ * top hairline, colour only in the pip and the clock (plus a faint tone wash).
  * Web reads `backgroundImage`; Fabric only listens to `experimental_backgroundImage`
  * and silently drops the other spelling, so the recipe is emitted per platform.
  */
@@ -38,23 +39,21 @@ export function glassChrome(colors: Colors, platform: "ios" | "android" | "web",
   const images: string[] = [];
   if (tone !== undefined) {
     const tint = toneRgb(tone, colors);
-    images.push(`radial-gradient(180px 60px at 0% 50%, rgba(${tint},${dark ? 0.08 : 0.05}), rgba(${tint},0) 75%)`);
+    images.push(`radial-gradient(140px 40px at 0% 50%, rgba(${tint},${dark ? 0.04 : 0.03}), rgba(${tint},0) 75%)`);
   }
   images.push(dark
-    ? "linear-gradient(115deg, rgba(255,255,255,0.05), rgba(255,255,255,0.015))"
-    : "linear-gradient(115deg, rgba(241,246,245,0.9), rgba(247,249,252,0.92) 45%, rgba(237,241,246,0.9))");
+    ? "linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.035))"
+    : "linear-gradient(180deg, rgba(20,24,28,0.02), rgba(20,24,28,0.035))");
   return {
-    borderRadius: 5.5,
+    borderRadius: 4,
     borderWidth: 0.5,
-    borderColor: dark ? "rgba(157,180,203,0.19)" : "rgba(103,125,149,0.21)",
+    borderColor: dark ? "rgba(255,255,255,0.09)" : "rgba(20,24,28,0.1)",
+    borderTopColor: dark ? "rgba(255,255,255,0.13)" : "rgba(20,24,28,0.08)",
     backgroundColor: dark ? colors.surface1 : colors.surface0,
     ...(platform === "web"
       ? { backgroundImage: images.join(", ") }
       : { experimental_backgroundImage: images.join(", ") }),
-    boxShadow: dark
-      ? "0 1px 2px rgba(0,0,0,0.12)"
-      : "0 1px 2px rgba(30,45,65,0.035)",
     paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingVertical: 7,
   };
 }

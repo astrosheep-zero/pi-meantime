@@ -10,11 +10,11 @@ import { CODE_FONT_SIZE, CODE_LINE_HEIGHT, dividerColor, doneColor, formatSecond
 type Colors = PluginTheme["colors"];
 type Layout = { compact: boolean; platform: "ios" | "android" | "web" };
 
-/** The status lamp: one flat dot, breathing halo while live, locked solid when settled. */
+/** The status lamp: one small dot with a soft glow; a tight ring joins it while live. */
 export function Pip({ tone, colors }: { tone: Tone; colors: Colors }) {
   const rgb = toneRgb(tone, colors);
-  const halo = tone === "run" ? `0 0 0 2px rgba(${rgb},0.14)` : undefined;
-  return <View style={{ width: 5, height: 5, borderRadius: 2.5, backgroundColor: toneColor(tone, colors), ...(halo ? { boxShadow: halo } : {}) }} />;
+  const halo = tone === "run" ? `0 0 0 2px rgba(${rgb},0.14), 0 0 5px rgba(${rgb},0.3)` : `0 0 5px rgba(${rgb},0.3)`;
+  return <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: toneColor(tone, colors), boxShadow: halo }} />;
 }
 
 export function TaskCommand({ task, colors, quiet = false }: { task: TaskSummary; colors: Colors; quiet?: boolean }) {
@@ -102,7 +102,7 @@ export function TaskLine({ task, colors, layout, showId, muted: quiet = false, d
 
   return <View>
     <Pressable onPress={() => setOpen(prev => !prev)} accessibilityRole="button" accessibilityLabel={taskStateLabel(task)}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
         <Pip tone={tone} colors={colors} />
         <View style={{ flex: 1, minWidth: 0 }}><TaskCommand task={task} colors={colors} quiet={quiet && tone === "ok"} /></View>
         {idTag}
