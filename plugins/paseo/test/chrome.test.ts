@@ -19,11 +19,12 @@ const DARK = {
   statusSuccess: "#7fb26a", statusWarning: "#e9b45a", statusDanger: "#ef7d6b",
 } as const;
 
-test("one chassis: the same 9px glass panel for every card", () => {
+test("one chassis: the same compact frost rail for every card", () => {
   const light = glassChrome(LIGHT, "web");
-  assert.equal(light.borderRadius, 9);
+  assert.equal(light.borderRadius, 5.5);
   assert.equal(light.borderWidth, 0.5);
-  assert.match(String(light.boxShadow), /inset 0 1px 0/);
+  assert.equal(light.paddingVertical, 6);
+  assert.doesNotMatch(String(light.boxShadow), /inset/, "no inset highlight — the frost rail is a flat optical surface");
 });
 
 test("gradients are spelled per platform — Fabric drops the web property silently", () => {
@@ -39,9 +40,12 @@ test("a tone adds exactly one corner wash; untoned glass stays plain", () => {
   const plain = glassChrome(LIGHT, "web") as Record<string, unknown>;
   assert.ok(!String(plain.backgroundImage).includes("radial-gradient"));
   const toned = glassChrome(LIGHT, "web", "ok") as Record<string, unknown>;
-  assert.match(String(toned.backgroundImage), /^radial-gradient\([^)]*rgba\(32,156,86,/);
+  assert.match(String(toned.backgroundImage), /^radial-gradient\([^)]*rgba\(32,156,86,0\.05\)/);
   const darkToned = glassChrome(DARK, "ios", "bad") as Record<string, unknown>;
-  assert.match(String(darkToned.experimental_backgroundImage), /^radial-gradient\([^)]*rgba\(239,125,107,/);
+  assert.match(String(darkToned.experimental_backgroundImage), /^radial-gradient\([^)]*rgba\(239,125,107,0\.08\)/);
+  // Running keeps a wider wash; settled tones share the same corner recipe.
+  const running = glassChrome(LIGHT, "web", "run") as Record<string, unknown>;
+  assert.match(String(running.backgroundImage), /^radial-gradient\(180px 60px/);
 });
 
 test("taskTone maps states and wait outcomes to the four tones", () => {

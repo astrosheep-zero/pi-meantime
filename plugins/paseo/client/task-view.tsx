@@ -10,10 +10,11 @@ import { CODE_FONT_SIZE, CODE_LINE_HEIGHT, dividerColor, doneColor, formatSecond
 type Colors = PluginTheme["colors"];
 type Layout = { compact: boolean; platform: "ios" | "android" | "web" };
 
-/** The status lamp: one dot, breathing halo while live, locked solid when settled. */export function Pip({ tone, colors }: { tone: Tone; colors: Colors }) {
+/** The status lamp: one flat dot, breathing halo while live, locked solid when settled. */
+export function Pip({ tone, colors }: { tone: Tone; colors: Colors }) {
   const rgb = toneRgb(tone, colors);
-  const halo = tone === "run" ? `0 0 0 3px rgba(${rgb},0.12)` : `0 0 0 2.5px rgba(${rgb},0.09)`;
-  return <View style={{ width: 7, height: 7, borderRadius: 3.5, backgroundColor: toneColor(tone, colors), boxShadow: halo }} />;
+  const halo = tone === "run" ? `0 0 0 2px rgba(${rgb},0.14)` : undefined;
+  return <View style={{ width: 5, height: 5, borderRadius: 2.5, backgroundColor: toneColor(tone, colors), ...(halo ? { boxShadow: halo } : {}) }} />;
 }
 
 export function TaskCommand({ task, colors, quiet = false }: { task: TaskSummary; colors: Colors; quiet?: boolean }) {
@@ -54,7 +55,7 @@ export function Clock({ task, colors, layout, waitOutcome, waitedSeconds }: { ta
   const glyph = tone === "ok" && chip === undefined ? "✓" : undefined;
   const dark = isDarkSurface(colors);
   const labelColor = tone === "neutral" ? secondaryColor(colors) : toneColor(tone, colors);
-  const meta: TextStyle = { fontSize: 11.5, lineHeight: 16, fontFamily: monoFont(layout.platform), fontVariant: ["tabular-nums"] };
+  const meta: TextStyle = { fontSize: 10, lineHeight: 16, fontFamily: monoFont(layout.platform), fontVariant: ["tabular-nums"] };
   return <View style={{ flexDirection: "row", alignItems: "baseline", gap: 5 }}>
     {glyph
       ? <Text style={{ ...meta, fontWeight: "600", color: labelColor }}>{glyph}</Text>
@@ -101,12 +102,12 @@ export function TaskLine({ task, colors, layout, showId, muted: quiet = false, d
 
   return <View>
     <Pressable onPress={() => setOpen(prev => !prev)} accessibilityRole="button" accessibilityLabel={taskStateLabel(task)}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
         <Pip tone={tone} colors={colors} />
         <View style={{ flex: 1, minWidth: 0 }}><TaskCommand task={task} colors={colors} quiet={quiet && tone === "ok"} /></View>
         {idTag}
         <Clock task={task} colors={colors} layout={layout} waitOutcome={effectiveWaitOutcome} waitedSeconds={waitedSeconds} />
-        <Icon name={open ? "ChevronUp" : "ChevronDown"} size={11} color={chevColor} />
+        <Icon name={open ? "ChevronUp" : "ChevronDown"} size={10} color={chevColor} />
       </View>
       {open ? <StatusRule colors={colors} /> : null}
       {open ? (

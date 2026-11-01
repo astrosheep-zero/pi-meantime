@@ -26,37 +26,35 @@ export function toneRgb(tone: Tone, colors: Colors): string {
 }
 
 /**
- * The one chassis every meantime card shares: self-luminous glass. A corner
- * wash carries the tone; a vertical sheen plus inset highlights fake the
- * optics (RN has no backdrop-filter). Web reads `backgroundImage`; Fabric
- * only listens to `experimental_backgroundImage` and silently drops the
- * other spelling, so the recipe is emitted per platform.
+ * The frost rail every meantime card shares: a thin, compact glass strip that
+ * reads as one instrument. A corner wash carries the tone; the surface itself is
+ * a near-flat cool gradient with a hairline border and a single soft shadow.
+ * Next to Square's square-edged matte slip, this is the rounded frosted piece.
+ * Web reads `backgroundImage`; Fabric only listens to `experimental_backgroundImage`
+ * and silently drops the other spelling, so the recipe is emitted per platform.
  */
 export function glassChrome(colors: Colors, platform: "ios" | "android" | "web", tone?: Tone): ViewStyle {
   const dark = isDarkSurface(colors);
   const images: string[] = [];
-  if (tone === "run") {
-    // A live task breathes across the whole card, not just a corner.
-    images.push(`linear-gradient(135deg, rgba(${toneRgb(tone, colors)},${dark ? 0.07 : 0.05}), rgba(${toneRgb(tone, colors)},0) 70%)`);
-  } else if (tone !== undefined) {
+  if (tone !== undefined) {
     const tint = toneRgb(tone, colors);
-    images.push(`radial-gradient(240px 90px at 0% 0%, rgba(${tint},0.03), rgba(${tint},0) 75%)`);
+    images.push(`radial-gradient(180px 60px at 0% 50%, rgba(${tint},${dark ? 0.08 : 0.05}), rgba(${tint},0) 75%)`);
   }
   images.push(dark
-    ? "linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.02))"
-    : "linear-gradient(180deg, rgba(255,255,255,0.94), rgba(245,247,251,0.9))");
+    ? "linear-gradient(115deg, rgba(255,255,255,0.05), rgba(255,255,255,0.015))"
+    : "linear-gradient(115deg, rgba(241,246,245,0.9), rgba(247,249,252,0.92) 45%, rgba(237,241,246,0.9))");
   return {
-    borderRadius: 9,
+    borderRadius: 5.5,
     borderWidth: 0.5,
-    borderColor: dark ? "rgba(255,255,255,0.09)" : "rgba(178,188,204,0.68)",
+    borderColor: dark ? "rgba(157,180,203,0.19)" : "rgba(103,125,149,0.21)",
     backgroundColor: dark ? colors.surface1 : colors.surface0,
     ...(platform === "web"
       ? { backgroundImage: images.join(", ") }
       : { experimental_backgroundImage: images.join(", ") }),
     boxShadow: dark
-      ? "inset 0 1px 0 rgba(255,255,255,0.09), 0 1px 2px rgba(0,0,0,0.22), 0 6px 14px -6px rgba(0,0,0,0.3)"
-      : "inset 0 1px 0 rgba(255,255,255,0.98), inset 0 -1px 0 rgba(255,255,255,0.55), 0 1px 2px rgba(15,20,30,0.04), 0 6px 14px -6px rgba(15,20,30,0.08)",
-    paddingHorizontal: 11.5,
-    paddingVertical: 8.5,
+      ? "0 1px 2px rgba(0,0,0,0.12)"
+      : "0 1px 2px rgba(30,45,65,0.035)",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
   };
 }
