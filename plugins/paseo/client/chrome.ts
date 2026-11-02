@@ -29,8 +29,9 @@ export function toneRgb(tone: Tone, colors: Colors): string {
  * The rail every meantime card shares. It sits in one timeline family with
  * Square's slate slip and notesoup's paper note: same 4px corner, same hairline,
  * no drop shadow. Meantime is the frequent one, so it is the lightest of the
- * three — a neutral graphite veil a shade off the surface, a slightly brighter
- * top hairline, colour only in the pip and the clock (plus a faint tone wash).
+ * three — a cool slate veil in Square's family, a shade off the surface, with
+ * colour only in the pip and the clock. In light mode the tone wash all but
+ * disappears: on a pale surface even a whisper of green reads as mint.
  * Web reads `backgroundImage`; Fabric only listens to `experimental_backgroundImage`
  * and silently drops the other spelling, so the recipe is emitted per platform.
  */
@@ -39,16 +40,16 @@ export function glassChrome(colors: Colors, platform: "ios" | "android" | "web",
   const images: string[] = [];
   if (tone !== undefined) {
     const tint = toneRgb(tone, colors);
-    images.push(`radial-gradient(140px 40px at 0% 50%, rgba(${tint},${dark ? 0.04 : 0.03}), rgba(${tint},0) 75%)`);
+    images.push(`radial-gradient(140px 40px at 0% 50%, rgba(${tint},${dark ? 0.04 : 0.018}), rgba(${tint},0) 75%)`);
   }
   images.push(dark
     ? "linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.035))"
-    : "linear-gradient(180deg, rgba(20,24,28,0.02), rgba(20,24,28,0.035))");
+    : "linear-gradient(180deg, rgba(52,68,84,0.028), rgba(52,68,84,0.045))");
   return {
     borderRadius: 4,
     borderWidth: 0.5,
-    borderColor: dark ? "rgba(255,255,255,0.09)" : "rgba(20,24,28,0.1)",
-    borderTopColor: dark ? "rgba(255,255,255,0.13)" : "rgba(20,24,28,0.08)",
+    borderColor: dark ? "rgba(255,255,255,0.09)" : "rgba(52,68,84,0.12)",
+    borderTopColor: dark ? "rgba(255,255,255,0.13)" : "rgba(52,68,84,0.09)",
     backgroundColor: dark ? colors.surface1 : colors.surface0,
     ...(platform === "web"
       ? { backgroundImage: images.join(", ") }
