@@ -28,11 +28,11 @@ test("gradients are spelled per platform — Fabric drops the web property silen
   assert.ok(!("backgroundImage" in ios));
 });
 
-test("a tone adds exactly one corner wash; untoned glass stays plain", () => {
+test("a tone adds a corner wash in dark mode only; light mode stays untinted", () => {
   const plain = glassChrome(LIGHT, "web") as Record<string, unknown>;
   assert.ok(!String(plain.backgroundImage).includes("radial-gradient"));
-  const toned = glassChrome(LIGHT, "web", "ok") as Record<string, unknown>;
-  assert.match(String(toned.backgroundImage), /^radial-gradient\([^)]*rgba\(32,156,86,/);
+  const lightToned = glassChrome(LIGHT, "web", "ok") as Record<string, unknown>;
+  assert.ok(!String(lightToned.backgroundImage).includes("radial-gradient"));
   const darkToned = glassChrome(DARK, "ios", "bad") as Record<string, unknown>;
   assert.match(String(darkToned.experimental_backgroundImage), /^radial-gradient\([^)]*rgba\(239,125,107,/);
 });

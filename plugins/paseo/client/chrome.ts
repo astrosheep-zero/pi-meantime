@@ -30,17 +30,19 @@ export function toneRgb(tone: Tone, colors: Colors): string {
  * Square's slate slip and notesoup's paper note: same 4px corner, same hairline,
  * no drop shadow. Meantime is the frequent one, so it is the lightest of the
  * three — a cool slate veil in Square's family, a shade off the surface, with
- * colour only in the pip and the clock. In light mode the tone wash all but
- * disappears: on a pale surface even a whisper of green reads as mint.
+ * colour only in the pip and the clock. In light mode there is no tone wash at
+ * all: on a pale surface any tint dyes the whole rail.
  * Web reads `backgroundImage`; Fabric only listens to `experimental_backgroundImage`
  * and silently drops the other spelling, so the recipe is emitted per platform.
  */
 export function glassChrome(colors: Colors, platform: "ios" | "android" | "web", tone?: Tone): ViewStyle {
   const dark = isDarkSurface(colors);
   const images: string[] = [];
-  if (tone !== undefined) {
+  // Light mode gets no tone wash at all: on a pale surface any tint dyes the
+  // whole rail (green reads mint, red reads pink). Tone lives in pip and clock.
+  if (tone !== undefined && dark) {
     const tint = toneRgb(tone, colors);
-    images.push(`radial-gradient(140px 40px at 0% 50%, rgba(${tint},${dark ? 0.04 : 0.018}), rgba(${tint},0) 75%)`);
+    images.push(`radial-gradient(140px 40px at 0% 50%, rgba(${tint},0.04), rgba(${tint},0) 75%)`);
   }
   images.push(dark
     ? "linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.035))"
