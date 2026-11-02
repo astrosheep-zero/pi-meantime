@@ -4,8 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import type { TaskSummary } from "../shared/tasks.js";
 import { foldItem, foldTimeline, isActiveTask, sortTasks } from "../shared/tasks.js";
-import { Card } from "./card.js";
-import { dividerColor, secondaryColor, stateColor } from "./rows.js";
+import { TintedCard, taskTone } from "./card.js";
+import { secondaryColor, stateColor } from "./rows.js";
 import { TaskLine } from "./task-view.js";
 
 const PAGE_LIMIT = 500;
@@ -15,6 +15,8 @@ const PAGE_LIMIT = 500;
  * the client-cached timeline. No server component: the timeline is the only
  * source of truth (v1 doctrine). Control stays in chat — ask the agent to
  * `meantime cancel <id>`.
+ * The panel chrome already names the panel, so the body is just one rail card
+ * per task — the same object the timeline shows — plus muted footnotes.
  */
 export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps) {
   const paseo = usePaseo();
@@ -58,37 +60,25 @@ export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps)
     screen: {
       flexGrow: 1,
       padding: layout.compact ? 12 : 20,
-      gap: 10,
+      gap: 8,
       backgroundColor: theme.colors.surface0,
       maxWidth: 720,
       width: "100%" as const,
       alignSelf: "center" as const,
     },
-    title: { color: colors.foreground, fontSize: 12, lineHeight: 15, fontWeight: "500" as const, letterSpacing: -0.15 },
-    cardMuted: { color: secondaryColor(colors), fontSize: 11, lineHeight: 15 },
     muted: { color: secondaryColor(theme.colors), fontSize: 11.5, lineHeight: 16 },
     error: { color: stateColor("failed", theme.colors), fontSize: 11.5 },
   }), [colors, theme.colors, layout.compact]);
 
   return (
     <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.screen}>
-      <Card colors={colors} layout={layout}>
-        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10,
-          paddingBottom: tasks.length > 0 ? 7 : 0,
-          borderBottomWidth: tasks.length > 0 ? 0.5 : 0, borderBottomColor: dividerColor(colors) }}>
-          <Text style={styles.title}>Background tasks</Text>
-          <Text style={styles.cardMuted}>
-            {tasks.length === 0 ? "None" : `${tasks.length} task${tasks.length === 1 ? "" : "s"}`}
-          </Text>
-        </View>
-        {tasks.length === 0
-          ? <Text style={{ ...styles.cardMuted, paddingVertical: 8 }}>No background tasks</Text>
-          : tasks.map((task, index) => (
-            <View key={task.id} style={{ paddingVertical: 6, ...(index > 0 ? { borderTopWidth: 0.5, borderTopColor: dividerColor(colors) } : undefined) }}>
-              <TaskLine task={task} colors={colors} layout={layout} showId muted={!isActiveTask(task)} />
-            </View>
-          ))}
-      </Card>
+      {tasks.length === 0
+        ? <Text style={styles.muted}>No background tasks</Text>
+        : tasks.map(task => (
+          <TintedCard key={task.id} colors={colors} layout={layout} tone={taskTone(task)}>
+            <TaskLine task={task} colors={colors} layout={layout} showId muted={!isActiveTask(task)} />
+          </TintedCard>
+        ))}
       {error ? <Text style={styles.error}>{error}</Text> : null}
       {hasOlder
         ? <Text style={styles.muted}>Only the latest {PAGE_LIMIT} timeline entries were scanned; older tasks may be missing.</Text>
