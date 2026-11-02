@@ -1,3 +1,4 @@
+import type { PluginTheme } from "@getpaseo/plugin";
 import type { PluginTimelineItemProps } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useMemo, useState } from "react";
@@ -5,11 +6,10 @@ import { Pressable, Text, View } from "react-native";
 import type { MeantimeCardData } from "../shared/tasks.js";
 import { isActiveTask } from "../shared/tasks.js";
 import { Card, TintedCard, toneColor } from "./card.js";
-import { meantimeTheme } from "./palette.js";
 import { CODE_FONT_SIZE, CODE_LINE_HEIGHT, dividerColor, formatSeconds, frameColor, isDarkSurface, monoFont, secondaryColor } from "./rows.js";
 import { Pip, StatusRule, TaskLine, TaskTable } from "./task-view.js";
 
-type Colors = ReturnType<typeof meantimeTheme>["colors"];
+type Colors = PluginTheme["colors"];
 type Layout = PluginTimelineItemProps["layout"];
 
 export function MeantimeTaskCard(props: PluginTimelineItemProps<MeantimeCardData>) {
@@ -18,7 +18,7 @@ export function MeantimeTaskCard(props: PluginTimelineItemProps<MeantimeCardData
 
 function MeantimeTaskCardBody(props: PluginTimelineItemProps<MeantimeCardData>) {
   const { item, theme, layout } = props;
-  const colors = useMemo(() => meantimeTheme(theme).colors, [theme]);
+  const colors = useMemo(() => theme.colors, [theme]);
   const data = item.data;
   if (data.pending) return <WaitSkeleton colors={colors} layout={layout} />;
   if (data.error !== undefined) return <ErrorCard data={data} colors={colors} layout={layout} />;

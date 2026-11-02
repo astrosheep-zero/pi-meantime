@@ -5,7 +5,6 @@ import { Text, View } from "react-native";
 import type { TaskSummary } from "../shared/tasks.js";
 import { foldItem, foldTimeline, isActiveTask, sortTasks } from "../shared/tasks.js";
 import { Card } from "./card.js";
-import { meantimeTheme } from "./palette.js";
 import { dividerColor, secondaryColor, stateColor } from "./rows.js";
 import { TaskLine } from "./task-view.js";
 
@@ -19,7 +18,7 @@ const PAGE_LIMIT = 500;
  */
 export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps) {
   const paseo = usePaseo();
-  const colors = useMemo(() => meantimeTheme(theme).colors, [theme]);
+  const colors = useMemo(() => theme.colors, [theme]);
   const [tasks, setTasks] = useState<readonly TaskSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [hasOlder, setHasOlder] = useState(false);
