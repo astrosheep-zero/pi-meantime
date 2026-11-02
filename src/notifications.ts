@@ -10,7 +10,6 @@ export interface DeliveryEvent {
 export interface DeliveryHost {
   readonly isStreaming: boolean;
   readonly agent: { hasQueuedMessages(): boolean };
-  sendCustomMessage: AgentSession['sendCustomMessage'];
   subscribe(listener: (event: DeliveryEvent) => void): () => void;
 }
 
@@ -35,10 +34,13 @@ export class CompletionDelivery {
   private host: DeliveryHost;
   private isIdle: () => boolean;
   private message: (tasks: Snapshot[]) => Message;
+  private sendCustomMessage: AgentSession['sendCustomMessage'];
 
   constructor(runtime: TaskRuntime, host: DeliveryHost,
-    isIdle: () => boolean, message: (tasks: Snapshot[]) => Message) {
+    isIdle: () => boolean, message: (tasks: Snapshot[]) => Message,
+    sendCustomMessage: AgentSession['sendCustomMessage']) {
     this.runtime = runtime; this.host = host; this.isIdle = isIdle; this.message = message;
+    this.sendCustomMessage = sendCustomMessage;
     this.unsubscribe = host.subscribe(event => {
       const message = event.message;
       if (this.closed || event.type !== 'message_end' || message?.role !== 'custom'
@@ -51,6 +53,8 @@ export class CompletionDelivery {
       }
     });
   }
+
+  canSteer(): boolean { return !this.closed && this.boundaries === 0 && !this.wakePaused && this.host.isStreaming; }
 
   send(tasks: Snapshot[]): void | false {
     const boundary = this.boundaries > 0;
@@ -66,7 +70,7 @@ export class CompletionDelivery {
     if (streaming) for (const id of ids) this.fastQueued.add(id);
     // Pausing wakeups must not pause safe delivery: idle recovery is append-only.
     const triggerTurn = !boundary && !this.wakePaused;
-    const pending = this.host.sendCustomMessage(this.message(tasks), { deliverAs: 'steer', triggerTurn });
+    const pending = this.sendCustomMessage(this.message(tasks), { deliverAs: 'steer', triggerTurn });
     // Append-only hosts persist before their synchronous message_end receipt.
     // Agent-emitted messages have not consumed anything yet and still wait for
     // scheduleDurability()'s post-append barrier.

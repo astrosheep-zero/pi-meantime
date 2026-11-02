@@ -122,8 +122,10 @@ export class FakePi implements PiHost, HostSession {
   }
   registerShortcut(name: string, options: { handler: (ctx: Context) => void | Promise<void> }): void { this.shortcuts.set(name, options.handler); }
   registerCommand(name: string, options: { handler: (args: string, ctx: Context) => void | Promise<void> }): void { this.commands.set(name, options.handler); }
-  async sendCustomMessage(message: Parameters<HostSession['sendCustomMessage']>[0]): Promise<void> {
-    this.notifications.push({ ...message, content: typeof message.content === 'string' ? message.content : JSON.stringify(message.content) });
+  async sendCustomMessage(message: Parameters<HostSession['sendCustomMessage']>[0], _options?: Parameters<HostSession['sendCustomMessage']>[1]): Promise<void> {
+    if (message.customType === 'meantime-completion') {
+      this.notifications.push({ ...message, content: typeof message.content === 'string' ? message.content : JSON.stringify(message.content) });
+    }
     // Deterministic fixture receipt; real SDK persistence is tested separately.
     for (const listener of this.listeners) listener({ type: 'message_end', message: { role: 'custom', ...message } });
   }

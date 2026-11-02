@@ -169,7 +169,7 @@ for (const ending of ['completion', 'cancel', 'close', 'shortcut', 'explicit'] a
     assert.equal(view.kind, ending === 'shortcut' || ending === 'explicit' ? 'handle' : 'result');
     assert.equal(task.steerTimer, undefined); assert.equal(task.requestedDetach, undefined);
     assert.equal(signal!.aborted, ending === 'cancel' || ending === 'close');
-    clock.tick(3000);
+    clock.tick(30_000);
     assert.equal(h.records.size, view.kind === 'handle' ? 1 : 0, 'no delayed/spurious handle after the original view');
     if (view.kind === 'handle') assert.equal(view.task.detachReason, ending === 'explicit' ? 'explicit' : 'shortcut');
     else if (ending === 'completion') assert.match(JSON.stringify(view.result), /fast result/);
@@ -262,6 +262,151 @@ test('at the mature steer deadline, approval denial still settles before prompt-
     await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(h.records.size, 0, 'denial never publishes a handle');
   } finally { work.resolve(ok()); await h.close(); }
+});
+
+test('notifications batch until the latest foreground protection deadline', async t => {
+  const clock = steerClock(t);
+  const h = runtimeHarness({ autoDetachMs: 0, notifyDebounceMs: 10 });
+  h.sink.canSteer = () => true;
+  const bg1 = deferred<Outcome>(), bg2 = deferred<Outcome>(), fg1 = deferred<Outcome>(), fg2 = deferred<Outcome>();
+  try {
+    const v1 = await h.runtime.run({ tool: 'bg1', kind: 'tool', callId: 'b1', mode: 'yes', canDetach: true, execute: () => bg1.promise });
+    const v2 = await h.runtime.run({ tool: 'bg2', kind: 'tool', callId: 'b2', mode: 'yes', canDetach: true, execute: () => bg2.promise });
+    h.runtime.published('b1', v1.task.id); h.runtime.published('b2', v2.task.id);
+    const first = h.runtime.run({ tool: 'fg1', kind: 'tool', callId: 'f1', mode: 'no', canDetach: true, execute: () => fg1.promise });
+    await Promise.resolve(); clock.tick(25_000);
+    const second = h.runtime.run({ tool: 'fg2', kind: 'tool', callId: 'f2', mode: 'no', canDetach: true, execute: () => fg2.promise });
+    await Promise.resolve(); clock.tick(5000);
+    bg1.resolve(ok('one')); bg2.resolve(ok('two'));
+    await Promise.all([h.runtime.tasks.get(v1.task.id)!.done, h.runtime.tasks.get(v2.task.id)!.done]);
+    h.runtime.flushNotifications();
+    const foreground = [...h.runtime.tasks.values()].filter(task => task.meta.delivery === 'foreground' && task.meta.localRunning);
+    assert.equal(foreground.length, 2, 'an aged task stays foreground while a younger sibling is protected');
+    assert.ok(foreground.every(task => task.steerTimer === undefined), 'notification waits do not use task steer timers');
+    assert.equal(h.notifications.length, 0);
+    clock.tick(25_000);
+    assert.equal((await first).kind, 'handle'); assert.equal((await second).kind, 'handle');
+    assert.equal(h.notifications.length, 1);
+    assert.deepEqual(h.notifications[0]!.map(task => task.id), [v1.task.id, v2.task.id]);
+  } finally { bg1.resolve(ok()); bg2.resolve(ok()); fg1.resolve(ok()); fg2.resolve(ok()); await h.close(); }
+});
+
+test('user steer during notification protection keeps its original 3s deadline', async t => {
+  const clock = steerClock(t);
+  const h = runtimeHarness({ autoDetachMs: 0, notifyDebounceMs: 10 });
+  h.sink.canSteer = () => true;
+  const backgroundWork = deferred<Outcome>(), foregroundWork = deferred<Outcome>();
+  let executions = 0, signal: AbortSignal | undefined;
+  try {
+    const background = await h.runtime.run({ tool: 'background', kind: 'tool', callId: 'background', mode: 'yes', canDetach: true, execute: () => backgroundWork.promise });
+    h.runtime.published('background', background.task.id);
+    const foreground = h.runtime.run({ tool: 'foreground', kind: 'tool', callId: 'foreground', mode: 'no', canDetach: true,
+      execute: s => { executions++; signal = s; return foregroundWork.promise; } });
+    await Promise.resolve(); clock.tick(1000);
+    backgroundWork.resolve(ok('notice')); await h.runtime.tasks.get(background.task.id)!.done;
+    assert.equal(h.notifications.length, 0);
+    clock.tick(1000); assert.equal(h.runtime.detachAll('steer'), 0);
+    clock.tick(999); assert.equal(h.runtime.list().find(task => task.tool === 'foreground')!.delivery, 'foreground');
+    clock.tick(1);
+    assert.equal((await foreground).kind, 'handle');
+    assert.equal(signal!.aborted, false); assert.equal(executions, 1);
+    clock.tick(10);
+    assert.equal(h.notifications.length, 1, 'early user detach reschedules the pending notification against current foreground tasks');
+    assert.equal(h.runtime.get(background.task.id).notification, 'queued');
+  } finally { backgroundWork.resolve(ok()); foregroundWork.resolve(ok()); await h.close(); }
+});
+
+test('notification handoff waits for a legal streaming steer before detaching or releasing unrelated waits', async t => {
+  const clock = steerClock(t);
+  const h = runtimeHarness({ autoDetachMs: 0, notifyDebounceMs: 5000 });
+  h.sink.canSteer = () => true;
+  const waitingWork = deferred<Outcome>(), foregroundWork = deferred<Outcome>(), noticeWork = deferred<Outcome>();
+  try {
+    const waiting = await h.runtime.run({ tool: 'waited', kind: 'tool', callId: 'waited', mode: 'yes', canDetach: true, execute: () => waitingWork.promise });
+    const notice = await h.runtime.run({ tool: 'notice', kind: 'tool', callId: 'notice', mode: 'yes', canDetach: true, execute: () => noticeWork.promise });
+    h.runtime.published('waited', waiting.task.id); h.runtime.published('notice', notice.task.id);
+    const wait = h.runtime.wait(waiting.task.id, 60_000);
+    const foreground = h.runtime.run({ tool: 'foreground', kind: 'tool', callId: 'foreground', mode: 'no', canDetach: true, execute: () => foregroundWork.promise });
+    await Promise.resolve();
+    noticeWork.resolve(ok()); await h.runtime.tasks.get(notice.task.id)!.done;
+    h.runtime.flushNotifications();
+    const task = [...h.runtime.tasks.values()].find(t => t.callId === 'foreground')!;
+    assert.equal(task.meta.delivery, 'foreground'); assert.equal(task.steerTimer, undefined);
+    assert.equal(h.notifications.length, 0);
+    assert.equal(await Promise.race([wait.then(() => true), Promise.resolve(false)]), false, 'held notice cannot interrupt unrelated waits');
+    clock.tick(30_000);
+    assert.equal((await wait).waitOutcome, 'interrupted');
+    const handle = await foreground;
+    assert.equal(handle.kind, 'handle');
+    assert.equal(h.notifications.length, 1, 'accepted steer notification flushes without a debounce delay');
+  } finally { waitingWork.resolve(ok()); foregroundWork.resolve(ok()); noticeWork.resolve(ok()); await h.close(); }
+});
+
+
+test('foreground completion flushes held notices before returning its tool result', async t => {
+  const clock = steerClock(t);
+  const h = runtimeHarness({ autoDetachMs: 0, notifyDebounceMs: 5000 });
+  h.sink.canSteer = () => true;
+  const noticeWork = deferred<Outcome>(), foregroundWork = deferred<Outcome>();
+  try {
+    const notice = await h.runtime.run({ tool: 'notice', kind: 'tool', callId: 'notice', mode: 'yes', canDetach: true, execute: () => noticeWork.promise });
+    h.runtime.published('notice', notice.task.id);
+    const foreground = h.runtime.run({ tool: 'foreground', kind: 'tool', callId: 'foreground', mode: 'no', canDetach: true, execute: () => foregroundWork.promise });
+    await Promise.resolve(); clock.tick(5000);
+    noticeWork.resolve(ok()); await h.runtime.tasks.get(notice.task.id)!.done;
+    h.runtime.flushNotifications(); assert.equal(h.notifications.length, 0);
+    foregroundWork.resolve(ok('foreground result'));
+    assert.equal((await foreground).kind, 'result');
+    assert.equal(h.notifications.length, 1, 'the held steer is queued before foreground completion returns');
+  } finally { noticeWork.resolve(ok()); foregroundWork.resolve(ok()); await h.close(); }
+});
+
+test('an unavailable notification path never detaches foreground work or releases waits', async t => {
+  const clock = steerClock(t);
+  const h = runtimeHarness({ autoDetachMs: 0, notifyDebounceMs: 5000 });
+  h.sink.canSteer = () => false;
+  h.sink.notify = () => false;
+  const waitingWork = deferred<Outcome>(), foregroundWork = deferred<Outcome>(), noticeWork = deferred<Outcome>();
+  try {
+    const waiting = await h.runtime.run({ tool: 'waited', kind: 'tool', callId: 'waited', mode: 'yes', canDetach: true, execute: () => waitingWork.promise });
+    const notice = await h.runtime.run({ tool: 'notice', kind: 'tool', callId: 'notice', mode: 'yes', canDetach: true, execute: () => noticeWork.promise });
+    h.runtime.published('waited', waiting.task.id); h.runtime.published('notice', notice.task.id);
+    const wait = h.runtime.wait(waiting.task.id, 60_000);
+    const foreground = h.runtime.run({ tool: 'foreground', kind: 'tool', callId: 'foreground', mode: 'no', canDetach: true, execute: () => foregroundWork.promise });
+    await Promise.resolve(); noticeWork.resolve(ok()); await h.runtime.tasks.get(notice.task.id)!.done;
+    h.runtime.flushNotifications(); clock.tick(30_000);
+    const task = [...h.runtime.tasks.values()].find(t => t.callId === 'foreground')!;
+    assert.equal(task.meta.delivery, 'foreground'); assert.equal(task.steerTimer, undefined);
+    assert.equal(h.notifications.length, 0);
+    assert.equal(await Promise.race([wait.then(() => true), Promise.resolve(false)]), false);
+    h.sink.canSteer = () => true; h.sink.notify = tasks => { h.notifications.push(tasks); };
+    h.runtime.flushNotifications();
+    assert.equal((await wait).waitOutcome, 'interrupted');
+    assert.equal((await foreground).kind, 'handle');
+  } finally { waitingWork.resolve(ok()); foregroundWork.resolve(ok()); noticeWork.resolve(ok()); await h.close(); }
+});
+
+test('observing a held completion cancels its notification-driven foreground detach', async t => {
+  const clock = steerClock(t);
+  const h = runtimeHarness({ autoDetachMs: 0, notifyDebounceMs: 5000 });
+  h.sink.canSteer = () => true;
+  const noticeWork = deferred<Outcome>(), foregroundWork = deferred<Outcome>();
+  try {
+    const notice = await h.runtime.run({ tool: 'notice', kind: 'tool', callId: 'notice', mode: 'yes', canDetach: true, execute: () => noticeWork.promise });
+    h.runtime.published('notice', notice.task.id);
+    const foreground = h.runtime.run({ tool: 'foreground', kind: 'tool', callId: 'foreground', mode: 'no', canDetach: true, execute: () => foregroundWork.promise });
+    await Promise.resolve(); noticeWork.resolve(ok()); await h.runtime.tasks.get(notice.task.id)!.done;
+    h.runtime.flushNotifications();
+    assert.equal([...h.runtime.tasks.values()].find(t => t.callId === 'foreground')!.steerTimer, undefined);
+    const read = await h.runtime.wait(notice.task.id, 0);
+    assert.ok(read.result, 'wait consumes the pending notice before the foreground protection expires');
+    clock.tick(30_000);
+    const task = [...h.runtime.tasks.values()].find(t => t.callId === 'foreground')!;
+    assert.equal(task.meta.delivery, 'foreground');
+    assert.equal(task.requestedDetach, undefined);
+    assert.equal(h.notifications.length, 0);
+    foregroundWork.resolve(ok()); assert.equal((await foreground).kind, 'result');
+  } finally { noticeWork.resolve(ok()); foregroundWork.resolve(ok()); await h.close(); }
 });
 
 test('reading result acknowledges completion and prevents duplicate notification', async () => {

@@ -20,6 +20,7 @@ interface Hooks {
   front?(ctx: ExtensionContext): Promise<void>;
   beforeStart?(event: BeforeAgentStartEvent): void;
   turnEnd?(): void;
+  beforeBind?(session: Awaited<ReturnType<typeof createAgentSession>>['session']): void;
 }
 
 // Real SDK and scripted provider, isolated from user resources and external models.
@@ -109,6 +110,7 @@ async function fixture(workCount = 1, hooks: Hooks = {}) {
     assert.deepEqual(loader.getExtensions().errors, []);
     ({ session } = await createAgentSession({ cwd: root, agentDir: root, resourceLoader: loader, settingsManager: settings,
       sessionManager, modelRuntime }));
+    hooks.beforeBind?.(session);
     await session.bindExtensions({ mode: 'rpc', onError: error => { errors.push(error); } });
     await session.setModel(modelRuntime.getModel('notification-fixture', 'fixture')!);
     unsubscribe = session.subscribe(event => {
@@ -333,21 +335,17 @@ test('SDK: compact completion after Stop flushes append-only without a new reque
   } finally { work.resolve(); interrupted.resolve(); await h.close(); }
 });
 
-// Observe the real public Promise without replacing delivery or the SDK runner.
-function rejectedSend(session: Awaited<ReturnType<typeof fixture>>['session']) {
-  const rejected = deferred<unknown>();
-  const send = session.sendCustomMessage.bind(session);
-  session.sendCustomMessage = (...args) => {
-    const promise = send(...args);
-    void promise.catch(error => rejected.resolve(error));
-    return promise;
-  };
-  return rejected.promise;
-}
-
 test('SDK: idle preparation failure waits for a legal prompt and recovers exactly once', { timeout: 15_000 }, async t => {
   let preparations = 0, fail = true;
-  const h = await fixture(1, { beforeStart(event) {
+  const rejection = deferred<unknown>();
+  const h = await fixture(1, { beforeBind(session) {
+    const send = session.sendCustomMessage.bind(session);
+    session.sendCustomMessage = (message, options) => {
+      const pending = send(message, options);
+      if (message.customType === 'meantime-completion') void pending.catch(error => rejection.resolve(error));
+      return pending;
+    };
+  }, beforeStart(event) {
     if (event.messageType !== 'custom' || event.message.customType !== 'meantime-completion') return;
     preparations++;
     if (fail) event.systemPromptOptions.sections['invalid section name'] = 'force real SDK preparation rejection';
@@ -355,9 +353,8 @@ test('SDK: idle preparation failure waits for a legal prompt and recovers exactl
   try {
     await h.session.prompt('start background work');
     t.mock.timers.enable({ apis: ['setTimeout'] });
-    const rejection = rejectedSend(h.session);
     h.release.resolve(); await h.completed.promise;
-    assert.match(String(await rejection), /Invalid system prompt section name/);
+    assert.match(String(await rejection.promise), /Invalid system prompt section name/);
     await nextTurn();
     assert.equal(h.tasks()[0]!.notification, 'pending');
     assert.deepEqual(h.batches(), []);
@@ -392,9 +389,17 @@ test('SDK: reopening the session file does not replay a consumed completion', { 
 });
 
 test('SDK: a rejected idle send cannot roll back an already consumed notification', { timeout: 15_000 }, async t => {
-  const h = await fixture();
   const failure = new Error('public settled observer failed after consumption');
   let consumed = false, threw = false;
+  const rejection = deferred<unknown>();
+  const h = await fixture(1, { beforeBind(session) {
+    const send = session.sendCustomMessage.bind(session);
+    session.sendCustomMessage = (message, options) => {
+      const pending = send(message, options);
+      if (message.customType === 'meantime-completion') void pending.catch(error => rejection.resolve(error));
+      return pending;
+    };
+  } });
   const unsubscribe = h.session.subscribe(event => {
     if (event.type === 'message_end' && event.message.role === 'custom' && event.message.customType === 'meantime-completion') {
       consumed = true;
@@ -408,9 +413,8 @@ test('SDK: a rejected idle send cannot roll back an already consumed notificatio
   try {
     await h.session.prompt('start background work');
     t.mock.timers.enable({ apis: ['setTimeout'] });
-    const rejection = rejectedSend(h.session);
     h.release.resolve(); await h.completed.promise;
-    assert.equal(await rejection, failure);
+    assert.equal(await rejection.promise, failure);
     await nextTurn();
     assert.equal(consumed, true);
     assert.equal(h.tasks()[0]!.notification, 'delivered');

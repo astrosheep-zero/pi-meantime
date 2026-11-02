@@ -29,7 +29,7 @@ pi -e ./index.mjs
 
 ## 人怎么用
 
-正常让模型执行工具即可。默认从前台开始，运行超过 **120 秒**自动转后台；运行中发送 steer 输入也可释放前台等待，但最早在调用进入执行后的 **3 秒**启动保护期结束时转后台。过早的 steer 会延迟到该期限处理，不忽略、不取消或重放执行，重复 steer 不延长保护期；期间完成的调用直接返回结果。**Ctrl+Shift+B**、`/meantime detach` 和显式 `"yes"` 不受此保护期限制，原有自动超时策略不变。`"no"` 只关闭计时转后台，不阻止这些用户操作；所有转后台仍须通过审批、调用进入和索引保存门槛。中断 `meantime wait` 仍立即释放等待，不取消底层操作。
+正常让模型执行工具即可。默认从前台开始，运行超过 **90 秒**自动转后台；用户发送 steer 输入（或外部真正触发新一轮的流式 `customMessage` steer）会按任务启动后的 **3 秒**期限释放前台等待，重复 steer 不延长期限，wait 等待会立即释放。只有 meantime 自己的后台完成通知，会等前台任务启动满 **30 秒**再通过通知交接器转后台并合批；若前台任务提前结束或因用户 steer 先交接，会重新检查并尽快投递。用户 steer 不会被通知等待推迟。上述交接都不取消或重放执行；**Ctrl+Shift+B**、`/meantime detach` 和显式 `"yes"` 不受这两个保护期限限制。`"no"` 只关闭计时转后台；所有转后台仍须通过审批、调用进入和索引保存门槛。
 
 | 命令 | 用途 |
 |---|---|
@@ -51,10 +51,9 @@ pi -e ./index.mjs
 bash({ command: "npm test", __background__: "yes" })
 
 meantime({ action: "list" })
-meantime({ action: "wait", ids: ["mt_1234abcd"], timeout: 30 })
-meantime({ action: "wait", ids: ["1234"], timeout: 0 })
+meantime({ action: "wait", ids: ["mt_1234abcd"] })
 meantime({ action: "wait", ids: ["1234", "5678"], mode: "any", timeout: 60 })
-meantime({ action: "wait", timeout: 30 })  // 等待当前所有未结束任务
+meantime({ action: "wait" })  // 等待当前所有未结束任务（默认最多 90s）
 meantime({ action: "cancel", ids: ["mt_1234abcd"] })
 ```
 
@@ -73,7 +72,7 @@ ID 用实际返回值替换；支持唯一前缀，可省略 `mt_`，有歧义�
 `meantime` 只有三个动作：
 
 - **list**：简短任务列表，默认 10 条；用 `offset`、`limit` 翻页，`limit` 最大 32。
-- **wait**：等待结束或超时，返回当前状态或保留结果。`timeout` 单位为**秒**，默认 **30**，可用小数，无上限；**0** 立即返回。中止等待不取消任务。
+- **wait**：等待结束或超时，返回当前状态或保留结果。`timeout` 单位为**秒**，默认 **90**，可用小数，无上限；**0** 立即返回。中止等待不取消任务。
 - **cancel**：请求取消，不保证远端操作停止或副作用回滚；以工具最终结果为准。
 
 `wait` 与 `cancel` 用 `ids` 指定任务，接受 1–32 项；`wait` 省略 `ids` 时等待当前所有未结束任务，`cancel` 必须给出。`mode: "all"`（默认）等全部结束，`"any"` 等任意一项结束；超时也会返回。批量回执含已结束结果及 `pending`，正文共享 32KiB 预算，被省略的结果可单独读取。
@@ -82,7 +81,7 @@ ID 用实际返回值替换；支持唯一前缀，可省略 `mt_`，有歧义�
 
 ## 原生 CodeMode 整段后台执行
 
-`codemode` 保留原名、raw JavaScript grammar、discovery、models、store 和原生 executor。没有第二套 sandbox，也不重写脚本。meantime 通过 facade 调用官方 `createCodemodeExtension`，通过 facade 的 `appendEntry` 加入 store 写入 guard，**不注册同名工具**；官方内建本身没有这个 guard。capture 后 `manageTools` 按 `sourceInfo.path === "builtin:codemode"` 识别真实内置 definition，仅包装其 execute，原 schema、grammar、prepareLoadout、renderers、来源与对象身份均不变。宿主桥只在当前实例保留 `_executeNestedToolCall`、原生 runner 的 `takeRecord`/`clear` 及 scope Map 的删除生命周期，drain 后按原 descriptor 归还，不替换全局 registry；carrier/fence/scope 桥全部保留。它不增加 `__background__` 参数：使用现有计时、Ctrl+Shift+B、steer 或 `/meantime detach` 分离**整段脚本的观察者**。CodeMode 根脚本与普通工具共用上述 3 秒 steer 启动保护，不另起脚本专用计时器。后续 await、局部变量、正常完成时的 `finally` 在同一次执行中继续，不重放脚本。
+`codemode` 保留原名、raw JavaScript grammar、discovery、models、store 和原生 executor。没有第二套 sandbox，也不重写脚本。meantime 通过 facade 调用官方 `createCodemodeExtension`，通过 facade 的 `appendEntry` 加入 store 写入 guard，**不注册同名工具**；官方内建本身没有这个 guard。capture 后 `manageTools` 按 `sourceInfo.path === "builtin:codemode"` 识别真实内置 definition，仅包装其 execute，原 schema、grammar、prepareLoadout、renderers、来源与对象身份均不变。宿主桥只在当前实例保留 `_executeNestedToolCall`、原生 runner 的 `takeRecord`/`clear` 及 scope Map 的删除生命周期，drain 后按原 descriptor 归还，不替换全局 registry；carrier/fence/scope 桥全部保留。它不增加 `__background__` 参数：使用现有90秒自动计时、Ctrl+Shift+B、3秒用户 steer 或 `/meantime detach` 分离**整段脚本的观察者**。meantime 自己的完成通知可在前台任务启动满30秒后交接，但不会延长或覆盖用户 steer 的3秒期限。后续 await、局部变量、正常完成时的 `finally` 在同一次执行中继续，不重放脚本。
 
 已知 SDK 限制：capture 使用默认 factory options，不保留 `models:false`；CLI 内置走默认 options，无影响。
 
@@ -107,7 +106,7 @@ ID 用实际返回值替换；支持唯一前缀，可省略 `mt_`，有歧义�
 
 - 后台完成通知含任务 ID、状态、可选退出码、存在时的 `Output: <path>`，以及约 1KiB 的文本尾部。尾部标为不可信工具数据，不是指令，不含图片或结构化结果；需要更多信息时用单任务 `wait` 读取保留结果，或读取输出文件。
 - TUI 展示为状态字形卡片：`✓/✕/⊘/●/?` 单通道表达完成/失败/取消/运行/未知，同一行给出命令、退出码、耗时和任务 ID；单任务通知附带输出尾部预览，展开查看完整尾部和输出路径。面向模型的说明文字不占用屏幕；`meantime` 调用行显示动作摘要（`wait mt_a, mt_b · 30s`）而不是原始 JSON。
-- Agent 工作期间，完成通知先走 steering 快速通道，在 loop 下次拉取时可见；请求边界仍以 `triggerTurn:false` 暂存积压通知，空闲时唤起新一轮。UI 审批、压缩或树导航期间延后。每条最多合并 16 项，请求边界交接所有 eligible 批次。正在被 `wait` 等待或已成功读取的任务不再交接；超时或中断后未取得的结果仍会通知，已交接的消息无法撤回。
+- Agent 工作期间，完成通知先走 steering 快速通道，在 loop 下次拉取时可见；请求边界仍以 `triggerTurn:false` 暂存积压通知，空闲时唤起新一轮。UI 审批、压缩或树导航期间延后。只有 meantime 自己的完成通知会等待受保护的前台任务启动满30秒再交接并合批；前台提前结束或被用户 steer 提前交接后会重新计算通知时机。通知造成的交接不会缩短或延长用户 steer 的3秒期限。外部 followUp、nextTurn 或 `triggerTurn:false` customMessage 不算 steer。每条最多合并 16 项，请求边界交接所有 eligible 批次。正在被 `wait` 等待或已成功读取的任务不再交接；超时或中断后未取得的结果仍会通知，已交接的消息无法撤回。
 - 只有宿主 `message_end` 才确认消费，入队不等于送达。宿主队列排空后，未消费的快速通道通知返回本地 outbox；Stop 清队列后及其后的空闲完成通知都 append-only 补写，不自动重新唤起。单纯 abort 未清队列时保留原消息，不重复补投。空闲唤起准备失败后不再自动重试唤起，未消费通知由后续 idle flush 或下一合法请求以不触发方式补写。消费确认先保护记录，待宿主保存通知后再持久化 `delivered` 索引并允许裁剪；崩溃发生在回执落盘前仍可能补发一次，不保证严格 FIFO 或崩溃场景下恰好一次。
 - **Pi 1.3.0 已知缺口**：树导航取消/失败没有结束事件，期间积压的通知可能继续等待。任务仍保留 pending，可主动读取；下一次 agent settled、压缩结束等可用事件会重新尝试，不能保证无后续事件时自动补发。
 - 任务索引及完成文本保存在 **Pi 会话自定义条目**中。同一会话的树导航共享任务；fork/clone 不接管原任务。恢复时已有完成记录可读，缺少最终记录的任务显示 `outcome_unknown`，绝不自动重放业务；已有持久化 delivered/observed 回执的通知不因重启重发，尚未完成交接的 pending 通知仍会补发。

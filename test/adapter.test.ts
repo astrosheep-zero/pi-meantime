@@ -158,9 +158,9 @@ test('detached finalized results feed wait, completion tail and native renderer 
   } finally { work.resolve(ok().result); await h.close(); }
 });
 
-for (const trigger of ['timeout', 'steer', 'shortcut', 'command'] as const) test(`${trigger} detaches once without aborting, no-mode only disables timer`, async t => {
+for (const trigger of ['timeout', 'steer', 'custom', 'shortcut', 'command'] as const) test(`${trigger} detaches once without aborting, no-mode only disables timer`, async t => {
   let now = 1000;
-  if (trigger === 'steer') t.mock.method(performance, 'now', () => now);
+  if (trigger === 'steer' || trigger === 'custom') t.mock.method(performance, 'now', () => now);
   const work = deferred<Result>(); let signal: AbortSignal | undefined;
   const h = await setup([basicTool('mcp__slow', (_id, _args, s) => { signal = s; return work.promise; })], { autoDetachMs: 10 });
   try {
@@ -172,11 +172,36 @@ for (const trigger of ['timeout', 'steer', 'shortcut', 'command'] as const) test
         const images: Content[] = [{ type: 'image', data: 'eA==', mimeType: 'image/png' }];
         const event = { type: 'input' as const, text: 'next', source: 'rpc' as const, streamingBehavior: 'steer' as const, images };
         assert.deepEqual(await h.pi.emit('input', event), [{ action: 'continue' }]); assert.equal(event.images, images);
+      } else if (trigger === 'custom') {
+        now += 3000; h.pi.isStreaming = true;
+        await h.pi.sendCustomMessage({ customType: 'ext', content: 'wake', display: true }, { deliverAs: 'steer', triggerTurn: true });
       } else if (trigger === 'shortcut') await h.pi.shortcuts.get('ctrl+shift+b')!(h.pi.ctx);
       else await h.pi.commands.get('bg')!('detach', h.pi.ctx);
     }
-    assert.equal(snapshot(await running).detachReason, trigger === 'command' ? 'shortcut' : trigger);
+    assert.equal(snapshot(await running).detachReason, trigger === 'command' ? 'shortcut' : trigger === 'custom' ? 'steer' : trigger);
     assert.equal(signal!.aborted, false); assert.equal(h.pi.abortCalls, 0);
+  } finally { work.resolve(ok().result); await h.close(); }
+});
+
+test('custom-message steer detaches only for steering delivery that can trigger a turn', async t => {
+  let now = 1000; t.mock.method(performance, 'now', () => now);
+  const work = deferred<Result>(); const h = await setup([basicTool('mcp__slow', () => work.promise)]);
+  try {
+    const running = h.pi.call('mcp__slow', { __background__: 'no' });
+    await until(() => h.pi.trace.some(t => t.type === 'execute' && t.name === 'mcp__slow'));
+    await h.pi.sendCustomMessage({ customType: 'ext', content: 'idle', display: true }, { deliverAs: 'steer', triggerTurn: true });
+    assert.equal((h.instance.inspect() as { tasks: Snapshot[] }).tasks[0]!.delivery, 'foreground');
+    now += 2000;
+    h.pi.isStreaming = true;
+    await h.pi.sendCustomMessage({ customType: 'ext', content: 'later', display: true }, { deliverAs: 'followUp', triggerTurn: true });
+    await h.pi.sendCustomMessage({ customType: 'ext', content: 'next', display: true }, { deliverAs: 'nextTurn', triggerTurn: true });
+    await h.pi.sendCustomMessage({ customType: 'ext', content: 'defer', display: true }, { deliverAs: 'steer', triggerTurn: false });
+    await sleep(5);
+    assert.equal((h.instance.inspect() as { tasks: Snapshot[] }).tasks[0]!.delivery, 'foreground');
+    now += 1000;
+    h.pi.isStreaming = true;
+    await h.pi.sendCustomMessage({ customType: 'ext', content: 'steer', display: true }, { deliverAs: 'steer', triggerTurn: true });
+    assert.equal(snapshot(await running).detachReason, 'steer');
   } finally { work.resolve(ok().result); await h.close(); }
 });
 
@@ -216,7 +241,7 @@ test('steer inherited before permission admission gets the full startup window a
   } finally { approval.resolve(); work.resolve(ok().result); await h.close(); }
 });
 
-for (const trigger of ['steer', 'shortcut', 'command'] as const) test(`${trigger} releases pending waits without cancelling or observing unfinished work`, async () => {
+for (const trigger of ['steer', 'custom', 'shortcut', 'command'] as const) test(`${trigger} releases pending waits without cancelling or observing unfinished work`, async () => {
   const work = deferred<Result>(); let signal: AbortSignal | undefined;
   const h = await setup([basicTool('mcp__slow', (_id, _args, s) => { signal = s; return work.promise; })]);
   try {
@@ -225,6 +250,7 @@ for (const trigger of ['steer', 'shortcut', 'command'] as const) test(`${trigger
     const waiting = h.pi.call('meantime', { action: 'wait', ids: [id], timeout: 600 });
     await until(() => h.pi.trace.filter(t => t.type === 'execute' && t.name === 'meantime').length === 2);
     if (trigger === 'steer') await h.pi.emit('input', { type: 'input', text: 'next', source: 'rpc', streamingBehavior: 'steer' });
+    else if (trigger === 'custom') { h.pi.isStreaming = true; await h.pi.sendCustomMessage({ customType: 'ext', content: 'wake', display: true }, { deliverAs: 'steer', triggerTurn: true }); }
     else if (trigger === 'shortcut') await h.pi.shortcuts.get('ctrl+shift+b')!(h.pi.ctx);
     else await h.pi.commands.get('meantime')!('detach', h.pi.ctx);
     const released = await Promise.race([waiting, sleep(1000).then(() => { throw new Error('detach did not release wait'); })]);
@@ -384,7 +410,8 @@ test('wait is the single result path, with immediate reads and fractional second
   try {
     const schema = h.pi.definitions.get('meantime')!.parameters as { properties: Record<string, unknown>; additionalProperties: boolean };
     assert.deepEqual(schema.properties.action, { type: 'string', enum: ['list', 'wait', 'cancel'] });
-    assert.equal((h.pi.definitions.get('meantime')!.parameters.properties as Record<string, Record<string, unknown>>).timeout!.minimum, 0);
+    assert.equal((schema.properties.timeout as { minimum: number; description: string }).minimum, 0);
+    assert.match((schema.properties.timeout as { description: string }).description, /default 90/);
     assert.equal('timeout_ms' in schema.properties, false);
     assert.equal('id' in schema.properties, false);
     assert.equal(schema.additionalProperties, false);
@@ -472,7 +499,7 @@ test('multi-task wait shares its text budget for Bash and MCP, reports omission,
       assert.equal(blocks.filter(text => /^(A+|B+|M+)$/.test(text)).reduce((n, text) => n + Buffer.byteLength(text), 0), 32768);
       const notices = blocks.filter(text => text.startsWith('Truncated; use meantime'));
       assert.equal(notices.length, 1); assert.ok(notices[0]!.includes(handles[1]!.id));
-      assert.match(notices[0]!, /use meantime\(action="wait", ids=\["[^"]+"\], timeout=0\) for full output/);
+      assert.match(notices[0]!, /use meantime\(action="wait", ids=\["[^"]+"\]\) for full output/);
       assert.doesNotMatch(blocks.join('\n'), /Output:|retention limit/);
       for (const handle of handles) {
         const single = await h.pi.call('meantime', { action: 'wait', timeout: 0, ids: [handle.id ]});

@@ -15,6 +15,7 @@ export interface HostSession extends DeliveryHost {
   getAllTools: PiHost['getAllTools'];
   getToolDefinition(name: string): Tool | undefined;
   readonly agent: DeliveryHost['agent'] & { toolExecution?: 'parallel' | 'sequential' };
+  sendCustomMessage: AgentSession['sendCustomMessage'];
   readonly extensionRunner: object;
   readonly resourceLoader: { getExtensions(): { runtime: { refreshTools(): void } } };
   _beforeToolCall(context: BeforeToolCallContext, parentId?: string): Promise<BeforeToolCallResult | undefined>;

@@ -3,6 +3,7 @@ import { Text, getCapabilities, getImageDimensions, imageFallback, stripTerminal
   matchesKey, SelectList, truncateToWidth, visibleWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
 import type { Config } from './config.ts';
 import type { Context, EventHandler, EventMap, Json, PiHost, Result, Tool } from './protocol.ts';
+import { override } from './codemode.ts';
 import { captureSession, manageTools } from './host.ts';
 import type { HostSession, ManagedCall } from './host.ts';
 import { CONTROL, isRecord, projectResult } from './schema.ts';
@@ -117,7 +118,7 @@ function storedResult(task: Snapshot, source: Result, budget?: { remaining: numb
     : source.content.some(b => b.type === 'image') ? 'Images omitted from receipt; retained in task result.' : '';
   return {
     content: [{ type: 'text', text: receipt(task) }, ...content,
-      ...(inlineOmitted ? [{ type: 'text' as const, text: `Truncated; use meantime(action="wait", ids=["${task.id}"], timeout=0) for full output.` }] : []),
+      ...(inlineOmitted ? [{ type: 'text' as const, text: `Truncated; use meantime(action="wait", ids=["${task.id}"]) for full output.` }] : []),
       ...(omitted ? [{ type: 'text' as const, text: omitted }] : []),
       ...(source.persistenceOmissions?.length ? [{ type: 'text' as const, text: `Non-JSON fields omitted (${source.persistenceOmissions.join(', ')}); retained in memory.` }] : []),
     ],
@@ -144,8 +145,11 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   let host: ReturnType<typeof manageTools> | undefined;
   // Only live public call identities may donate intent to later nested calls.
   const calls = new Map<string, { parent?: string; intent?: 'steer' | 'shortcut' }>();
-  function userDetach(reason: 'steer' | 'shortcut'): number {
+  function markCallsDetach(reason: 'steer' | 'shortcut'): void {
     for (const call of calls.values()) if (reason === 'shortcut' || call.intent !== 'shortcut') call.intent = reason;
+  }
+  function userDetach(reason: 'steer' | 'shortcut'): number {
+    markCallsDetach(reason);
     runtime?.releaseWaiters();
     return runtime?.detachAll(reason) ?? 0;
   }
@@ -161,6 +165,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   const disposers: (() => void)[] = [];
   let runtime: TaskRuntime | undefined;
   let delivery: CompletionDelivery | undefined;
+  let restoreSend: (() => void) | undefined;
   let currentCtx: Context | undefined;
   let currentOwner: string | undefined;
   let live = false;
@@ -311,7 +316,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
 
   pi.registerTool({
     name: 'meantime', label: 'Background tasks', exposure: 'model-only',
-    description: 'List, wait on, or cancel background tasks. Tasks notify automatically when done — only call wait when blocked on a result, or with timeout: 0 to read full output.',
+    description: 'List, wait on, or cancel background tasks. Tasks notify automatically when done — only call wait when blocked on a result or to read full output.',
     parameters: { type: 'object', properties: {
       action: { type: 'string', enum: ['list', 'wait', 'cancel'] },
       ids: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 32,
@@ -319,7 +324,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       mode: { type: 'string', enum: ['any', 'all'],
         description: '"all" (default, wait for all targets) or "any" (return when the first settles).' },
       timeout: { type: 'number', minimum: 0,
-        description: 'Max wait in seconds (default 30; 0 returns current state/output immediately).' },
+        description: 'Max wait in seconds (default 90; 0 returns current state/output immediately).' },
       offset: { type: 'integer', minimum: 0 },
       limit: { type: 'integer', minimum: 1, maximum: 32 },
     }, required: ['action'], additionalProperties: false },
@@ -340,7 +345,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
         const text = tasks.map(taskReceipt).join('\n') || 'No meantime tasks.';
         const result = textResult(`${text}${page.next_offset !== null ? `\nMore: offset=${page.next_offset}` : ''}`, page); result.structuredContent = json(page); return result;
       }
-      const timeout = (typeof params.timeout === 'number' && params.timeout >= 0 ? params.timeout : 30) * 1000;
+      const timeout = (typeof params.timeout === 'number' && params.timeout >= 0 ? params.timeout : 90) * 1000;
       if (params.action !== 'wait' && params.action !== 'cancel') throw new Error('Unknown meantime action');
       const cancel = params.action === 'cancel';
       if (!cancel && params.mode !== undefined && params.mode !== 'any' && params.mode !== 'all') throw new Error('mode must be any or all');
@@ -431,6 +436,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     ctx.ui.setWidget('bg-control', undefined);
     const boundOwner = currentOwner;
     const session = (options.connect ?? captureSession)(pi);
+    const sendCustomMessage = session.sendCustomMessage.bind(session);
     const records = new Map<string, TaskRecord>();
     // Jobs are real side effects shared by this session's branches. Forks copy
     // entries but have a new owner, so they never adopt the original jobs.
@@ -453,7 +459,11 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       }
     }
     const created: TaskRuntime = new TaskRuntime(config, {
-      notify(tasks) { return boundDelivery.send(tasks); },
+      notify(tasks) {
+        if (config.detachOnSteer && boundDelivery.canSteer()) markCallsDetach('steer');
+        return boundDelivery.send(tasks);
+      },
+      canSteer() { return boundDelivery.canSteer(); },
       changed() { updateStatus(); refreshPanel?.(); },
       observed(id) { boundDelivery.forget(id); },
       index(change) {
@@ -485,7 +495,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
         return { text: `${receipt(t)}${tail}`, hasMore };
       });
       return { customType: 'meantime-completion',
-          content: `<system-reminder>\n${entries.map(e => e.text).join('\n\n')}${entries.some(e => e.hasMore) ? '\n\nUse meantime(action="wait", ids=[...], timeout=0) for full output.' : ''}\n</system-reminder>`,
+          content: `<system-reminder>\n${entries.map(e => e.text).join('\n\n')}${entries.some(e => e.hasMore) ? '\n\nUse meantime(action="wait", ids=[...]) for full output.' : ''}\n</system-reminder>`,
           display: true, details: { taskIds: tasks.map(t => t.id),
             tasks: tasks.map(t => ({ id: t.id, tool: t.tool, state: t.state,
               ...(t.command !== undefined ? { command: t.command } : {}),
@@ -498,12 +508,20 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
               // same bytes appear in the prose receipt's untrusted-output.
               ...(created.tasks.get(t.id)?.outputTail ? { outputTail: created.tasks.get(t.id)!.outputTail } : {}) })) },
         };
-    });
+    }, sendCustomMessage);
     delivery = boundDelivery;
+    restoreSend = override(session, 'sendCustomMessage', function (this: HostSession, message, opts) {
+      const pending = sendCustomMessage(message, opts);
+      if (config.detachOnSteer && opts?.triggerTurn !== false
+        && opts?.deliverAs !== 'followUp' && opts?.deliverAs !== 'nextTurn'
+        && this.isStreaming) userDetach('steer');
+      return pending;
+    });
     host = manageTools(session, config, run, diagnostic, options.codemodeExecute);
     updateStatus();
   }
   async function stop(): Promise<void> {
+    restoreSend?.(); restoreSend = undefined;
     delivery?.close(); delivery = undefined;
     closePanel?.();
     host?.closeAdmission();
@@ -585,7 +603,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       }
     } else if (!command) {
       if (ctx.mode === 'tui') { await taskPanel(ctx); return; }
-      controlFeedback(ctx, `${taskList(assertRuntime(ctx).list())}\nCancel: /meantime cancel <id>; output: ask meantime(action="wait", ids=[...], timeout=0).\nManaged tools: ${host?.names().length ?? 0}; warnings: ${diagnostics.size}.`);
+      controlFeedback(ctx, `${taskList(assertRuntime(ctx).list())}\nCancel: /meantime cancel <id>; output: ask meantime(action="wait", ids=[...]).\nManaged tools: ${host?.names().length ?? 0}; warnings: ${diagnostics.size}.`);
     } else if (rest.length) controlFeedback(ctx, 'Use /meantime [detach|rescan|cancel <id>]');
     else if (command === 'detach') {
       assertRuntime(ctx);

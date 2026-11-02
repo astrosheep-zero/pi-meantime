@@ -421,7 +421,7 @@ try {
   assert.equal(session.getSessionStats().tokens.input, reopenedUsage, 'reopened retrieval does not recharge');
   assert.deepEqual(errors, []);
   console.log('NATIVE_CODEMODE_PASS', JSON.stringify({ sessionFile: file, linkedCompletion: id, usageInput: reopenedUsage,
-    verified: ['in-place builtin/zero replacement warnings/metadata and restoration', 'normal continuation/local/finally/post-hook values', 'nested IDs/events/records', 'independent child yes with timer off', 'late grandchildren/scope delta accounting', 'BigInt/cycle preflight/JSONL parent integrity', 'wait interruption', '3s inherited steer/repeated steer/native continuation', 'native two-worker capacity/direct controls/only mode', 'cancel/tree drain/reload including finished roots', 'JSONL/reopened usage/repeated waits'] }));
+    verified: ['in-place builtin/zero replacement warnings/metadata and restoration', 'normal continuation/local/finally/post-hook values', 'nested IDs/events/records', 'independent child yes with timer off', 'late grandchildren/scope delta accounting', 'BigInt/cycle preflight/JSONL parent integrity', 'wait interruption', '3s inherited user steer/repeated steer/native continuation', 'native two-worker capacity/direct controls/only mode', 'cancel/tree drain/reload including finished roots', 'JSONL/reopened usage/repeated waits'] }));
 } finally {
   for (const pending of gates.values()) pending.resolve();
   try {
