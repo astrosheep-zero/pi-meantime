@@ -47,6 +47,8 @@ test('completion card answers what finished, how it ended and what it produced',
   const expanded = render(renderCompletion(message, { expanded: true }, plain));
   assert.doesNotMatch(expanded, /^\s*bash$/m, 'a bash task needs no tool label under its command');
   assert.match(expanded, /Output: \/tmp\/out\.txt/);
+  const psExpanded = render(renderCompletion({ ...message, details: { taskIds: [done.id], tasks: [{ ...done, tool: 'powershell' }] } }, { expanded: true }, plain));
+  assert.doesNotMatch(psExpanded, /^\s*powershell$/m, 'a powershell task needs no tool label under its command');
 });
 
 test('multi-task completion cards stay one line per task; failure and cancellation read at a glance', () => {

@@ -1,8 +1,10 @@
 # Pi 宿主接口边界
 
-目标版本：**Pi 1.3.0**。同名管理复用官方执行 helper，但不是仅靠公开 ExtensionAPI 实现的插件；升级宿主需要重新核对 adapter。
+开发与完整回归基线为原版 **Pi 1.3.0**；通知集成另覆盖原版 **Pi 1.5.0**。通知只通过现有公开消息与生命周期接口交接，不依赖核心补丁或新增宿主方法。工具 adapter 仍有下文列出的版本约束，升级需复核；验证范围见 [VALIDATION.md](VALIDATION.md)。
 
-## Pi 1.3.0 接口与本扩展用法
+同名管理复用官方执行 helper，但不是仅靠公开 ExtensionAPI 实现的插件。
+
+## 宿主接口与本扩展用法
 
 | 接口 | 用途 |
 |---|---|
@@ -16,11 +18,13 @@
 | `session._beforeToolCall` | 进入原生权限链前按代次记录 validated args 的弱身份、raw 和 parent；不决定/不重跑权限 |
 | `tool_execution_start/end` | start 记录 steer 父链；end 发布句柄、清理 primitive fallback；不再保存 raw |
 | `ui_prompt_start/end` | 审批期间暂停 detach 和通知 |
-| `session.sendCustomMessage()` / `session.subscribe()` / `agent.hasQueuedMessages()` | 活动 run steering 快速投递、请求边界无触发暂存、Stop 后 idle append-only 及空闲唤起；公开 message_end 确认消费，队列排空后回收未消费副本；agent-emitted 消息在 message_end 后才由宿主 append，delivered 回执须跨后续屏障落盘 |
+| `session.sendCustomMessage()` / `session.subscribe()` / `ctx.isIdle()` | streaming 期间保留自有 outbox，公开边界 `triggerTurn:false` 暂存；普通 idle 完成主动 `triggerTurn:true` 唤起，未消费失败退避改 append-only，Stop 禁止自动唤起并取消 retry；仅公开 message_end 确认消费，消息 append 后才持久化 delivered |
 | `appendEntry()` | 非模型上下文的任务索引 |
 | before_agent_start、turn_end、settled、compact、tree 事件 | 请求边界交接及受 Stop/失败暂停约束的恢复 |
 
-`registerTool` 仅添加 `model-only` 的 meantime 控制工具，不替代 Bash、不注册受管工具别名，也不注册 `codemode`。meantime 用 facade 调用官方 `createCodemodeExtension`，通过 facade 的 `appendEntry` 加入 store 写入 guard，但 capture 后不真正注册；官方内建本身没有这个 guard。`manageTools` 按 `sourceInfo.path === "builtin:codemode"` 认领真实内置 definition，只包装其 execute，原 prepareLoadout、exposure、schema/grammar、renderers、来源、描述与对象身份保持原语义。builtin 被禁用或 SDK 未加载时不自动补一份，真实第三方同名替换 warning 不隐藏；SDK 需要整段托管时须以命名 `builtin:codemode` 的 InlineExtension（`{ name: "codemode", builtin: true, ... }`）加载，非命名的自定义 codemode 不当原生定义认领。tool_search 不替换。carrier/fence/scope 桥保留。已知 SDK 限制：capture 使用默认 factory options，不保留 `models:false`；CLI 默认无影响。不存在 blockOriginalCalls 路由守卫、注册表轮询配置或旧代理兼容层。
+通知不会访问或包装宿主私有队列，不新增拦截器或消息转换注册表。交接前按 observed/waiters 重筛；成功 wait 抑制尚未交接的结果，等待结束重新推进未读项。交给公开 sendCustomMessage 后由宿主调度，不承诺紧邻请求送达或绝对去重，不删除已展示历史。准备失败未必有公开 Stop 信号，因此未消费失败后一律关闭主动唤起，有限退避只 append-only；已消费后的晚拒绝不触发这项降级。
+
+`registerTool` 仅添加 `model-only` 的 meantime 控制工具，不替代 Bash / PowerShell、不注册受管工具别名，也不注册 `codemode`。meantime 用 facade 调用官方 `createCodemodeExtension`，通过 facade 的 `appendEntry` 加入 store 写入 guard，但 capture 后不真正注册；官方内建本身没有这个 guard。`manageTools` 按 `sourceInfo.path === "builtin:codemode"` 认领真实内置 definition，只包装其 execute，原 prepareLoadout、exposure、schema/grammar、renderers、来源、描述与对象身份保持原语义。builtin 被禁用或 SDK 未加载时不自动补一份，真实第三方同名替换 warning 不隐藏；SDK 需要整段托管时须以命名 `builtin:codemode` 的 InlineExtension（`{ name: "codemode", builtin: true, ... }`）加载，非命名的自定义 codemode 不当原生定义认领。tool_search 不替换。carrier/fence/scope 桥保留。已知 SDK 限制：capture 使用默认 factory options，不保留 `models:false`；CLI 默认无影响。不存在 blockOriginalCalls 路由守卫、注册表轮询配置或旧代理兼容层。
 
 ## 非官方接缝
 

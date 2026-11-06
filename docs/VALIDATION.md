@@ -1,37 +1,56 @@
 # 验证与复跑
 
-目标宿主 / SDK：**Pi 1.3.0**。本页说明验证方法与边界，不保存交付回执、测试运行日志或历史验收结论。
+完整检查使用锁定的原版 **Pi 1.3.0 SDK**；通知集成另覆盖已安装的原版 **Pi 1.5.0 SDK**。不修改 Pi、不注入 Agent 方法、不混用其他版本 Agent 源码。本页说明方法和边界，不保存交付回执或历史验收结论。
 
 ## 本地入口
 
+已有依赖时直接运行，无需安装或构建：
+
 ```sh
-npm ci --ignore-scripts
 npm run check
-node scripts/pi-smoke.mjs
-node --experimental-strip-types scripts/sdk-cancel-permissions.mjs
+node --experimental-strip-types --test test/notifications-sdk.test.ts
 ```
 
-`npm run check` 负责类型检查及单元/组件回归；SDK 脚本使用真实 AgentSession 和本地脚本化 provider，不需要外部模型调用。是否通过应以当前源码实际运行结果为准，不能从本文推断。
+`npm run check` 包括类型检查、单元/组件回归、真实 SDK 通知及 CodeMode 集成。SDK 使用本地脚本化 provider，无外部模型请求。`scripts/sdk-codemode.mjs` 的精确 usage 与容量预期对应锁定的 1.3.0，不把较新宿主的 usage 字段/FIFO 行为混进 pinned 检查；1.5.0 的独立证据只覆盖通知集成。
+
+验证另一个原版安装的通知集成时，可在 `/tmp` 创建一个仅重定向 vendor 模块来源的 Node preload。它选择安装目录内完整的一套 SDK/Agent/AI，不补造方法或改写宿主：
+
+```sh
+cat > /tmp/meantime-stock-sdk-loader.mjs <<'EOF'
+import { registerHooks } from 'node:module';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const parentURL = pathToFileURL(resolve(process.env.PI_TEST_HOST_MODULES,
+  '@earendil-works/pi-coding-agent/__meantime-check__.mjs')).href;
+registerHooks({ resolve(specifier, context, nextResolve) {
+  return nextResolve(specifier, specifier.startsWith('@earendil-works/')
+    ? { ...context, parentURL } : context);
+}});
+EOF
+PI_TEST_HOST_MODULES=/path/to/stock/pi/node_modules \
+node --import /tmp/meantime-stock-sdk-loader.mjs --experimental-strip-types --test test/notifications-sdk.test.ts
+```
+
+复跑时移除旧源码 resolver 的 `NODE_OPTIONS`。不能用 patched core、队列方法 shim 或混合源码通过冒充原版 SDK 通过。
 
 ## 关键检查
 
 | 层次 | 应检查的行为 |
 |---|---|
-| Schema / adapter | 可选控制字段在原 preparer 前移除；原生描述、元数据和 exposure 保留；不兼容、隐藏及顺序工具不接管；同步 refresh → reconcile → 必要时第二次 refresh 更新实际获胜定义，无轮询；dispose 不覆盖第三方修改 |
-| CodeMode 原地接管 | 不注册同名 codemode；meantime 通过 facade 的 `appendEntry` 加入 store 写入 guard，官方工厂本身不生成；按 `sourceInfo.path === "builtin:codemode"` 认领真实 definition，仅包装 execute；schema、grammar、prepareLoadout、renderers、来源与对象身份不变；refresh 重建、dispose 恢复；builtin 禁用或 SDK 未加载时不自动补一份；SDK 需命名 `builtin:codemode` InlineExtension，非命名自定义 codemode 不认领；第三方同名替换 warning 不隐藏；SDK 自定义 options 限制见 [API-CONTRACT.md](API-CONTRACT.md) |
-| 原生管线对照 | 独立的无扩展 session 与受管同名调用对照；准备/校验/全部权限各一次，拒绝不 admission、不执行；before 在权限链前标记 token/raw/parent，不决定/不重跑权限；权限修改参数后不重复验证 |
-| 完成边界 | 原 execute、完整结果钩子与图片处理各一次；原 name / ID / parent 保留；后注册权限 handler 的 denial/mutation 不被绕过；primitive JSON repair、对象 fence 的重叠同 ID 隔离、挂起审批跨 reload 保留旧代次；最终 Outcome.result 原样保存，权威 Outcome.isError 独立保留，前台返回与 wait 回执正确投影；content、details、structuredContent 脱敏进入保留结果及通知尾部；句柄不进入原钩子，admission 失败不跳过原生完成路径 |
-| 真实 SDK 发现与调用 | builtin Codemode 的描述、ALL_TOOLS、searchTools 及独立 tool_search 只有原名候选；Bash、MCP、扩展工具均走同一路径；无 outputSchema 的工具也能从 Codemode 取得后台句柄 |
-| runtime / 取消 | auto、yes、no、提前 steer、快捷键/命令 detach、单/批量 wait、通知已读竞态、审批和索引失败；父取消与 detach 后 job 取消隔离；原生抛错和取消按最终 Outcome 分类 |
-| 通知交接 | 任务完成/句柄发布两种先后；活动 run steering 快速交接，审批 continuation 完成后下一请求可见；17 个 eligible 任务分成每条最多 16 个的全部批次并进入同一请求；交接前原子 queued，公开 message_end 确认消费，queued 保留；消息 append 后才持久化 delivered，未落回执的记录不可裁剪；真实 session 文件重开不重复已消费通知；Stop 清队列后 append-only 恢复且不自动复活，Stop 后新完成的 idle 通知及 compact 结束后恢复的通知同样 append-only；单纯 abort 保留原队列副本不重复补投；队列回收不消耗失败预算；空闲准备失败只回退未消费项，下一合法请求恢复；busy 恢复、已读/waiter 抑制保持语义 |
-| 生命周期 / 保存 | 重注册、撤回/恢复、MCP 迟到、reload / session 替换；dispose 撤销代次，身份/liveness 检查阻止旧 finalizer 和嵌套分派进入新 runner/runtime；挂起审批跨 reload 保留旧 token；批准后取消且未 execute 的对象 frame 随 validated args 弱键回收；primitive fallback 由 after / tool_execution_end 清理；tool_execution_start 记录 steer 父链，tool_execution_end 发布句柄，最终 shutdown 后的晚到 no-after 标记待 session GC；before dispose 恢复原 descriptor/原型 lookup，after fence 常驻；恢复 text-only、缺结果为 outcome_unknown、不重放、不删除原生文件；晚到 producer 不提前释放本地配额 |
+| Schema / adapter | 原名与元数据保留；控制字段在原 preparer 前剥离；权限完整一次，拒绝不启动 producer；refresh 同步 reconcile；dispose 按归属恢复 |
+| CodeMode | 只包装真实 builtin execute，不重复注册；carrier/fence/scope 保留；脚本局部状态与正常 finally 连续执行，不重放；显式后台子任务独立；完成关联记录、lateScope、JSON 序列化及 usage 不重计；原版 pinned SDK 的原生容量/取消/reload 回归 |
+| runtime / 取消 | auto/yes/no、三秒用户 steer、快捷键和 detach；通知不触发 detach、不释放其他任务 wait；取消 observer 不取消 producer；错误按最终 Outcome 裁决 |
+| busy / idle 通知 | busy completion 保留 pending，不移入宿主 steering；公开边界交接每批最多16项，17项最终全部到达；已空闲完成主动发送 triggerTurn:true，无需其他事件；审批 continuation 与压缩结束后恢复推进 |
+| wait 交接前抑制 | 单项/批量成功 wait 抑制尚未交接结果；活跃 waiter 暂停通知；timeout 返回的已有结果被 observed，未返回的结果在 waiter 释放后重新推进；abort 不假装读取、不取消 producer |
+| 失败 / Stop / 清理 | 真实准备拒绝（gated beforeStart + abort + invalid section）只降级 append-only，不再次 wake；250ms/1000ms 有限退避且其他回调不绕过；耗尽失败可见、完整结果保留并保护免裁剪，后批能推进；Stop 取消 retry 并禁止复活，cleanup 取消 generation timers；已消费后 Promise 晚拒绝不重投，也不抑制后续普通 idle 唤起 |
+| 保存 / 生命周期 | 仅真实 message_end 确认消费，消息保存后才持久化 delivered，未落盘回执保留保护；原版真实会话重开不重投已消费消息；session/reload 代次隔离，真实副作用不自动重放；已有工具/CodeMode adapter 的生命周期回归继续通过 |
 
-测试应对照**不安装扩展时的同一个工具**，不能以 fake host 代替原生结果语义。单测、真实 SDK 与真实终端分层报告，不以一层通过代替另一层。
+测试对照**不安装扩展时的同一个工具**，不能以 FakePi 代替原生结果语义。通知失败故障注入位于公开 send 边界，另有真实 SDK 准备失败回归；不注入队列能力或构造假的 delivered 回执。跨批不保证 FIFO，测试只钉实际契约。
 
 ## 未覆盖与宿主限制
 
-本轮**不声称完成真实 TUI 验证**。测试触发 input / shortcut、模拟选择器或 RPC-mode SDK 不等于真实终端按键、steer 排队、权限菜单或 RPC transport 验收。
+允许通知等到较晚安全边界，不承诺紧邻请求看到；交给宿主后不能撤回，接受 handoff/wait 的窄重复竞态，不承诺崩溃恰好一次。准备失败未必发出公开取消事件，故统一降级为 append-only 重试；下一次明确用户回合才恢复主动唤起。公开 Stop settled 事件额外取消 retry，准备阶段不可见取消不靠私有字段或错误文本猜测。
 
-真实远端 HTTP/SSE MCP、认证与晚到 elicitation、小时/天级长跑、断电/fsync、跨进程并发写入，以及全部终端/第三方客户端不在此页承诺范围。取消沿用原生协作语义，不保证远端回滚；partial updates 不保证经过最终结果钩子脱敏；晚到 nested bookkeeping / usage 不保证回填已完成父消息及全局统计。
+不声称完成真实 TUI 按键、RPC transport、远端 HTTP/SSE MCP、认证/晚到 elicitation、小时/天级长跑、断电/fsync 或跨进程并发写入验收。取消沿用原生协作语义，不保证远端回滚；partial updates 不保证经过最终结果钩子脱敏；普通任务晚到 nested bookkeeping / usage 不保证回填旧 transcript。
 
-Pi 1.3.0 树导航取消/失败没有结束事件。验证应区分“pending 结果仍可读、后续事件可重试通知”与“无需后续事件自动补发”；后者不受保证。`pi-smoke.mjs` 验证积压通知进入恢复 run 的首个请求，不能等恢复 run 结束后另起通知轮。详见 [设计说明](DESIGN.md)。
+Pi 1.3.0 树导航取消/失败没有结束事件，可能需等待后续可用事件恢复通知；任务仍可主动 wait 读取。`scripts/pi-smoke.mjs` 与 `scripts/sdk-cancel-permissions.mjs` 是额外的 pinned SDK harness，不等于真实终端验收。主通知契约以当前 `test/notifications-sdk.test.ts` 为准。

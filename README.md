@@ -1,9 +1,9 @@
 # pi-meantime
 
 让长时间工具调用转到后台，Pi 继续处理其他工作；完成后通知模型，不必反复查询。
-不修改 Pi 核心、不启动第二个 Agent。当前版本 **0.7.0**，面向 **Pi 1.3.0**，需要 **Node.js 22.19+**。
+不修改 Pi 核心，使用同一个 Agent。当前版本 **0.8.9**，开发验证基线为原版 **Pi 1.3.0**，通知集成另覆盖原版 **Pi 1.5.0**，需要 **Node.js 22.19+**。
 
-`bash` 与符合条件的 MCP / 扩展工具都用**原名**调用，只增加可选的 `__background__` 控制字段。没有代理别名或原名阻断；前台返回原生最终结果，后台保留完成原生结果钩子处理后的结果。实现依赖 Pi 1.3.0 的窄宿主 monkeypatch，并非仅使用官方扩展 API；见 [接口边界](docs/API-CONTRACT.md)。
+`bash`、`powershell` 与符合条件的 MCP / 扩展工具都用**原名**调用，只增加可选的 `__background__` 控制字段。没有代理别名或原名阻断；前台返回原生最终结果，后台保留完成原生结果钩子处理后的结果。工具适配仍依赖窄宿主 monkeypatch；通知保留在扩展自有 outbox，通过既有公开消息接口交接，见 [接口边界](docs/API-CONTRACT.md)。
 
 ## 安装
 
@@ -14,7 +14,7 @@
 pi install git:github.com/astrosheep-zero/pi-meantime
 
 # npm（需要该版本已发布；不可用时使用 Git）
-pi install npm:pi-meantime@0.7.0
+pi install npm:pi-meantime@0.8.9
 ```
 
 也可克隆后临时加载，不写入全局安装列表：
@@ -29,7 +29,7 @@ pi -e ./index.mjs
 
 ## 人怎么用
 
-正常让模型执行工具即可。默认从前台开始，运行超过 **90 秒**自动转后台；用户发送 steer 输入（或外部真正触发新一轮的流式 `customMessage` steer）会按任务启动后的 **3 秒**期限释放前台等待，重复 steer 不延长期限，wait 等待会立即释放。只有 meantime 自己的后台完成通知，会等前台任务启动满 **30 秒**再通过通知交接器转后台并合批；若前台任务提前结束或因用户 steer 先交接，会重新检查并尽快投递。用户 steer 不会被通知等待推迟。上述交接都不取消或重放执行；**Ctrl+Shift+B**、`/meantime detach` 和显式 `"yes"` 不受这两个保护期限限制。`"no"` 只关闭计时转后台；所有转后台仍须通过审批、调用进入和索引保存门槛。
+正常让模型执行工具即可。默认从前台开始，运行超过 **90 秒**自动转后台；用户发送 steer 输入（或外部真正触发新一轮的流式 `customMessage` steer）会按任务启动后的 **3 秒**期限释放前台等待，重复 steer 不延长期限，wait 等待会立即释放。后台完成通知在扩展自己的 outbox 等待公开交接边界，不会促使前台任务让出，也不会打断其他任务的 wait。上述交接都不取消或重放执行；**Ctrl+Shift+B**、`/meantime detach` 和显式 `"yes"` 不受用户 steer 的三秒期限限制。`"no"` 只关闭计时转后台；所有转后台仍须通过审批、调用进入和索引保存门槛。
 
 | 命令 | 用途 |
 |---|---|
@@ -77,18 +77,18 @@ ID 用实际返回值替换；支持唯一前缀，可省略 `mt_`，有歧义�
 
 `wait` 与 `cancel` 用 `ids` 指定任务，接受 1–32 项；`wait` 省略 `ids` 时等待当前所有未结束任务，`cancel` 必须给出。`mode: "all"`（默认）等全部结束，`"any"` 等任意一项结束；超时也会返回。批量回执含已结束结果及 `pending`，正文共享 32KiB 预算，被省略的结果可单独读取。
 
-原生工具管理 Bash 与宿主内建的 CodeMode；`codemode` 定义按 `sourceInfo.path === "builtin:codemode"` 识别，meantime 只包装其 execute。非原生工具默认全部管理，包括 Square、普通扩展和 MCP（含 IDE MCP）。依据当前工具来源区分原生与扩展，同名扩展覆盖也属于非原生工具；include/exclude 可进一步筛选。原生名称、description、来源与 `direct` / `codemode` / `deferred` 可见性不变；从 Codemode 或 tool_search 发现后仍调用原名，不增加第二个候选。除上述原生 CodeMode 外，顺序工具、hidden / model-only 工具、不兼容的根 Schema 及保留字段冲突保持原样；宿主全局顺序执行时不转后台。
+原生工具管理 Bash、PowerShell 与宿主内建的 CodeMode；`codemode` 定义按 `sourceInfo.path === "builtin:codemode"` 识别，meantime 只包装其 execute。非原生工具默认全部管理，包括 Square、普通扩展和 MCP（含 IDE MCP）。依据当前工具来源区分原生与扩展，同名扩展覆盖也属于非原生工具；include/exclude 可进一步筛选。原生名称、description、来源与 `direct` / `codemode` / `deferred` 可见性不变；从 Codemode 或 tool_search 发现后仍调用原名，不增加第二个候选。除上述原生 CodeMode 外，顺序工具、hidden / model-only 工具、不兼容的根 Schema 及保留字段冲突保持原样；宿主全局顺序执行时不转后台。
 
 ## 原生 CodeMode 整段后台执行
 
-`codemode` 保留原名、raw JavaScript grammar、discovery、models、store 和原生 executor。没有第二套 sandbox，也不重写脚本。meantime 通过 facade 调用官方 `createCodemodeExtension`，通过 facade 的 `appendEntry` 加入 store 写入 guard，**不注册同名工具**；官方内建本身没有这个 guard。capture 后 `manageTools` 按 `sourceInfo.path === "builtin:codemode"` 识别真实内置 definition，仅包装其 execute，原 schema、grammar、prepareLoadout、renderers、来源与对象身份均不变。宿主桥只在当前实例保留 `_executeNestedToolCall`、原生 runner 的 `takeRecord`/`clear` 及 scope Map 的删除生命周期，drain 后按原 descriptor 归还，不替换全局 registry；carrier/fence/scope 桥全部保留。它不增加 `__background__` 参数：使用现有90秒自动计时、Ctrl+Shift+B、3秒用户 steer 或 `/meantime detach` 分离**整段脚本的观察者**。meantime 自己的完成通知可在前台任务启动满30秒后交接，但不会延长或覆盖用户 steer 的3秒期限。后续 await、局部变量、正常完成时的 `finally` 在同一次执行中继续，不重放脚本。
+`codemode` 保留原名、raw JavaScript grammar、discovery、models、store 和原生 executor。没有第二套 sandbox，也不重写脚本。meantime 通过 facade 调用官方 `createCodemodeExtension`，通过 facade 的 `appendEntry` 加入 store 写入 guard，**不注册同名工具**；官方内建本身没有这个 guard。capture 后 `manageTools` 按 `sourceInfo.path === "builtin:codemode"` 识别真实内置 definition，仅包装其 execute，原 schema、grammar、prepareLoadout、renderers、来源与对象身份均不变。宿主桥只在当前实例保留 `_executeNestedToolCall`、原生 runner 的 `takeRecord`/`clear` 及 scope Map 的删除生命周期，drain 后按原 descriptor 归还，不替换全局 registry；carrier/fence/scope 桥全部保留。它不增加 `__background__` 参数：使用现有90秒自动计时、Ctrl+Shift+B、3秒用户 steer 或 `/meantime detach` 分离**整段脚本的观察者**。完成通知只在安全边界交接，不会促使脚本转后台。后续 await、局部变量、正常完成时的 `finally` 在同一次执行中继续，不重放脚本。
 
 已知 SDK 限制：capture 使用默认 factory options，不保留 `models:false`；CLI 内置走默认 options，无影响。
 
 若用户禁用 builtin 或 SDK 未加载 `codemode`，meantime 不会自动补一份，尊重现有设置；真实第三方同名替换 warning 照常显示，不隐藏。SDK 需要整段托管时，必须提供命名 `builtin:codemode` 的 InlineExtension（`{ name: "codemode", builtin: true, ... }`）；非命名的自定义 codemode 不会被当作原生定义认领。
 
 - 普通子调用及其后代等待原生最终结果，不因计时、steer 或快捷键独立变成句柄；显式 `tools.someTool({...args, __background__: "yes"})` 仍可独立转后台。**脚本结束立即返回自己的结果**（包括 child handle），不等待独立子 producer，即使 `autoDetachMs: 0`。后代的 scope/记录有独立 drain 生命周期，晚到孙调用仍保留原 ID 和 usage；它们不继续占用已完成根脚本的前台观察者或 runtime admission。
-- 原生限制不变：整个 Pi 进程**最多两个存活或正在退出的 CodeMode worker**。第三次执行立即返回原生容量错误；不排队、不自动重试，也不取消现有任务。`meantime` 保持 `model-only` 声明，在 `codemode.mode: "only"` 中仍由模型直接调用；list/wait/cancel 不需要第三个 worker。
+- worker 容量沿用原生宿主：Pi 1.3.0 每进程上限 2，满额立即失败；较新宿主可以采用等待空位策略。meantime 不另建 worker 或重跑脚本。`meantime` 保持 `model-only` 声明，在 `codemode.mode: "only"` 中仍由模型直接调用；list/wait/cancel 不需要额外 worker。
 - 中止 wait 不取消 producer；显式 cancel 中止作业所属 signal 链。原生硬取消可能终止 VM，**不保证执行 JavaScript `finally`**，也不保证远端副作用回滚。
 - 树导航前、会话替换及 reload/shutdown 会请求取消并 drain 原生脚本及其 nested pipeline，再放行生命周期变化。非合作宿主子工具会延迟这个边界；grace timeout 不是已 drain 的证明。不承诺运行中的脚本跨 reload 存活。
 
@@ -106,14 +106,14 @@ ID 用实际返回值替换；支持唯一前缀，可省略 `mt_`，有歧义�
 
 - 后台完成通知含任务 ID、状态、可选退出码、存在时的 `Output: <path>`，以及约 1KiB 的文本尾部。尾部标为不可信工具数据，不是指令，不含图片或结构化结果；需要更多信息时用单任务 `wait` 读取保留结果，或读取输出文件。
 - TUI 展示为状态字形卡片：`✓/✕/⊘/●/?` 单通道表达完成/失败/取消/运行/未知，同一行给出命令、退出码、耗时和任务 ID；单任务通知附带输出尾部预览，展开查看完整尾部和输出路径。面向模型的说明文字不占用屏幕；`meantime` 调用行显示动作摘要（`wait mt_a, mt_b · 30s`）而不是原始 JSON。
-- Agent 工作期间，完成通知先走 steering 快速通道，在 loop 下次拉取时可见；请求边界仍以 `triggerTurn:false` 暂存积压通知，空闲时唤起新一轮。UI 审批、压缩或树导航期间延后。只有 meantime 自己的完成通知会等待受保护的前台任务启动满30秒再交接并合批；前台提前结束或被用户 steer 提前交接后会重新计算通知时机。通知造成的交接不会缩短或延长用户 steer 的3秒期限。外部 followUp、nextTurn 或 `triggerTurn:false` customMessage 不算 steer。每条最多合并 16 项，请求边界交接所有 eligible 批次。正在被 `wait` 等待或已成功读取的任务不再交接；超时或中断后未取得的结果仍会通知，已交接的消息无法撤回。
-- 只有宿主 `message_end` 才确认消费，入队不等于送达。宿主队列排空后，未消费的快速通道通知返回本地 outbox；Stop 清队列后及其后的空闲完成通知都 append-only 补写，不自动重新唤起。单纯 abort 未清队列时保留原消息，不重复补投。空闲唤起准备失败后不再自动重试唤起，未消费通知由后续 idle flush 或下一合法请求以不触发方式补写。消费确认先保护记录，待宿主保存通知后再持久化 `delivered` 索引并允许裁剪；崩溃发生在回执落盘前仍可能补发一次，不保证严格 FIFO 或崩溃场景下恰好一次。
+- Agent 工作期间，完成通知留在扩展自有 outbox；在 `before_agent_start` / `turn_end` 等公开安全边界重筛并以 `triggerTurn:false` 交接，每条最多 16 项。允许等待较晚边界，不保证进入紧邻的模型请求。正常空闲时完成会主动安排发送并以 `triggerTurn:true` 唤起模型；UI 审批和压缩结束后也会恢复推进。成功 `wait` 在交接前抑制已读结果，等待中的任务暂停通知；超时或中断释放 waiter 后，未读取结果重新推进。已交给宿主的消息无法撤回，窄竞态下仍可能在 wait 后显示摘要。
+- 只有宿主 `message_end` 才确认消费，发送成功不等于送达；消费后待消息保存，再持久化 `delivered` 回执。普通空闲唤起在消费前失败后，停止自动唤起，以 250ms、1000ms 退避进行最多两次 append-only 重试；后续完成也保守写入会话，直到明确的新用户回合恢复唤起。三次交接失败后显示 `notification:failed` 和错误说明，结果继续保留，可用 wait 读取；后面的任务仍可投递。Stop 额外取消自动重试，未交接通知和后续空闲完成可以 append-only 写入，不自动复活模型。已消费后的晚 Promise 拒绝不重投、不降级新任务。reload/shutdown 取消本代次全部通知计时器；不承诺跨批 FIFO、崩溃恰好一次或交接后绝对去重。
 - **Pi 1.3.0 已知缺口**：树导航取消/失败没有结束事件，期间积压的通知可能继续等待。任务仍保留 pending，可主动读取；下一次 agent settled、压缩结束等可用事件会重新尝试，不能保证无后续事件时自动补发。
 - 任务索引及完成文本保存在 **Pi 会话自定义条目**中。同一会话的树导航共享任务；fork/clone 不接管原任务。恢复时已有完成记录可读，缺少最终记录的任务显示 `outcome_unknown`，绝不自动重放业务；已有持久化 delivered/observed 回执的通知不因重启重发，尚未完成交接的 pending 通知仍会补发。
 - **不是跨进程作业服务**：`/reload`、切换会话和退出会请求取消，停止旧通知。取消是协作式的，失去本地控制不能证明远端操作已结束。
 - 后台任务原样保存完成完整原生结果钩子的 `Outcome.result`，另存权威 `Outcome.isError`，不改写保留结果。前台走同一完成路径，仅外部返回时投影权威错误位。后台句柄不进入原工具结果钩子，晚结果不补造 transcript 条目。partial updates 仍是原生进度更新，不能视为已被最终结果钩子脱敏；结束时清除暂存进度，结束任务预览和完成尾部只取最终结果。
 - 扩展不二次清洗、截断或创建/删除原生输出文件。Pi 的 Bash / MCP 继续使用各自原生文本与输出路径，普通扩展工具遵循自身结果策略。索引保存最终文本及路径，不另设文本上限；单任务 `wait` 返回保留文本、结构化结果和完整原生 details（如 `truncation`、`fullOutputPath`）：原生 details 整体放在 `details.nativeDetails`，不展开进控制字段（数组/字符串原生 details 与其他任意 JSON 值同样保留），`details.task` 仍是 task 回执。图片、details 与结构化数据对普通任务仍仅在原进程内存保留，恢复后只有文本与任务元数据；CodeMode 所属任务的完整完成记录例外，见上节。读取回执不内联图片。
-- 默认最多 4 个受管真实本地执行，保留最近 128 个已结束后台任务（待通知等记录暂受保护）；原生 CodeMode worker 另有不变的进程级上限 2。普通任务的后台晚到嵌套记录和 usage 不保证补进已完成父消息或 Pi 全局费用统计；CodeMode 所属任务按上节的关联记录/独立计费规则处理。
+- 默认最多 4 个受管真实本地执行，保留最近 128 个已结束后台任务（待通知等记录暂受保护）；原生 CodeMode worker 另受宿主进程级容量约束（默认 2）。普通任务的后台晚到嵌套记录和 usage 不保证补进已完成父消息或 Pi 全局费用统计；CodeMode 所属任务按上节的关联记录/独立计费规则处理。
 - `print/json` 模式下 `auto` 保持前台，`yes` 明确报错。已转后台后才出现的 MCP 交互仍是兼容边界；这类工具建议排除；`"no"` 只关闭计时转后台，不能防止用户主动转后台。
 
 ## 配置
@@ -136,13 +136,10 @@ ID 用实际返回值替换；支持唯一前缀，可省略 `mt_`，有歧义�
 
 ## 开发与验证
 
+完整复跑与原版 SDK 的验证范围见 [验证说明](docs/VALIDATION.md)。
+
 ```sh
-npm ci --ignore-scripts
-npm run check       # 类型检查 + 测试
-npm run test:pi     # 真实 Pi SDK 冒烟，脚本化 provider，无外部模型调用
-node --experimental-strip-types scripts/sdk-codemode.mjs # CodeMode 离线 SDK 集成（也含在 npm test）
-# 可选：验证已安装的 bundled Pi 宿主与 index.mjs 的 Jiti 模块身份
-PI_TEST_SDK_MODULES=/path/to/pi/node_modules node --experimental-strip-types scripts/sdk-codemode.mjs
+npm run check  # 类型检查 + 全部单元/组件/SDK回归，使用锁定的原版1.3 SDK
 ```
 
 更多边界见 [设计说明](docs/DESIGN.md)，验证范围见 [验证说明](docs/VALIDATION.md)。[MIT License](LICENSE)。

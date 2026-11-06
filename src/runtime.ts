@@ -4,7 +4,6 @@ import { isRecord } from './schema.ts';
 import { TASK_ID, newTaskId, truncateUtf8 } from './store.ts';
 
 const USER_STEER_GRACE_MS = 3000;
-const COMPLETION_GRACE_MS = 30_000;
 
 export type TaskState = 'running' | 'cancel_requested' | 'completed' | 'failed' | 'cancelled' | 'outcome_unknown';
 export type DetachReason = 'explicit' | 'shortcut' | 'steer' | 'timeout';
@@ -13,7 +12,7 @@ export interface Snapshot {
   mode: Mode; delivery: 'foreground' | 'background'; createdAt: number;
   endedAt?: number; detachReason?: DetachReason; cancelRequestedAt?: number;
   localRunning: boolean; progress?: string; outputPath?: string; exitCode?: number;
-  indexError?: string;
+  indexError?: string; notificationError?: string;
   /** Final native Outcome error flag, independent of stale result.isError. */
   isError?: boolean;
   recovered?: boolean; textOnly?: boolean; notification: 'none' | 'pending' | 'queued' | 'delivered' | 'observed' | 'failed' | 'suppressed';
@@ -40,7 +39,7 @@ export interface RunRequest {
 }
 interface Task {
   meta: Snapshot; callId: string; controller?: AbortController;
-  result?: Result; outputTail?: string; published: boolean; observed: boolean; viewSettled: boolean;
+  result?: Result; outputTail?: string; published: boolean; viewSettled: boolean;
   requestedDetach?: DetachReason; canDetach: boolean;
   steerAfter?: number; steerTimer?: ReturnType<typeof setTimeout>;
   resolveView?: (view: View) => void;
@@ -55,10 +54,6 @@ export interface RuntimeSink {
   notify(tasks: Snapshot[]): void | false;
   changed?(): void;
   index(change: IndexChange): void;
-  /** Whether notifications can be sent through the in-turn steer queue now. */
-  canSteer?(): boolean;
-  /** A result was observed: forget its volatile queued notification. */
-  observed?(id: string): void;
 }
 // Reloaded modules share only admission; old non-cooperative producers retain
 // their slot until they settle, without retaining a successor's Pi context.
@@ -87,7 +82,7 @@ export class TaskRuntime {
   private promptDepth = 0;
   private promptResume?: { timer: ReturnType<typeof setImmediate>; done: Promise<void>; release(): void };
   private completionSequence = 0;
-  private notificationSchedule?: { timer: ReturnType<typeof setTimeout>; foreground: boolean };
+  private notificationSchedule?: ReturnType<typeof setTimeout>;
   private waitReleases = new Set<() => void>();
   private sink: RuntimeSink;
 
@@ -107,7 +102,7 @@ export class TaskRuntime {
         // otherwise silence it forever: requeue terminal, unobserved tasks.
         notification: record.observed ? 'observed' : record.delivered ? 'delivered' : 'pending' });
       this.tasks.set(meta.id, { meta, outputTail: completion ? sliceTail(completion.text) : undefined, result: completion?.result ?? (completion ? { content: [{ type: 'text', text: completion.text }], details: undefined } : undefined),
-        callId: '', published: true, observed: false, viewSettled: true, canDetach: false, notifyAttempts: 0, waiters: 0,
+        callId: '', published: true, viewSettled: true, canDetach: false, notifyAttempts: 0, waiters: 0,
         deliveryPersisted: record.delivered === true });
     }
   }
@@ -123,7 +118,7 @@ export class TaskRuntime {
       ...(request.command !== undefined ? { command: request.command } : {}),
       state: 'running', delivery: 'foreground', createdAt: Date.now(), localRunning: true, notification: 'none' };
     const task: Task = { meta, callId: request.callId, controller: new AbortController(), published: false,
-      observed: false, viewSettled: false, canDetach: request.canDetach, notifyAttempts: 0, waiters: 0, deliveryPersisted: false,
+      viewSettled: false, canDetach: request.canDetach, notifyAttempts: 0, waiters: 0, deliveryPersisted: false,
       codemodeRootId: request.codemodeRootId, onDetach: request.onDetach,
       steerAfter: performance.now() + USER_STEER_GRACE_MS };
     const view = new Promise<View>(resolve => { task.resolveView = resolve; });
@@ -243,9 +238,6 @@ export class TaskRuntime {
     clearTimeout(task.autoTimer);
     clearTimeout(task.steerTimer); task.steerTimer = undefined; task.requestedDetach = undefined;
     this.resolveView(task, { kind: 'handle', task: snap(task) });
-    if (this.notificationSchedule?.foreground) {
-      clearTimeout(this.notificationSchedule.timer); this.notificationSchedule = undefined;
-    }
     this.scheduleNotifications();
     return true;
   }
@@ -297,10 +289,6 @@ export class TaskRuntime {
       this.resolveView(task, { kind: 'result', task: snap(task), result, isError, thrown });
       if (task.waiters) task.result = result;
       else this.tasks.delete(task.meta.id);
-      if (this.notificationSchedule?.foreground) {
-        clearTimeout(this.notificationSchedule.timer); this.notificationSchedule = undefined;
-        this.flushNotifications();
-      }
       this.scheduleNotifications();
       return;
     }
@@ -425,12 +413,12 @@ export class TaskRuntime {
     if (task.meta.localRunning || !task.meta.endedAt) return { task: snap(task) };
     const result = task.result;
     if (result) {
-      task.observed = true; task.meta.notification = 'observed';
+      task.meta.notification = 'observed';
       // Persist the observation so a restart doesn't re-notify this task.
       try { this.sink.index({ observed: task.meta.id }); } catch { /* A volatile index must not break result retrieval. */ }
-      // Forget the volatile queued copy: it can't be unsent from the host,
-      // but it must not be returned and re-queued as a duplicate either.
-      this.sink.observed?.(task.meta.id);
+      delete task.meta.notificationError;
+      // An observation before handoff suppresses the outbox entry. Messages
+      // already handed to the host remain immutable and may still be shown.
     }
     const view = { task: snap(task), result };
     this.prune(task.meta.id);
@@ -479,22 +467,14 @@ export class TaskRuntime {
     }
   }
   private eligible(): Task[] {
-    return [...this.tasks.values()].filter(t => t.published && !t.observed && !t.waiters && t.meta.notification === 'pending' && !t.meta.localRunning);
+    return [...this.tasks.values()].filter(t => t.published && !t.waiters && t.meta.notification === 'pending' && !t.meta.localRunning);
   }
-  private notificationProtectedForeground(): { tasks: Task[]; remaining: number } {
-    const tasks = this.config.detachOnSteer
-      ? [...this.tasks.values()].filter(t => t.meta.delivery === 'foreground' && t.meta.localRunning && !t.viewSettled) : [];
-    return { tasks, remaining: tasks.reduce((max, task) => Math.max(max,
-      task.steerAfter! - USER_STEER_GRACE_MS + COMPLETION_GRACE_MS - performance.now()), 0) };
-  }
-  private scheduleNotifications(): void {
+  private scheduleNotifications(delay = this.config.notifyDebounceMs): void {
     if (!this.open || this.promptDepth > 0 || this.promptResume || this.notificationSchedule || this.eligible().length === 0) return;
-    const { remaining } = this.notificationProtectedForeground();
-    const delay = remaining > 0 ? Math.ceil(remaining) : this.config.notifyDebounceMs;
-    const schedule = { foreground: remaining > 0, timer: setTimeout(() => {
+    this.notificationSchedule = setTimeout(() => {
       this.notificationSchedule = undefined; this.flushNotifications();
-    }, delay) };
-    schedule.timer.unref(); this.notificationSchedule = schedule;
+    }, delay);
+    this.notificationSchedule.unref();
   }
   async flushNotificationsAtBoundary(): Promise<void> {
     // Await the permission continuation itself, not a timer that runs after
@@ -508,6 +488,7 @@ export class TaskRuntime {
       const task = this.tasks.get(id);
       if (task?.meta.notification === 'queued') {
         task.meta.notification = 'delivered';
+        delete task.meta.notificationError;
         task.deliveryPersisted = false;
       }
     }
@@ -534,36 +515,26 @@ export class TaskRuntime {
     this.prune(); this.changed();
     return true;
   }
-  /** Return notices discarded with a volatile host queue. Queue removal is not
-   * a send failure and must not consume the asynchronous retry budget. */
-  notificationReturned(ids: readonly string[]): void {
+  /** Failed handoff leaves results retention-protected. Three attempts
+   * exhaust automatic delivery with a visible failed notification state. */
+  notificationFailed(ids: readonly string[], error?: unknown): number | undefined {
     if (!this.open) return;
+    let retry: number | undefined;
     for (const id of ids) {
       const task = this.tasks.get(id);
-      if (task?.meta.notification === 'queued') task.meta.notification = 'pending';
+      if (!task || task.meta.notification !== 'queued') continue;
+      const attempts = ++task.notifyAttempts;
+      task.meta.notification = attempts >= 3 ? 'failed' : 'pending';
+      task.meta.notificationError = `Notification ${attempts >= 3 ? 'retry exhausted' : 'handoff failed'} (${attempts}/3): ${String(error ?? 'send failed')}`;
+      retry ??= 0;
+      if (attempts < 3) retry = Math.max(retry, 250 * 4 ** (attempts - 1));
+      clearTimeout(this.notificationSchedule); this.notificationSchedule = undefined;
     }
     this.prune(); this.changed();
-  }
-  notificationFailed(ids: readonly string[]): void {
-    if (!this.open) return;
-    for (const id of ids) {
-      const task = this.tasks.get(id);
-      if (!task || task.observed || task.meta.notification !== 'queued') continue;
-      task.meta.notification = ++task.notifyAttempts >= 3 ? 'failed' : 'pending';
-      // A boundary may have flushed ahead of an already armed debounce. Async
-      // delivery failure must wait for the next legal boundary, not that timer.
-      clearTimeout(this.notificationSchedule?.timer); this.notificationSchedule = undefined;
-    }
-    this.prune(); this.changed();
+    return retry;
   }
   flushNotifications(): void {
     if (!this.open || this.promptDepth > 0 || this.promptResume || !this.eligible().length) return;
-    const { tasks: foreground, remaining } = this.notificationProtectedForeground();
-    if (remaining > 0) { this.scheduleNotifications(); return; }
-    if (this.sink.canSteer?.()) {
-      for (const task of foreground) this.detach(task, 'steer');
-      if (foreground.some(t => t.meta.localRunning && !t.viewSettled)) return;
-    }
     while (this.open && this.promptDepth === 0 && !this.promptResume) {
       const batch = this.eligible().slice(0, 16); if (!batch.length) return;
       // The sink can synchronously start a run, flush again or acknowledge.
@@ -575,12 +546,11 @@ export class TaskRuntime {
           this.prune(); this.changed();
           return;
         }
-      } catch {
-        this.notificationFailed(batch.map(task => task.meta.id));
-        this.scheduleNotifications();
+      } catch (error) {
+        const delay = this.notificationFailed(batch.map(task => task.meta.id), error);
+        if (delay) this.scheduleNotifications(delay);
         return; // Retry failures later, never exhaust retries in this drain.
       }
-      this.releaseWaiters();
       // Keep messages bounded while handing off every ready batch. Retain
       // queued records until a consumption receipt or explicit observation.
       this.prune(); this.changed();
@@ -597,7 +567,7 @@ export class TaskRuntime {
   close(): Promise<void> { return this.closing ??= this.closeRuntime(); }
   private async closeRuntime(): Promise<void> {
     if (!this.open) return;
-    this.open = false; clearTimeout(this.notificationSchedule?.timer); this.notificationSchedule = undefined; this.clearPromptResume();
+    this.open = false; clearTimeout(this.notificationSchedule); this.notificationSchedule = undefined; this.clearPromptResume();
     for (const task of this.tasks.values()) {
       this.requestCancel(task); task.meta.notification = 'suppressed';
       task.cleanupParent?.(); clearTimeout(task.autoTimer);
@@ -624,7 +594,7 @@ export class TaskRuntime {
       .sort((a, b) => Number(b.meta.id === retainId) - Number(a.meta.id === retainId)
         || (b.meta.endedAt ?? 0) - (a.meta.endedAt ?? 0) || (b.finishSequence ?? 0) - (a.finishSequence ?? 0));
     for (const task of ended.slice(this.config.maxRetained)) {
-      if (!task.published || task.waiters || (task.meta.notification === 'pending' || task.meta.notification === 'queued')
+      if (!task.published || task.waiters || (task.meta.notification === 'pending' || task.meta.notification === 'queued' || task.meta.notification === 'failed')
         || (task.meta.notification === 'delivered' && !task.deliveryPersisted) || leases().has(task.meta.id) || this.scopes.has(task.meta.id)) continue;
       try {
         this.sink.index({ removed: [task.meta.id] }); this.tasks.delete(task.meta.id);

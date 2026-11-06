@@ -106,16 +106,23 @@ test('model-only, hidden, sequential, excluded and conflicting tools stay native
 });
 
 test('defaults manage external tools by source, including Square, MCP and native-name overrides', async () => {
-  const native = ['read', 'edit', 'write', 'grep', 'find', 'ls', 'powershell', 'codemode', 'tool_search']
+  const native = ['read', 'edit', 'write', 'grep', 'find', 'ls', 'codemode', 'tool_search']
     .map(name => basicTool(name, undefined, { sourceInfo: { path: `builtin:${name}` } }));
+  const powershell = basicTool('powershell', async (_id, args) => { await sleep(20); return ok(String(args.command ?? '')).result; },
+    { sourceInfo: { path: 'builtin:powershell' }, parameters: { type: 'object', properties: { command: { type: 'string' }, timeout: { type: 'number' } }, required: ['command'], additionalProperties: false } });
   const external = [basicTool('square_catch', async () => { await sleep(20); return ok('square').result; }, { sourceInfo: { path: '/square/index.ts' } }),
     basicTool('mcp__ide__query', undefined, { sourceInfo: { path: 'builtin:mcp' } }), basicTool('custom_tool')];
-  const h = await setup([...native, ...external]);
+  const h = await setup([...native, powershell, ...external]);
   try {
     const managed = (tool: Tool) => Object.hasOwn(tool.parameters.properties ?? {}, '__background__');
     for (const tool of native) assert.equal(managed(tool), false, tool.name);
     for (const tool of external) assert.ok(managed(tool), tool.name);
     assert.ok(managed(h.pi.getToolDefinition('bash')!));
+    assert.ok(managed(powershell), 'native powershell is managed');
+    const psHandle = snapshot(await h.pi.call('powershell', { command: 'Write-Output hi', __background__: 'yes' }));
+    assert.equal(psHandle.tool, 'powershell');
+    assert.equal(psHandle.kind, 'bash');
+    assert.equal(psHandle.command, 'Write-Output hi');
     const handle = await h.pi.call('square_catch', { __background__: 'yes' });
     assert.equal(snapshot(handle).tool, 'square_catch');
     const replacement = basicTool('read', undefined, { sourceInfo: { path: '/custom/read.ts' } });

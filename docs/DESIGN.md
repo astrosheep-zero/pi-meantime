@@ -1,6 +1,6 @@
 # 设计说明
 
-宿主目标严格限定为 Pi 1.3.0，升级须重新核对接缝。对齐基线是**不安装 pi-meantime 时的同一个工具**。扩展不修改 Pi 核心、不启动第二个 Agent；同名工具获得调度能力，TaskRuntime 负责前后台等待、取消、保存和通知。
+基线为原版 Pi 1.3.0，通知集成另验证原版 Pi 1.5.0；无需修改宿主源码或新增宿主 API。对齐基线是**不安装 pi-meantime 时的同一个工具**。同名工具获得调度能力，TaskRuntime 负责前后台等待、取消、保存和通知，使用同一个 Agent。
 
 ## 同名工具与宿主适配
 
@@ -26,7 +26,7 @@ Pi 的普通 ExtensionAPI 没有 current-session 或 around-producer 中间件�
 
 ## 参数与完成边界
 
-支持的 object-root Schema 通过 `decorateSchema` 增加可选 `__background__: "auto" | "yes" | "no"`，不放松业务约束。根级复杂组合、条件、pattern/property 限制和保留字段冲突仍拒绝接管。原生工具管理 Bash 与内置 CodeMode；CodeMode 只包装 execute，不装饰 Schema。非原生工具（包括 Square 与内置 MCP 提供的外部工具）默认全部管理，再按 include/exclude 筛选；除内置 CodeMode 的 model-only 声明外，hidden、model-only、sequential 工具保持原样。宿主全局顺序执行时不 detach。
+支持的 object-root Schema 通过 `decorateSchema` 增加可选 `__background__: "auto" | "yes" | "no"`，不放松业务约束。根级复杂组合、条件、pattern/property 限制和保留字段冲突仍拒绝接管。原生工具管理 Bash、PowerShell 与内置 CodeMode；CodeMode 只包装 execute，不装饰 Schema。非原生工具（包括 Square 与内置 MCP 提供的外部工具）默认全部管理，再按 include/exclude 筛选；除内置 CodeMode 的 model-only 声明外，hidden、model-only、sequential 工具保持原样。宿主全局顺序执行时不 detach。
 
 控制字段在原 `prepareArguments` **之前**剥离，mode 只保存在内部调用数据中；原准备、校验和全部权限处理各一次。TaskRuntime admission 在原名 execute 内、权限处理全部结束后发生。拒绝、无效调用及容量不足不能启动原生副作用；权限钩子修改后的业务参数不再次校验。没有自派发递归或 readiness ticket。
 
@@ -50,8 +50,11 @@ runtime 行为不因同名适配改变：
 
 - 只有实际 detach 才保存任务索引并返回句柄；普通索引写入失败留在前台。关闭请求取消并在有限 grace 后释放等待，停止旧会话通知。不承诺 reload 保活。
 - 后台结果已落定、句柄已被宿主确认、结果未读且没有该任务的 waiter 时才 eligible。`CompletionDelivery` 集中处理交接、消费确认和宿主恢复；runtime 在调用 sink 前原子预留 `pending → queued`，宿主公开 `message_end` 将仍 queued 的任务改为 `delivered`。消费回执先只在内存生效并继续保护记录；append-only 可在同步回执后立即确认，agent-emitted 消息则跨一个 setImmediate 等宿主完成消息 append，再以 `meantime-index` 的 `delivered` 变更持久化。只有持久化后才允许保留裁剪；已读/已确认任务不因迟到失败回滚。
-- 活动 run 的普通完成通知经公开 `session.sendCustomMessage(deliverAs:'steer', triggerTurn:true)` 进入 steering 快速通道；`before_agent_start` / `turn_end` 等待审批 continuation 后以 `triggerTurn:false` 暂存所有 eligible 批次，每条最多 16 项。`turn_end` 新暂存通知且 outcome 非 aborted/error 时请求一次 continuation；不使用暂存前的 canContinue 快照。wait 只抑制正在等的任务；已交接的通知不能撤回。
-- settled 时只有宿主队列已空，才把未消费的快速通道通知退回 pending；队列未空说明原副本仍可能被后续 run 消费，不能重复补投。队列移除不消耗发送失败重试预算。空闲时使用 `session.sendCustomMessage(triggerTurn:true)` 的实际 Promise 唤起；准备失败只回退尚未消费的 queued 任务，并暂停自动唤起。`wakePaused` 只禁止 `triggerTurn:true`，不禁止安全投递：Stop 在宿主转为 idle 的 setImmediate 补写未消费通知，其后的空闲完成通知也同样以 `triggerTurn:false` append-only 交接，不自动复活模型；若用户已启动新 run，则由正常边界/快速通道接管。普通 settled、压缩完成/失败和导航成功统一经一个可取消的 setImmediate 重查宿主状态，再尝试空闲投递。关闭取消恢复回调并解除消费订阅，不重试旧代次。
+- 活动 run 的完成通知只保留在 runtime 自有 outbox，不交给宿主 steering 队列，也不促使前台 detach 或释放其他任务的 waiter。`before_agent_start` / `turn_end` 等公开边界等待审批 continuation 后重筛 eligible 项，经 `session.sendCustomMessage(triggerTurn:false)` 暂存，每条最多 16 项。`turn_end` 新暂存通知且 outcome 非 aborted/error 时请求一次 continuation。允许延迟到较晚安全边界，不保证紧邻请求交接。
+- 成功 wait 将结果标记 observed；尚在 outbox 的结果被抑制。waiter 存在时暂停该任务通知，超时/中断的 finally 释放 waiter 并重新调度未读项。交出后不能撤回；不改上下文或历史，不访问或包装私有队列，接受 handoff 与 wait 之间的窄竞态重复。
+- 普通 idle 完成由 debounce 主动 flush，以 `session.sendCustomMessage(triggerTurn:true)` 唤起；不依赖后续 human 输入。宿主忙则 send 返回 false、任务仍 pending，不计失败或轮询。普通 settled、审批 continuation 结束、压缩结束/失败和导航成功会恢复推进。
+- 唤起 Promise 覆盖整个 run：只有仍 queued 的未消费项才可失败回退，已 consumed/observed 不退回、不耗重试预算。未消费失败设置 wakeSuppressed，之后只 append-only；每批共三次尝试，退避 250ms、1000ms，退避期间其他 hostReady/边界不绕过计时器。耗尽置通知 failed，保留结果、可见 notificationError，后批继续推进。模型已收到通知后的晚 Promise 拒绝不设置 wakeSuppressed。明确的新用户 `before_agent_start` 恢复主动唤起。
+- `agent_settled(aborted:true)` 的 Stop latch 另取消自动 retry，但允许安全 idle append-only 交接；Stop 后的新完成也不唤起。准备失败可能没有公开 settled 取消事件，因此一律降级 append-only 重试，不猜错误字符串或读取私有 abort 标志。关闭清 debounce、retry、ready、durability 及 prompt-resume 计时器并解除订阅，旧代次不重试。
 - 快照中的 `delivered` 表示宿主消费，本身不等于回执已落盘：idle trigger 的公开 message_end 早于 session persistence；边界暂存路径则先 append 再 emit。持久化的 `delivered` 索引只在前述消息 append 屏障后写入，因此恢复时该状态不会重发；消费后、回执落盘前崩溃仍可能补发一次。不承诺崩溃 exactly-once 或严格 FIFO（idle trigger 准备期间暂存的新通知可能先显示）。
 - 通知仅含状态、可选输出路径和约 1KiB 不可信文本尾部。单任务 wait 不另截断原生文本；批量 wait 共用 32KiB 正文预算；回执不内联图片。这些展示限制不修改保留结果。
 - task / completion / observed / delivered / removed 自定义 session 条目保留任务和最终错误位、文本、路径及通知回执。同会话树导航共享任务；fork/clone 不接管旧作业。恢复只有文本与元数据，缺少 completion 时为 outcome_unknown，不重放业务；delivered/observed 不补发，pending 仍补发。

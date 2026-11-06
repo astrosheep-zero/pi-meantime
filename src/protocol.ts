@@ -109,7 +109,7 @@ export interface EventMap {
   session_compact_failed: { type: 'session_compact_failed' };
   turn_end: { type: 'turn_end'; outcome?: 'completed' | 'aborted' | 'error' };
   tool_execution_start: { type: 'tool_execution_start'; toolCallId: string; toolName: string; args: unknown; parentToolCallId?: string };
-  before_agent_start: { type: 'before_agent_start'; systemPromptOptions: { sections: Record<string, string> } };
+  before_agent_start: { type: 'before_agent_start'; messageType?: 'user' | 'custom'; systemPromptOptions: { sections: Record<string, string> } };
   agent_settled: { type: 'agent_settled'; aborted?: boolean };
   input: InputEvent;
   tool_call: ToolCallEvent;

@@ -69,8 +69,8 @@ function tailLines(tail: string): string[] {
 }
 function detailBlock(task: TaskDisplay, theme: RenderTheme, tail: string[] | undefined, tailBudget: number): string[] {
   const lines = [taskLine(task, theme)];
-  // The row already names a command-less tool; bash needs no label at all.
-  if (task.command !== undefined && task.tool !== 'bash') lines.push(theme.fg('dim', `  ${task.tool}`));
+  // The row already names a command-less tool; bash/powershell need no label at all.
+  if (task.command !== undefined && task.tool !== 'bash' && task.tool !== 'powershell') lines.push(theme.fg('dim', `  ${task.tool}`));
   if (task.outputPath) lines.push(theme.fg('muted', `  Output: ${task.outputPath}`));
   if (task.cancelRequestedAt !== undefined) lines.push(theme.fg('warning', '  Cancellation was requested; the native outcome may not be settled.'));
   if (tail?.length) lines.push(...tail.slice(-tailBudget).map(line => theme.fg('toolOutput', `  ${truncateUtf8(line, 200)}`)));

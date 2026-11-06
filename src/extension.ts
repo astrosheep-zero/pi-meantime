@@ -74,7 +74,7 @@ function taskHeader(task: Snapshot): string {
 }
 function taskReceipt(task: Snapshot): string {
   const what = task.command !== undefined ? commandOneLine(task.command) : task.tool;
-  return `${taskHeader(task)} — ${what}`;
+  return `${taskHeader(task)} — ${what}${task.notificationError ? ` · ${task.notificationError}` : ''}`;
 }
 const TAIL_BYTES = 1024;
 /** Last ~1KB of a finished task's text output, fenced as untrusted data. */
@@ -219,6 +219,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
             // The panel is for the human: show terminal output, not receipt prose.
             clean(r.tasks.get(task.id)?.outputTail ?? task.progress ?? '').trim(),
             ...(task.outputPath ? [`Output: ${task.outputPath}`] : []),
+            ...(task.notificationError ? [task.notificationError] : []),
           ].filter(Boolean) : [];
           return [theme.fg('accent', 'Current session tasks'),
             ...(tasks.length ? list.render(width) : [theme.fg('muted', '  No background tasks.')]),
@@ -258,8 +259,12 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   }
   function updateStatus(): void {
     if (!live || !runtime || !currentCtx) return;
-    const active = runtime.list().filter(t => t.localRunning);
-    currentCtx.ui.setStatus('meantime', active.length ? `bg ${active.length}/${config.maxRunning}` : undefined);
+    const tasks = runtime.list();
+    const active = tasks.filter(t => t.localRunning);
+    const exhausted = tasks.filter(t => t.notification === 'failed');
+    currentCtx.ui.setStatus('meantime', exhausted.length ? `bg: ${exhausted.length} notification(s) unsent`
+      : active.length ? `bg ${active.length}/${config.maxRunning}` : undefined);
+    for (const task of exhausted) diagnostic(task.id, task.notificationError!);
   }
   function diagnostic(name: string, message: string): void {
     if (diagnostics.get(name) === message) return;
@@ -272,8 +277,9 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   }
   function run(call: ManagedCall): Promise<Result> {
     const r = assertRuntime(call.ctx);
-    return r.run({ tool: call.name, kind: call.name === 'bash' ? 'bash' : 'tool', callId: call.id,
-      mode: call.mode, command: call.name === 'bash' && typeof call.args.command === 'string' ? call.args.command : undefined,
+    const shell = call.name === 'bash' || call.name === 'powershell';
+    return r.run({ tool: call.name, kind: shell ? 'bash' : 'tool', callId: call.id,
+      mode: call.mode, command: shell && typeof call.args.command === 'string' ? call.args.command : undefined,
       canDetach: interactive(call.ctx) && call.canDetach, parentSignal: call.signal, onUpdate: call.update,
       userDetach: inheritedDetach(call.id), execute: call.execute,
       codemodeRootId: call.codemodeRootId, onDetach: call.onDetach, onSettled: call.onSettled,
@@ -459,13 +465,8 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       }
     }
     const created: TaskRuntime = new TaskRuntime(config, {
-      notify(tasks) {
-        if (config.detachOnSteer && boundDelivery.canSteer()) markCallsDetach('steer');
-        return boundDelivery.send(tasks);
-      },
-      canSteer() { return boundDelivery.canSteer(); },
+      notify(tasks) { return boundDelivery.send(tasks); },
       changed() { updateStatus(); refreshPanel?.(); },
-      observed(id) { boundDelivery.forget(id); },
       index(change) {
         if (!live || runtime !== created || currentOwner !== boundOwner) throw new Error('Stale task index target');
         if ('completion' in change && change.completion.result) {
@@ -542,7 +543,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     if (live) {
       currentCtx = ctx; host?.refresh();
       event.systemPromptOptions.sections.meantime = `Tools with ${CONTROL} accept: "auto" (default; ${config.autoDetachMs > 0 ? 'moves to background if not finished in time' : 'never detaches on a timer'}), "yes" (run in background), or "no" (stay in foreground). Background tasks notify automatically when done — do not re-run them. Do other work while they run; only call meantime(action="wait") when blocked on a result.`;
-      await delivery?.atBoundary();
+      await delivery?.atBoundary(event.messageType === 'user');
     }
   });
   on('agent_settled', event => { calls.clear(); delivery?.settled(event.aborted); });

@@ -8,30 +8,25 @@ export interface DeliveryEvent {
   message?: { role: string; customType?: string; details?: unknown };
 }
 export interface DeliveryHost {
-  readonly isStreaming: boolean;
-  readonly agent: { hasQueuedMessages(): boolean };
   subscribe(listener: (event: DeliveryEvent) => void): () => void;
 }
 
-/** One outbox bridge: use steering as a volatile fast path, stage at request
- * boundaries, and acknowledge only message_end consumption, never enqueue
- * success. Unconsumed fast-path messages return once the host queue is empty.
- * Stop and failed wakeups suppress only automatic turns; idle delivery remains
- * append-only. Agent-emitted messages emit message_end before persistence, so
- * durable receipts cross a separate setImmediate barrier after consumption. */
+/** Keep completions in runtime's outbox until a public boundary or idle handoff.
+ * Only message_end acknowledges consumption; agent-emitted messages need a
+ * separate post-append barrier before their delivery receipt can be persisted. */
 export class CompletionDelivery {
   private boundaries = 0;
   private staged = 0;
-  private wakePaused = false;
+  private stopped = false;
+  private wakeSuppressed = false;
   private closed = false;
-  private fastQueued = new Set<string>();
+  private waking = false;
   private consumed = new Set<string>();
-  private acknowledge?: ReturnType<typeof setImmediate>;
+  private retry?: ReturnType<typeof setTimeout>;
   private ready?: ReturnType<typeof setImmediate>;
   private unsubscribe: () => void;
 
   private runtime: TaskRuntime;
-  private host: DeliveryHost;
   private isIdle: () => boolean;
   private message: (tasks: Snapshot[]) => Message;
   private sendCustomMessage: AgentSession['sendCustomMessage'];
@@ -39,8 +34,7 @@ export class CompletionDelivery {
   constructor(runtime: TaskRuntime, host: DeliveryHost,
     isIdle: () => boolean, message: (tasks: Snapshot[]) => Message,
     sendCustomMessage: AgentSession['sendCustomMessage']) {
-    this.runtime = runtime; this.host = host; this.isIdle = isIdle; this.message = message;
-    this.sendCustomMessage = sendCustomMessage;
+    this.runtime = runtime; this.isIdle = isIdle; this.message = message; this.sendCustomMessage = sendCustomMessage;
     this.unsubscribe = host.subscribe(event => {
       const message = event.message;
       if (this.closed || event.type !== 'message_end' || message?.role !== 'custom'
@@ -48,47 +42,50 @@ export class CompletionDelivery {
       const ids = message.details.taskIds;
       if (Array.isArray(ids) && ids.every(id => typeof id === 'string')) {
         runtime.notificationConsumed(ids);
-        for (const id of ids) { this.fastQueued.delete(id); this.consumed.add(id); }
-        this.scheduleDurability();
+        for (const id of ids) this.consumed.add(id);
+        this.hostReady();
       }
     });
   }
 
-  canSteer(): boolean { return !this.closed && this.boundaries === 0 && !this.wakePaused && this.host.isStreaming; }
-
   send(tasks: Snapshot[]): void | false {
     const boundary = this.boundaries > 0;
-    const streaming = !boundary && this.host.isStreaming;
-    if (this.closed) return false;
-    if (!boundary) {
-      if (streaming) {
-        if (this.wakePaused) return false;
-      } else if (!this.isIdle()) return false;
-    }
+    // Busy completions stay ours: no steering queue, interception or withdrawal.
+    if (this.closed || this.retry || (!boundary && (!this.isIdle() || this.waking))) return false;
     const ids = tasks.map(task => task.id);
-    // Add before calling the host: a test/host double may acknowledge synchronously.
-    if (streaming) for (const id of ids) this.fastQueued.add(id);
-    // Pausing wakeups must not pause safe delivery: idle recovery is append-only.
-    const triggerTurn = !boundary && !this.wakePaused;
-    const pending = this.sendCustomMessage(this.message(tasks), { deliverAs: 'steer', triggerTurn });
-    // Append-only hosts persist before their synchronous message_end receipt.
-    // Agent-emitted messages have not consumed anything yet and still wait for
-    // scheduleDurability()'s post-append barrier.
-    this.flushDurable();
-    if (boundary) this.staged += tasks.length;
-    void pending.catch(() => {
-      if (streaming) for (const id of ids) this.fastQueued.delete(id);
+    const triggerTurn = !boundary && !this.stopped && !this.wakeSuppressed;
+    if (triggerTurn) this.waking = true;
+    const failed = (error: unknown) => {
       if (this.closed) return;
-      // Failed preparation is not delivery. Suppress automatic wakeups; a safe
-      // idle flush or the next legal request can retry without a restart loop.
-      this.wakePaused = true;
-      this.runtime.notificationFailed(ids);
-    });
+      if (triggerTurn) this.waking = false;
+      // The idle Promise covers the whole run. A late model/observer error
+      // must not return an already consumed or explicitly observed notification.
+      const delay = this.runtime.notificationFailed(ids, error);
+      if (delay === undefined) { this.hostReady(); return; }
+      this.wakeSuppressed = true;
+      if (delay === 0) { this.hostReady(); return; }
+      if (this.stopped || this.retry) return;
+      this.retry = setTimeout(() => {
+        this.retry = undefined;
+        if (!this.closed) this.runtime.flushNotifications();
+      }, delay);
+      this.retry.unref();
+    };
+    try {
+      const pending = this.sendCustomMessage(this.message(tasks), { deliverAs: 'steer', triggerTurn });
+      // Append-only handoff persists before its synchronous message_end receipt.
+      this.flushDurable();
+      if (boundary) this.staged += tasks.length;
+      void pending.then(() => {
+        if (triggerTurn) this.waking = false;
+        this.hostReady();
+      }, failed);
+    } catch (error) { failed(error); }
   }
 
-  async atBoundary(): Promise<boolean> {
+  async atBoundary(resume = false): Promise<boolean> {
     if (this.closed) return false;
-    this.wakePaused = false;
+    if (resume) { this.stopped = false; this.wakeSuppressed = false; }
     const before = this.staged;
     this.flushDurable();
     this.boundaries++;
@@ -99,39 +96,19 @@ export class CompletionDelivery {
   }
 
   settled(aborted = false): void {
-    this.returnFastPath();
-    if (aborted) this.wakePaused = true;
+    if (aborted) {
+      this.stopped = true; this.wakeSuppressed = true;
+      clearTimeout(this.retry); this.retry = undefined;
+    }
     this.hostReady();
-  }
-
-  private returnFastPath(): void {
-    // Abort alone does not clear Agent's queues. If anything remains queued,
-    // leave our copies alone: a later run may still consume them. Reconcile
-    // after that drain instead of manufacturing a duplicate.
-    if (this.fastQueued.size === 0 || this.host.agent.hasQueuedMessages()) return;
-    const ids = [...this.fastQueued];
-    this.fastQueued.clear();
-    this.runtime.notificationReturned(ids);
   }
 
   hostReady(): void {
     if (this.closed || this.ready) return;
-    // Leave the host's busy/settled dispatch before flushing. send() alone
-    // decides whether the host state permits steering, a wakeup or append-only.
+    // Leave host dispatch and its message append before checking current state.
     this.ready = setImmediate(() => {
       this.ready = undefined;
       if (!this.closed) { this.flushDurable(); this.runtime.flushNotifications(); }
-    });
-  }
-
-  private scheduleDurability(): void {
-    if (this.closed || this.acknowledge || this.consumed.size === 0) return;
-    // AgentSession awaits extension message_end handlers before appending the
-    // custom message. Append-only delivery is already durable at this point;
-    // the same deferred barrier is harmless for that path.
-    this.acknowledge = setImmediate(() => {
-      this.acknowledge = undefined;
-      this.flushDurable();
     });
   }
 
@@ -141,19 +118,10 @@ export class CompletionDelivery {
     if (this.runtime.notificationDurable(ids)) for (const id of ids) this.consumed.delete(id);
   }
 
-  /** A result was observed before its queued notification was consumed. The
-   * host message itself can't be unsent, but the volatile copy must not be
-   * returned and re-queued as a duplicate later. */
-  forget(id: string): void {
-    this.fastQueued.delete(id);
-    this.consumed.delete(id);
-  }
-
   close(): void {
     this.closed = true;
-    this.fastQueued.clear();
     this.consumed.clear();
-    clearImmediate(this.acknowledge); this.acknowledge = undefined;
+    clearTimeout(this.retry); this.retry = undefined;
     clearImmediate(this.ready); this.ready = undefined;
     this.unsubscribe();
   }
