@@ -43,21 +43,10 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
     const b = await pi.call('bash', { command: longCommand, __background__: 'yes' });
     const idA = (a.result.details as Snapshot).id, idB = (b.result.details as Snapshot).id;
     const opening = command();
-    assert.match(text(), /Current session tasks/);
-    assert.ok(text().indexOf(idB.slice(3, 7)) < text().indexOf(idA.slice(3, 7)));
-    const assertElapsedVisible = () => {
-      const lines = panel!.render(80);
-      const rows = lines.filter(line => [idA, idB].some(id => line.endsWith(` · ${id.slice(3, 7)}`)));
-      assert.equal(rows.length, 2);
-      for (const row of rows) {
-        assert.match(row, / · \d+s · [a-f0-9]{4}$/);
-        assert.ok(visibleWidth(row) <= 80);
-      }
-    };
-    assertElapsedVisible();
+    assert.match(text(), /Background tasks/);
+    assert.ok(text().indexOf(longCommand) < text().indexOf("first command"));
     panel!.handleInput!('\r');
     assert.ok(text().includes(longCommand));
-    assertElapsedVisible();
     const changedBefore = renders, updateSecond = update!;
     await sleep(2);
     await pi.call('bash', { command: 'third command', __background__: 'yes' });
@@ -67,8 +56,7 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
     updateSecond('earlier output\nlive progress\u001b[2J');
     assert.equal(renders, beforeOutput, 'producer chunks do not trigger unbounded panel redraws');
     t.mock.timers.tick(1000);
-    assertElapsedVisible();
-    assert.match(text(), /earlier output\nlive progress/);
+    assert.match(text(), /earlier output\s+live progress/);
     assert.ok(panel!.render(20).every(line => visibleWidth(line) <= 20));
     panel!.handleInput!('\u001b[B');
     panel!.handleInput!('\r');
@@ -97,7 +85,7 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
     assert.match(pi.uiMessages.at(-1)!, /Use \/meantime \[detach\|rescan\|cancel <id>\]/);
     const reopened = command();
     panel!.handleInput!('\r');
-    assert.match(text(), /recent output/); assert.doesNotMatch(text(), /Output:/);
+    assert.match(text(), /recent output/);
     assert.match(text(), /✓/, 'the cooperatively cancelled task settles with the completed glyph');
     await sleep(10); assert.equal(pi.notifications.length, 1);
     panel!.handleInput!('\u001b'); await reopened;

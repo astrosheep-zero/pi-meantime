@@ -312,7 +312,7 @@ test('wait previews show native single and batch bodies, while handle cards reta
     const handles = [];
     for (let i = 0; i < 2; i++) handles.push(await h.pi.call('mcp__preview', { __background__: 'yes' }));
     const ids = handles.map(out => snapshot(out).id);
-    assert.match(managed.renderResult!(handles[0]!.result, { expanded: false, isPartial: false }, theme, {} as Parameters<Render>[3]).render(200).map(line => line.trimEnd()).join('\n'), /● running in background · [a-f0-9]{4}$/,
+    assert.match(managed.renderResult!(handles[0]!.result, { expanded: false, isPartial: false }, theme, {} as Parameters<Render>[3]).render(200).map(line => line.trimEnd()).join('\n'), /● running in background$/,
       'the call header already carries the command, so the handle line stays compact');
     initTheme('dark', false);
     const ui = { requestRender() {} } as ConstructorParameters<typeof ToolExecutionComponent>[5];
@@ -322,7 +322,7 @@ test('wait previews show native single and batch bodies, while handle cards reta
       const preview = make(resolve('meantime', () => undefined)!);
       preview.updateResult({ ...outcome.result, isError: outcome.isError });
       const collapsed = stripTerminalSequences(preview.render(200).map(line => line.trimEnd()).join('\n'));
-      assert.match(collapsed, /✓ mcp__preview · \d+s · [a-f0-9]{4}/, 'wait results open with a glyph header');
+      assert.match(collapsed, /✓ mcp__preview  \d+s/, 'wait results open with a glyph header');
       assert.doesNotMatch(collapsed, /Meantime mt_/, 'the machine receipt line is not duplicated under the header');
       assert.match(collapsed, /BODY_1\b/);
       assert.doesNotMatch(collapsed, /BODY_25\b/);
@@ -354,7 +354,7 @@ test('wait keeps every JSON-valid native details value behind one control envelo
       assert.equal(Object.hasOwn(details, 'usage'), false);
       const card = renderTaskResult(wait.result, { expanded: false }, theme, { args: { action: 'wait' } }, false)
         .render(200).map(line => line.trimEnd()).join('\n');
-      assert.match(card, new RegExp(`✓ mcp__t__shape · \\d+s · ${task.id.slice(3, 7)}`), `${shape}: the renderer reads control details`);
+      assert.match(card, /✓ mcp__t__shape  \d+s/, `${shape}: the renderer reads control details`);
       assert.doesNotMatch(card, /job-7|NATIVE_DETAIL|kept/, `${shape}: native details are not control metadata`);
     }
   } finally { for (const gate of gates.values()) gate.resolve(ok().result); await h.close(); }

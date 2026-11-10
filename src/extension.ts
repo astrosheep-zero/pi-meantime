@@ -7,7 +7,7 @@ import { override } from './codemode.ts';
 import { captureSession, manageTools } from './host.ts';
 import type { HostSession, ManagedCall } from './host.ts';
 import { CONTROL, isRecord, projectResult } from './schema.ts';
-import { clean, commandBlock, detachReasonSuffix, renderCompletion, renderMeantimeCall, renderTaskResult, taskLine } from './render.ts';
+import { panelDetails, detachReasonSuffix, renderCompletion, renderMeantimeCall, renderTaskResult, taskLine } from './render.ts';
 import { TaskRuntime } from './runtime.ts';
 import { CompletionDelivery } from './notifications.ts';
 import type { Snapshot, View, TaskRecord, IndexChange } from './runtime.ts';
@@ -182,7 +182,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
           description: text => theme.fg('muted', text), scrollInfo: text => theme.fg('dim', text), noMatch: text => theme.fg('muted', text),
         }, {
           truncatePrimary({ item, maxWidth }) {
-            return taskLine(tasks.find(task => task.id === item.value)!, theme, true, false, maxWidth);
+            return taskLine(tasks.find(task => task.id === item.value)!, theme, maxWidth);
           },
         });
         list.setSelectedIndex(Math.max(0, tasks.findIndex(task => task.id === selected)));
@@ -202,15 +202,9 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       return {
         render(width) {
           const task = tasks.find(task => task.id === expanded);
-          const details = task ? [
-            ...commandBlock(task, theme, width - 4, true),
-            theme.fg('dim', task.id),
-            // The panel is for the human: show terminal output, not receipt prose.
-            clean(r.tasks.get(task.id)?.outputTail ?? task.progress ?? '').trim(),
-            ...(task.outputPath ? [`Output: ${task.outputPath}`] : []),
-            ...(task.notificationError ? [task.notificationError] : []),
-          ].filter(Boolean) : [];
-          return [theme.fg('accent', 'Current session tasks'),
+          const details = task ? panelDetails(task, theme, width - 4,
+            r.tasks.get(task.id)?.outputTail ?? task.progress ?? '') : [];
+          return [theme.fg('accent', 'Background tasks'),
             ...(tasks.length ? list.render(width) : [theme.fg('muted', '  No background tasks.')]),
             ...details.flatMap(line => wrapTextWithAnsi(line, width)),
             ...(error ? wrapTextWithAnsi(theme.fg('error', error), width) : []),

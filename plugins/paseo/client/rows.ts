@@ -1,3 +1,4 @@
+import type { TextStyle } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { TaskSummary } from "../shared/tasks.js";
 import { elapsedSeconds } from "../shared/tasks.js";
@@ -63,7 +64,7 @@ export function dividerColor(colors: PluginTheme["colors"]): string {
 
 /** Done is green when the theme has one; the pilot lamp always uses this. */
 export function doneColor(colors: PluginTheme["colors"]): string {
-  return readableColor(colors.statusSuccess ?? "#7fb26a", colors);
+  return readableColor(colors.statusSuccess ?? secondaryColor(colors), colors);
 }
 
 export function stateColor(state: string, colors: PluginTheme["colors"]): string {
@@ -88,10 +89,12 @@ export function stateLabel(state: string): string {
 /** Human-facing compact status, without task bookkeeping jargon. */
 export function stateText(state: string): string {
   switch (state) {
-    case "completed": return "done";
-    case "cancel_requested": return "cancel requested";
-    case "outcome_unknown": return "status unknown";
-    default: return state ? state.replaceAll("_", " ") : "unknown";
+    case "running": return "";
+    case "completed": return "✓";
+    case "cancel_requested": return "cancelling";
+    case "outcome_unknown": return "unknown";
+    case "failed": case "cancelled": case "waiting": case "queued": case "started": return state;
+    default: return "unknown";
   }
 }
 
@@ -102,13 +105,18 @@ export function monoFont(platform: "ios" | "android" | "web"): string {
   return 'Menlo, ui-monospace, "SF Mono", SFMono-Regular, Consolas, monospace';
 }
 
-/** Paseo's default codeFontSize/line-height. Plugin themes expose colors only,
- * so this aligns with the native default rather than the user's live setting. */
-export const CODE_FONT_SIZE = 11.5;
-export const CODE_LINE_HEIGHT = 16;
+/** The three card type tokens. Prose headings alone use the host sans face. */
+export const headStyle: TextStyle = { fontWeight: "600" };
+export function typeStyle(platform: "ios" | "android" | "web", kind: "title" | "body" | "meta", prose = false): TextStyle {
+  return { ...(prose ? {} : { fontFamily: monoFont(platform) }),
+    fontSize: kind === "title" ? 13 : kind === "body" ? 12 : 11,
+    lineHeight: kind === "meta" ? 16 : 18, fontWeight: prose ? "600" : "400",
+    ...(kind === "meta" ? { fontVariant: ["tabular-nums"] } : {}) };
+}
 
 /** Snapshot only. A creation time without an end is not an elapsed duration. */
 export function formatElapsed(task: TaskSummary): string | undefined {
+  if (task.state === "started") return undefined;
   const seconds = elapsedSeconds(task);
   if (seconds === undefined) return undefined;
   return formatSeconds(seconds);
@@ -116,8 +124,8 @@ export function formatElapsed(task: TaskSummary): string | undefined {
 
 export function formatSeconds(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
-  return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}`;
+  if (minutes < 60) return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+  return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}m`;
 }
 
 export function taskStateLabel(task: TaskSummary): string {

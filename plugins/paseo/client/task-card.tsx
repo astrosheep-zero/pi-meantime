@@ -1,121 +1,75 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { PluginTimelineItemProps } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { MeantimeCardData } from "../shared/tasks.js";
 import { isActiveTask } from "../shared/tasks.js";
 import { Card, TintedCard, taskTone, toneColor } from "./card.js";
-import { CODE_FONT_SIZE, CODE_LINE_HEIGHT, dividerColor, formatSeconds, frameColor, isDarkSurface, monoFont, secondaryColor } from "./rows.js";
+import { dividerColor, formatSeconds, frameColor, secondaryColor, typeStyle, headStyle } from "./rows.js";
 import { Pip, StatusRule, TaskLine, TaskTable } from "./task-view.js";
 
 type Colors = PluginTheme["colors"];
 type Layout = PluginTimelineItemProps["layout"];
-
-export function MeantimeTaskCard(props: PluginTimelineItemProps<MeantimeCardData>) {
-  return <MeantimeTaskCardBody {...props} />;
-}
-
-function MeantimeTaskCardBody(props: PluginTimelineItemProps<MeantimeCardData>) {
-  const { item, theme, layout } = props;
-  const colors = useMemo(() => theme.colors, [theme]);
-  const data = item.data;
-  if (data.pending) return <WaitSkeleton colors={colors} layout={layout} />;
-  if (data.error !== undefined) return <ErrorCard data={data} colors={colors} layout={layout} />;
+export function MeantimeTaskCard({ item, theme, layout }: PluginTimelineItemProps<MeantimeCardData>) {
+  const colors = theme.colors, data = item.data;
+  if (data.pending) return <TintedCard colors={colors} tone="run" layout={layout}>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 8, height: 18 }}>
+      <Pip tone="run" colors={colors} />
+      <View style={{ flex: 1 }}><View style={{ width: "62%", maxWidth: 220, height: 6, borderRadius: 2, backgroundColor: dividerColor(colors) }} /></View>
+    </View>
+  </TintedCard>;
+  if (data.error !== undefined) return <TintedCard colors={colors} tone="bad" layout={layout}>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+      <Pip tone="bad" colors={colors} />
+      <Text numberOfLines={1} style={{ ...typeStyle(layout.platform, "title"), flex: 1, minWidth: 0, color: colors.foreground }}>
+        <Text style={headStyle}>{(data.call ?? "meantime").split(" ")[0]}</Text><Text style={{ color: secondaryColor(colors) }}>{(data.call ?? "meantime").replace(/^\S+/, "")}</Text>
+      </Text>
+      <Text style={{ ...typeStyle(layout.platform, "meta"), color: toneColor("bad", colors) }}>failed</Text>
+    </View>
+    <StatusRule colors={colors} />
+    <Text selectable style={{ ...typeStyle(layout.platform, "body"), color: colors.foreground }}>{data.error}</Text>
+  </TintedCard>;
   if (data.source === "meantime" && data.action === "wait" && data.tasks.length === 0) {
-    return <WaitAllCard data={data} colors={colors} layout={layout} />;
-  }
-  if (data.source === "meantime" && data.action === "list") {
-    return <ListCard data={data} colors={colors} layout={layout} />;
-  }
-  const tasks = data.source === "handle"
-    ? data.tasks.map(task => task.state === "running" ? { ...task, state: "started" } : task)
-    : data.tasks;
-  return <TaskTable tasks={tasks} colors={colors} layout={layout} grouped={data.action === "wait" && tasks.length > 1} waitOutcome={data.waitOutcome} waitedSeconds={data.waitedSeconds} />;
-}
-
-/** A failed meantime call: one bad lamp, the call line, one human sentence. */
-function ErrorCard({ data, colors, layout }: { data: MeantimeCardData; colors: Colors; layout: Layout }) {
-  const dark = isDarkSurface(colors);
-  return (
-    <TintedCard colors={colors} tone="bad" layout={layout}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Pip tone="bad" colors={colors} />
-        <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: 13, lineHeight: 17, fontWeight: "600", letterSpacing: -0.2 }}>
-          {(data.call ?? "meantime").split(" ")[0]}<Text style={{ color: secondaryColor(colors), fontWeight: "400" }}>{(data.call ?? "meantime").replace(/^\S+/, "")}</Text>
-        </Text>
-        <Text style={{ fontSize: 11.5, lineHeight: 16, fontFamily: monoFont(layout.platform), fontVariant: ["tabular-nums"], fontWeight: "500", color: toneColor("bad", colors) }}>failed</Text>
-      </View>
-      <StatusRule colors={colors} />
-      <Text selectable style={{ color: dark ? "#a8aeb7" : secondaryColor(colors), fontFamily: monoFont(layout.platform), fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>{data.error}</Text>
-    </TintedCard>
-  );
-}
-
-/** Wait-all: every pending task is being observed; nothing to list yet. */
-function WaitAllCard({ data, colors, layout }: { data: MeantimeCardData; colors: Colors; layout: Layout }) {
-  const tone = data.waitOutcome === "interrupted" ? "neutral" : "run";
-  const dark = isDarkSurface(colors);
-  return (
-    <TintedCard colors={colors} tone={tone} layout={layout}>
+    const tone = data.waitOutcome === "interrupted" ? "neutral" : "run";
+    return <TintedCard colors={colors} tone={tone} layout={layout}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
         <Pip tone={tone} colors={colors} />
-        <Text style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: 13, lineHeight: 17, fontWeight: "600", letterSpacing: -0.2 }}>All pending tasks<Text style={{ color: secondaryColor(colors), fontFamily: monoFont(layout.platform), fontWeight: "400" }}> · {data.total ?? "?"} tasks</Text></Text>
-        {data.waitOutcome ? <Text style={{ fontSize: 11.5, lineHeight: 16, fontFamily: monoFont(layout.platform), fontVariant: ["tabular-nums"], fontWeight: "500", color: toneColor(tone, colors) }}>{data.waitOutcome}</Text> : null}
-        {data.waitedSeconds !== undefined
-          ? <Text numberOfLines={1} style={{ fontSize: 11.5, lineHeight: 16, fontFamily: monoFont(layout.platform), fontVariant: ["tabular-nums"], color: dark ? "#6b727b" : secondaryColor(colors) }}>waited <Text style={{ fontWeight: "600", color: dark ? "#cbd0d6" : colors.foreground }}>{formatSeconds(data.waitedSeconds)}</Text></Text>
-          : null}
+        <Text style={{ ...typeStyle(layout.platform, "title", true), flex: 1, color: colors.foreground }}>All pending tasks</Text>
+        <View style={{ flexDirection: "row", alignItems: "baseline", gap: 6 }}>
+          {data.total !== undefined ? <Text style={{ ...typeStyle(layout.platform, "meta"), color: secondaryColor(colors) }}>{data.total} tasks</Text> : null}
+          {data.waitOutcome ? <Text style={{ ...typeStyle(layout.platform, "meta"), color: toneColor(tone, colors) }}>{data.waitOutcome}</Text> : null}
+          {data.waitedSeconds !== undefined ? <Text style={{ ...typeStyle(layout.platform, "meta"), color: frameColor(colors) }}>waited <Text style={{ color: secondaryColor(colors) }}>{formatSeconds(data.waitedSeconds)}</Text></Text> : null}
+        </View>
       </View>
-    </TintedCard>
-  );
+    </TintedCard>;
+  }
+  if (data.source === "meantime" && data.action === "list") return <ListCard data={data} colors={colors} layout={layout} />;
+  const tasks = data.source === "handle" ? data.tasks.map(task => task.state === "running" ? { ...task, state: "started" } : task) : data.tasks;
+  return <TaskTable tasks={tasks} colors={colors} layout={layout} waitOutcome={data.waitOutcome} waitedSeconds={data.waitedSeconds} />;
 }
 
-/**
- * The inventory answer: collapsed to one line by default — how many tasks,
- * how many still running, a pip per visible task. Tap to unfold the rows.
- */
-export function ListCard({ data, colors, layout, defaultOpen = false, openTask = false }: { data: MeantimeCardData; colors: Colors; layout: Layout; defaultOpen?: boolean; openTask?: boolean }) {
+/** Lists and the board share a heading, summary, divided rows and drawers. */
+export function ListCard({ data, colors, layout, defaultOpen = false, openTask = false, hint }: { data: MeantimeCardData; colors: Colors; layout: Layout; defaultOpen?: boolean; openTask?: boolean; hint?: string }) {
   const [open, setOpen] = useState(defaultOpen);
-  const empty = data.tasks.length === 0;
+  if (data.tasks.length === 0) return <Card colors={colors} layout={layout}><Text style={{ ...typeStyle(layout.platform, "title", true), color: colors.foreground }}>No background tasks</Text></Card>;
   const groups = ([['run', 'active'], ['ok', '✓'], ['bad', '✕'], ['neutral', 'other']] as const)
     .map(([tone, label]) => ({ tone, label, count: data.tasks.filter(task => (isActiveTask(task) ? 'run' : taskTone(task)) === tone).length })).filter(group => group.count);
   const more = data.total !== undefined && data.moreOffset !== undefined ? Math.max(0, data.total - data.moreOffset) : 0;
-  const dark = isDarkSurface(colors);
-  const chevColor = dark ? "#5e646d" : frameColor(colors);
-  const muted = secondaryColor(colors);
-  const divider = dividerColor(colors);
-  return (
-    <Card colors={colors} layout={layout}>
-      <Pressable onPress={() => !empty && setOpen(prev => !prev)} accessibilityRole="button" accessibilityLabel="Background tasks"
-        style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Text style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: 13, lineHeight: 17, fontWeight: "600", letterSpacing: -0.2 }}>
-          {empty ? "No background tasks" : "Background tasks"}
-        </Text>
-        {empty ? <Text style={{ fontSize: 11.5, lineHeight: 16, fontFamily: monoFont(layout.platform), color: muted }}>none</Text>
-          : groups.map(group => <Text key={group.tone} style={{ fontSize: 11.5, lineHeight: 16, fontFamily: monoFont(layout.platform), color: toneColor(group.tone, colors) }}>{group.count} {group.label}</Text>)}
-        {!empty ? <Icon name={open ? "ChevronUp" : "ChevronDown"} size={11} color={chevColor} /> : null}
-      </Pressable>
-      {open ? data.tasks.map((task, index) => (
-        <View key={task.id} style={{ paddingVertical: 6, borderTopWidth: 0.5, borderTopColor: divider, marginTop: index === 0 ? 7 : 0 }}>
-          <TaskLine task={task} colors={colors} layout={layout} showId muted={!isActiveTask(task)} defaultOpen={openTask} />
-        </View>
-      )) : null}
-      {open && more > 0
-        ? <Text style={{ marginTop: 4, paddingTop: 6, borderTopWidth: 0.5, borderTopColor: divider,
-          color: muted, fontSize: 10, lineHeight: 14, fontFamily: monoFont(layout.platform) }}>+{more} more</Text>
-        : null}
-    </Card>
-  );
-}
-
-function WaitSkeleton({ colors, layout }: { colors: Colors; layout: Layout }) {
-  return <TintedCard colors={colors} tone="run" layout={layout}>
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-      <Pip tone="run" colors={colors} />
-      <View style={{ flex: 1, height: CODE_LINE_HEIGHT, justifyContent: "center" }}>
-        <View style={{ width: "62%", maxWidth: 220, height: 6, borderRadius: 2, backgroundColor: dividerColor(colors) }} />
+  const divider = { borderTopWidth: 0.5, borderTopColor: dividerColor(colors) };
+  const footer = { ...typeStyle(layout.platform, "meta"), paddingVertical: 8, color: frameColor(colors), ...divider };
+  return <Card colors={colors} layout={layout} grouped>
+    <Pressable onPress={() => setOpen(prev => !prev)} accessibilityRole="button" accessibilityLabel="Background tasks" style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 8 }}>
+      <Text style={{ ...typeStyle(layout.platform, "title", true), flex: 1, minWidth: 0, color: colors.foreground }}>Background tasks</Text>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+        {groups.map(group => <Text key={group.tone} style={{ ...typeStyle(layout.platform, "meta"), color: toneColor(group.tone, colors) }}>{group.count} {group.label}</Text>)}
+        <Icon name={open ? "ChevronUp" : "ChevronDown"} size={12} color={frameColor(colors)} />
       </View>
-      <Icon name="ChevronDown" size={11} color="#5e646d" />
-    </View>
-  </TintedCard>;
+    </Pressable>
+    {open ? <>
+      {data.tasks.map(task => <View key={task.id} style={divider}><TaskLine task={task} colors={colors} layout={layout} grouped defaultOpen={openTask} /></View>)}
+      {more > 0 ? <Text style={footer}>+{more} more</Text> : null}
+      {hint && data.tasks.some(isActiveTask) ? <Text style={footer}>{hint}</Text> : null}
+    </> : null}
+  </Card>;
 }

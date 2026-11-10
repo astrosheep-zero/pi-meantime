@@ -6,7 +6,6 @@ import { isDarkSurface, rgb, secondaryColor } from "./rows.js";
 type Colors = PluginTheme["colors"];
 export type Tone = "ok" | "bad" | "run" | "neutral";
 export type WaitOutcome = "timeout" | "interrupted";
-const FALLBACK_RGB: Record<Tone, string> = { ok: "127,178,106", bad: "239,125,107", run: "233,180,90", neutral: "141,153,168" };
 
 export function taskTone(task: Pick<TaskSummary, "state" | "exitCode">, outcome?: WaitOutcome): Tone {
   if (outcome) return outcome === "timeout" ? "run" : "neutral";
@@ -16,13 +15,13 @@ export function taskTone(task: Pick<TaskSummary, "state" | "exitCode">, outcome?
   return "neutral";
 }
 export function toneColor(tone: Tone, colors: Colors): string {
-  return tone === "ok" ? (colors.statusSuccess ?? "#7fb26a")
-    : tone === "bad" ? (colors.statusDanger ?? "#ef7d6b")
-    : tone === "run" ? (colors.statusWarning ?? "#e9b45a")
+  return tone === "ok" ? (colors.statusSuccess ?? secondaryColor(colors))
+    : tone === "bad" ? colors.statusDanger
+    : tone === "run" ? colors.statusWarning
     : secondaryColor(colors);
 }
 export function toneRgb(tone: Tone, colors: Colors): string {
-  return rgb(toneColor(tone, colors))?.join(",") ?? FALLBACK_RGB[tone];
+  return (rgb(toneColor(tone, colors)) ?? rgb(colors.foreground))?.join(",") ?? "0,0,0";
 }
 
 /**
@@ -56,7 +55,7 @@ export function glassChrome(colors: Colors, platform: "ios" | "android" | "web",
     ...(platform === "web"
       ? { backgroundImage: images.join(", ") }
       : { experimental_backgroundImage: images.join(", ") }),
-    paddingHorizontal: 10,
-    paddingVertical: 7,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   };
 }

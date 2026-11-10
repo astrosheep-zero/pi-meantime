@@ -89,8 +89,8 @@ test("wait outcomes annotate active siblings while settled results retain their 
     ] });
     assert.match(html, new RegExp(`>${outcome}<`));
     assert.match(html, /waited /);
-    assert.match(html, /01:12/);
-    assert.match(html, /00:03/);
+    assert.match(html, /1:12/);
+    assert.match(html, /0:03/);
   }
 });
 test("actual call errors remain readable call-error cards", () => {
