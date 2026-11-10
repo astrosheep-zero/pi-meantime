@@ -92,7 +92,7 @@ test("a collapsed row previews the first command line and opens the full script"
   const task = { id: "mt_a1b2c3d4", state: "running", command: "npm test\n  --  --watch" };
   const collapsed = row(task);
   assert.match(collapsed, /test<\/span>/);
-  assert.match(collapsed, /\+1 lines/);
+  assert.match(collapsed, /\+1 line\b(?!s)/);
   const open = openRow({ ...task, progress: "2/5" });
   // The header keeps the flattened one-liner; the script unfolds once, in the drawer.
   assert.match(open, /test<\/span>/);

@@ -26,7 +26,7 @@ export function TaskCommand({ task, colors, layout }: { task: TaskSummary; color
     <Text numberOfLines={1} style={{ ...typeStyle(layout.platform, "title"), flexShrink: 1, minWidth: 0, color: colors.foreground }}>
       <Text style={headStyle}>{head}</Text><Text style={{ color: muted }}>{title.slice(head.length)}</Text>
     </Text>
-    {parts && parts.length > 1 ? <Text style={{ ...typeStyle(layout.platform, "meta"), flexShrink: 0, color: frameColor(colors) }}> +{parts.length - 1} lines</Text> : null}
+    {parts && parts.length > 1 ? <Text style={{ ...typeStyle(layout.platform, "meta"), flexShrink: 0, color: frameColor(colors) }}> +{parts.length - 1} {parts.length === 2 ? "line" : "lines"}</Text> : null}
   </View>;
 }
 function useNow(active: boolean): number {

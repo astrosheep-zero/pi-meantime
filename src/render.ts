@@ -50,7 +50,7 @@ export function taskLine(task: TaskDisplay, theme: RenderTheme, width = 100, wai
   const suffix = facts ? `  ${facts}` : '';
   const parts = clean(taskCommand(task) ?? '').split('\n');
   const title = [task.command === undefined ? task.tool : '', parts[0]!.replace(/\s+/g, ' ').trim()].filter(Boolean).join(' ');
-  const hint = parts.length > 1 ? ` +${parts.length - 1} lines` : '';
+  const hint = parts.length > 1 ? ` +${parts.length - 1} line${parts.length === 2 ? "" : "s"}` : '';
   const command = truncateToWidth(title, Math.max(1, width - visibleWidth(suffix + hint) - 2), theme.fg('dim', '…')) + theme.fg('dim', hint);
   return truncateToWidth(`${stateGlyph(theme, task.exitCode ? 'failed' : task.state)} ${command}${theme.fg('dim', suffix)}`, width, '…');
 }
