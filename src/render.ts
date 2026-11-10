@@ -128,8 +128,9 @@ export function renderTaskResult(result: ResultLike & { details?: unknown }, opt
     }
     if (isWait && (details?.waitAll === true || (!tasks.length && Array.isArray(details?.tasks)))) {
       const pending = details?.pendingCount;
-      const count = typeof pending === 'number' && Number.isSafeInteger(pending) && pending >= 0 ? ` · ${pending}` : '';
-      lines.push(`${theme.bold('meantime')} wait all${theme.fg('dim', count)}`);
+      const known = typeof pending === 'number' && Number.isSafeInteger(pending) && pending >= 0;
+      lines.push(`${theme.bold('meantime')} wait all${known && pending > 0 ? theme.fg('dim', ` · ${pending} pending`) : ''}`);
+      if (known && pending === 0) lines.push(theme.fg('dim', 'no pending tasks'));
     }
     if (tasks.length && (isWait || page)) {
       const isCancel = isRecord(context.args) && context.args.action === 'cancel';

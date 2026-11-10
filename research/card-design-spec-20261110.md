@@ -66,7 +66,7 @@ Removed: letterSpacing -0.2, weight 500, sizes 11.5 and 10, line-height 14/17.
   - Board error: single card, bad pip + same `meantime list` title; below, hairline + `body secondary` error text.
   - Board hint `Ask the agent to cancel a task.` — last row, `meta tertiary`, only when active > 0.
 - **Wait / completion, 1 task**: single card with the row. **>1 task**: grouped card, no heading row.
-- **Wait-all**: one card: run pip, bold `meantime` (MONO title 600 primary) + normal ` wait all` (MONO title 400 secondary); right: `· N` (`meta secondary`, observed pendingCount only) · outcome word · `waited` value. If task snapshots are supplied, show them as divided rows beneath the heading in that same grouped card, preserving their output drawers. Unknown count is omitted; known empty count is 0.
+- **Wait-all**: one card: run pip, bold `meantime` (MONO title 600 primary) + normal ` wait all` (MONO title 400 secondary); right: `N pending` (`meta secondary`, observed pendingCount > 0 only) · outcome word · `waited` value. If task snapshots are supplied, show them as divided rows beneath the heading in that same grouped card, preserving their output drawers. Unknown count is omitted; known 0 shows a `meta frame` line `no pending tasks` under the heading.
 - **Error**: single card: bad pip, call line `title` MONO (head 600 primary, rest secondary), right `failed` `meta` bad, no chevron; hairline, 8, message `body primary`.
 - **Skeleton**: single card 34 tall: run pip, bar 6px tall, width 62% max 220, radius 2, `hairline` ink. No chevron.
 
@@ -90,7 +90,7 @@ Expanded block (completion, wait, list item, panel item):
 No `Output:` / `Command:` lines (path lives in the footer). One blank line between task blocks.
 
 - List heading: bold `meantime` + normal ` list`, including empty/error variants, + dim ` · 3 active · 1 ✓ · 1 ✕ · 2 other` (non-zero only) + dim collapsed/expanded chevron. Collapsed preview uses the same newest-3-active / latest-1-finished rule as Paseo; expanded shows the full returned page. Final dim `+N more` combines the explicit remainingCount with returned tasks hidden by the preview.
-- Wait-all: bold `meantime` + normal ` wait all · N` from the supplied observed pendingCount, followed by supplied task rows. Omit the number when unknown; display 0 for known empty.
+- Wait-all: bold `meantime` + normal ` wait all` + dim ` · N pending` from the supplied observed pendingCount, followed by supplied task rows. Omit the number when unknown; known 0 shows a dim `no pending tasks` line.
 - Handle: `● running in background (120s timeout)` — suffixes `(Ns timeout)` from config, `(manual detach)`, `(steered)`, explicit none; no id.
 - Panel: title bold `meantime`; empty body muted `no tasks`; `→ ` selection marker and key-hint footer unchanged; items use the row format, expanded item uses the expanded block.
 - Tool label: `meantime`. Paseo workspace/explorer panel title and command-center entry: `meantime list` (host-owned navigation typography). Status bar active count `bg 1/4` unchanged; notification failure text is `meantime: N notification(s) unsent`. Sentence-style system prompt/error prose is unchanged.

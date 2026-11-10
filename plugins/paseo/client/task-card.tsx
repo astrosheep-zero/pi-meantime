@@ -37,11 +37,12 @@ export function MeantimeTaskCard({ item, theme, layout }: PluginTimelineItemProp
         <Pip tone={tone} colors={colors} />
         <Text style={{ ...typeStyle(layout.platform, "title"), flex: 1, color: colors.foreground }}><Text style={headStyle}>meantime</Text><Text style={{ color: secondaryColor(colors) }}> wait all</Text></Text>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 6 }}>
-          {data.pendingCount !== undefined ? <Text style={{ ...typeStyle(layout.platform, "meta"), color: secondaryColor(colors) }}>· {data.pendingCount}</Text> : null}
+          {data.pendingCount ? <Text style={{ ...typeStyle(layout.platform, "meta"), color: secondaryColor(colors) }}>{data.pendingCount} pending</Text> : null}
           {data.waitOutcome ? <Text style={{ ...typeStyle(layout.platform, "meta"), color: toneColor(tone, colors) }}>{data.waitOutcome}</Text> : null}
           {data.waitedSeconds !== undefined ? <Text style={{ ...typeStyle(layout.platform, "meta"), color: frameColor(colors) }}>waited <Text style={{ color: secondaryColor(colors) }}>{formatSeconds(data.waitedSeconds)}</Text></Text> : null}
         </View>
       </View>
+      {data.pendingCount === 0 ? <Text style={{ ...typeStyle(layout.platform, "meta"), marginTop: 8, color: frameColor(colors) }}>no pending tasks</Text> : null}
       {data.tasks.map(task => <View key={task.id} style={{ borderTopWidth: 0.5, borderTopColor: dividerColor(colors) }}>
         <TaskLine task={task} colors={colors} layout={layout} grouped waitOutcome={data.waitOutcome} waitedSeconds={data.waitedSeconds} />
       </View>)}

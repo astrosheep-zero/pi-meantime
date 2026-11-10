@@ -56,7 +56,7 @@ test("wait-all retains its observed count and target rows together", () => {
     tasks: [{ id: "mt_11111111", tool: "codemode", args: { code: "return 42;" }, state: "running" }] });
   assert.match(html, /meantime/);
   assert.match(html, / wait all/);
-  assert.match(html, /· 2/);
+  assert.match(html, /2 pending/);
   assert.match(html, /codemode/);
 });
 
@@ -70,7 +70,7 @@ test("wait cards retain every supplied target and its outcome", () => {
   assert.match(html, />exit 2</);
 });
 test("wait-all shows the supplied task count and an empty list remains an answer", () => {
-  assert.match(render({ source: "meantime", action: "wait", tasks: [], waitAll: true, pendingCount: 0 }), /· 0/);
+  assert.match(render({ source: "meantime", action: "wait", tasks: [], waitAll: true, pendingCount: 0 }), /no pending tasks/);
   const empty = render({ source: "meantime", action: "list", tasks: [] });
   assert.match(empty, /meantime/);
   assert.match(empty, / list/);

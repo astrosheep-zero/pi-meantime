@@ -23,7 +23,7 @@ test('collapsed task inventory previews newest active work and reports every hid
 });
 test('wait-all renders the supplied current pending count with task rows', () => {
   const text = result({ waitAll: true, pendingCount: 3, tasks: [running] }, 'wait');
-  assert.match(text, /meantime wait all · 3/);
+  assert.match(text, /meantime wait all · 3 pending/);
   assert.match(text, /● npm watch/);
 });
 
