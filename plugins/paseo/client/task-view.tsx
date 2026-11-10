@@ -80,7 +80,7 @@ export function TaskLine({ task, colors, layout, defaultOpen = false, grouped = 
       {open ? <View style={{ paddingBottom: grouped ? 8 : 0 }}>
         <StatusRule colors={colors} />
         <ScrollView style={{ maxHeight: layout.compact ? 240 : 360 }} contentContainerStyle={{ gap: 8 }} nestedScrollEnabled>
-          {rawCommand !== undefined && (rawCommand.includes("\n") || rawCommand.length > 60) ? <Text selectable style={{ ...typeStyle(layout.platform, "body"), color: colors.foreground }}>{rawCommand}</Text> : null}
+          {rawCommand !== undefined && (task.args !== undefined || rawCommand.includes("\n") || rawCommand.length > 60) ? <Text selectable style={{ ...typeStyle(layout.platform, "body"), color: colors.foreground }}>{rawCommand}</Text> : null}
           {output ? <FormattedOutput output={output} colors={colors} layout={layout} /> : null}
         </ScrollView>
         {task.state === "cancel_requested" ? <Text style={{ ...typeStyle(layout.platform, "meta"), marginTop: 8, color: toneColor("run", colors) }}>cancel requested; outcome not settled yet</Text> : null}

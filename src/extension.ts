@@ -15,7 +15,8 @@ import { truncateUtf8 } from './store.ts';
 
 export interface InstallOptions { config: Config; connect?: (pi: PiHost) => HostSession; codemodeExecute?: Tool['execute'] }
 const RESULT_SCHEMA = {
-  type: 'object', properties: { task: { type: 'object' }, result: {}, tasks: { type: 'array', items: { type: 'object' } }, pending: { type: 'array', items: { type: 'object' } }, result_available: { type: 'boolean' } },
+  type: 'object', properties: { task: { type: 'object' }, result: {}, tasks: { type: 'array', items: { type: 'object' } }, pending: { type: 'array', items: { type: 'object' } }, result_available: { type: 'boolean' },
+    total: { type: 'integer' }, remainingCount: { type: 'integer' }, waitAll: { type: 'boolean' }, pendingCount: { type: 'integer' } },
 };
 function textResult(text: string, details?: unknown, isError = false): Result {
   return { content: [{ type: 'text', text }], details, isError };
@@ -28,7 +29,7 @@ function owner(ctx: Context): string {
 function json(value: unknown): Json { return JSON.parse(JSON.stringify(value)) as Json; }
 function foregroundOrHandle(view: View, autoDetachMs: number): Result {
   if (view.kind === 'handle') {
-    const previewTask = withFullCommand(view.task);
+    const previewTask = view.task;
     return {
       content: [{ type: 'text', text: `Meantime ${view.task.id} running in background${detachReasonSuffix(view.task.detachReason, autoDetachMs)}.` }],
       details: previewTask,
@@ -44,9 +45,6 @@ function commandPreview(command: string): string {
   const preview = truncateUtf8(cleaned, 120);
   return preview === cleaned ? cleaned : `${preview}…`;
 }
-/** The structured task snapshot is UI data, not a receipt: preserve the exact
- * command so the Paseo detail can be copied. Prose stays bounded separately. */
-function withFullCommand<T extends { command?: string }>(task: T): T { return task; }
 /** Same preview flattened for single-line surfaces (receipts and TUI list rows). */
 function commandOneLine(command: string): string {
   return commandPreview(command).replace(/\s+/g, ' ');
@@ -98,7 +96,6 @@ function noResultReceipt(task: Snapshot): string {
 function storedResult(task: Snapshot, source: Result, budget?: { remaining: number }): Result {
   // A receipt will itself enter Pi's persisted toolResult pipeline. Never pass
   // unknown live details back into that append path either.
-  task = withFullCommand(task);
   source = projectResult(source);
   let inlineOmitted = false;
   const content = source.content.filter(b => b.type === 'text').map(block => {
@@ -204,8 +201,8 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
           const task = tasks.find(task => task.id === expanded);
           const details = task ? panelDetails(task, theme, width - 4,
             r.tasks.get(task.id)?.outputTail ?? task.progress ?? '') : [];
-          return [theme.fg('accent', 'Background tasks'),
-            ...(tasks.length ? list.render(width) : [theme.fg('muted', '  No background tasks.')]),
+          return [theme.bold('meantime'),
+            ...(tasks.length ? list.render(width) : [theme.fg('muted', '  no tasks')]),
             ...details.flatMap(line => wrapTextWithAnsi(line, width)),
             ...(error ? wrapTextWithAnsi(theme.fg('error', error), width) : []),
             ...wrapTextWithAnsi(theme.fg('dim', '↑/↓ select · Enter expand · c cancel · Esc/q close'), width),
@@ -245,7 +242,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     const tasks = runtime.list();
     const active = tasks.filter(t => t.localRunning);
     const exhausted = tasks.filter(t => t.notification === 'failed');
-    currentCtx.ui.setStatus('meantime', exhausted.length ? `bg: ${exhausted.length} notification(s) unsent`
+    currentCtx.ui.setStatus('meantime', exhausted.length ? `meantime: ${exhausted.length} notification(s) unsent`
       : active.length ? `bg ${active.length}/${config.maxRunning}` : undefined);
     for (const task of exhausted) diagnostic(task.id, task.notificationError!);
   }
@@ -262,7 +259,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
     const r = assertRuntime(call.ctx);
     const shell = call.name === 'bash' || call.name === 'powershell';
     return r.run({ tool: call.name, kind: shell ? 'bash' : 'tool', callId: call.id,
-      mode: call.mode, command: shell && typeof call.args.command === 'string' ? call.args.command : undefined,
+      mode: call.mode, ...(shell && typeof call.args.command === 'string' ? { command: call.args.command } : { args: call.args }),
       canDetach: interactive(call.ctx) && call.canDetach, parentSignal: call.signal, onUpdate: call.update,
       userDetach: inheritedDetach(call.id), execute: call.execute,
       codemodeRootId: call.codemodeRootId, onDetach: call.onDetach, onSettled: call.onSettled,
@@ -304,7 +301,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
   });
 
   pi.registerTool({
-    name: 'meantime', label: 'Background tasks', exposure: 'model-only',
+    name: 'meantime', label: 'meantime', exposure: 'model-only',
     description: 'List, wait on, or cancel background tasks. Tasks notify automatically when done — only call wait when blocked on a result or to read full output.',
     parameters: { type: 'object', properties: {
       action: { type: 'string', enum: ['list', 'wait', 'cancel'] },
@@ -329,8 +326,9 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       if (params.action === 'list') {
         const offset = Number.isInteger(params.offset) && Number(params.offset) >= 0 ? Number(params.offset) : 0;
         const limit = Number.isInteger(params.limit) && Number(params.limit) > 0 ? Math.min(32, Number(params.limit)) : 10;
-        const all = r.list(); const tasks = all.slice(offset, offset + limit).map(t => withTail({ ...withFullCommand(t), progress: t.progress?.slice(0, 256) }));
-        const page = { tasks, next_offset: offset + limit < all.length ? offset + limit : null, total: all.length };
+        const all = r.list(); const tasks = all.slice(offset, offset + limit).map(t => withTail({ ...t, progress: t.progress?.slice(0, 256) }));
+        const page = { tasks, next_offset: offset + limit < all.length ? offset + limit : null, total: all.length,
+          remainingCount: Math.max(0, all.length - offset - tasks.length) };
         const text = tasks.map(taskReceipt).join('\n') || 'No meantime tasks.';
         const result = textResult(`${text}${page.next_offset !== null ? `\n+${all.length - page.next_offset} more` : ''}`, page); result.structuredContent = json(page); return result;
       }
@@ -338,16 +336,18 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       if (params.action !== 'wait' && params.action !== 'cancel') throw new Error('Unknown meantime action');
       const cancel = params.action === 'cancel';
       if (!cancel && params.mode !== undefined && params.mode !== 'any' && params.mode !== 'all') throw new Error('mode must be any or all');
+      const waitAll = !cancel && params.ids === undefined;
+      const waitMeta = (tasks: Snapshot[]): Record<string, Json> => waitAll ? { waitAll: true, pendingCount: tasks.filter(t => t.localRunning || t.endedAt === undefined).length } : {};
       let ids = params.ids as string[] | undefined;
       if (ids === undefined) {
         if (cancel) throw new Error('cancel requires ids');
         ids = r.list().filter(task => task.localRunning || task.endedAt === undefined).map(task => task.id);
         if (ids.length === 0) {
-          const page = { tasks: [] as unknown[], pending: [] as unknown[] };
+          const page = { tasks: [] as unknown[], pending: [] as unknown[], ...waitMeta([]) };
           const empty = textResult('No pending meantime tasks.', page); empty.structuredContent = json(page); return empty;
         }
       }
-      if (!Array.isArray(ids) || ids.length < 1 || ids.length > 32 || !ids.every(id => typeof id === 'string')) throw new Error('ids must contain 1 to 32 task ids');
+      if (!Array.isArray(ids) || ids.length < 1 || (!waitAll && ids.length > 32) || !ids.every(id => typeof id === 'string')) throw new Error('ids must contain 1 to 32 task ids');
       // Snapshot the targets before blocking so the streaming update can name them.
       const targets = [...new Map(ids.map(id => { const t = r.get(id); return [t.id, t] as const; })).values()];
       const waitStartedAt = Date.now();
@@ -355,13 +355,13 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       const emitPreview = () => {
         try {
           const snapshots = targets.map(t => r.get(t.id));
-          const previewTargets = snapshots.map(t => withTail(withFullCommand(t)));
+          const previewTargets = snapshots.map(withTail);
           const key = JSON.stringify(previewTargets);
           if (key === lastPreview) return;
           lastPreview = key;
           _update?.({
             content: [{ type: 'text', text: snapshots.map(taskReceipt).join('\n') }],
-            details: { tasks: previewTargets, waitStartedAt },
+            details: { tasks: previewTargets, waitStartedAt, ...waitMeta(snapshots) },
           });
         } catch { /* A dead renderer cannot interrupt the wait. */ }
       };
@@ -378,12 +378,15 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
           // is not the cancel call's failure.
           if (result) {
             const receipt = storedResult(withTail(task), result);
-            return cancel ? { ...receipt, isError: false } : receipt;
+            const meta = waitMeta([task]);
+            return { ...receipt, ...(cancel ? { isError: false } : {}), details: { ...receipt.details as object, ...meta },
+              structuredContent: { ...receipt.structuredContent as Record<string, Json>, ...meta } };
           }
-          const previewTask = withTail(withFullCommand(task));
+          const previewTask = withTail(task);
+          const meta = waitMeta([task]);
           return {
-            ...textResult(noResultReceipt(task), { ...previewTask, ...(waitOutcome ? { waitedMs: Math.max(0, Date.now() - waitStartedAt), waitOutcome } : {}) }),
-            structuredContent: { task: json(previewTask), result_available: false },
+            ...textResult(noResultReceipt(task), { ...previewTask, ...meta, ...(waitOutcome ? { waitedMs: Math.max(0, Date.now() - waitStartedAt), waitOutcome } : {}) }),
+            structuredContent: { task: json(previewTask), result_available: false, ...meta },
           };
         }
         const batch = cancel
@@ -396,10 +399,10 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
         const page = { tasks: tasks.map(({ task, result }, i) => {
             const taskDetails = isRecord(views[i]!.details) && isRecord((views[i]!.details as Record<string, unknown>).task)
               ? (views[i]!.details as { task: { output?: string } }).task : undefined;
-            return withTail({ ...withFullCommand(task), ...(taskDetails?.output !== undefined ? { output: taskDetails.output } : {}),
+            return withTail({ ...task, ...(taskDetails?.output !== undefined ? { output: taskDetails.output } : {}),
               result_available: result !== undefined, result: (views[i]!.structuredContent as { result?: Json } | undefined)?.result });
           }),
-          pending: pending.map(task => withTail(withFullCommand(task))),
+          pending: pending.map(withTail), ...waitMeta([...tasks.map(pair => pair.task), ...pending]),
           ...(waitOutcome ? { waitedMs: Math.max(0, Date.now() - waitStartedAt), waitOutcome } : {}) };
         return {
           content: [...views.flatMap(view => view.content), { type: 'text', text: `Pending: ${pending.map(task => task.id).join(', ') || '(none)'}` }],
@@ -411,8 +414,8 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       } catch (error) {
         if (cancel || !signal?.aborted) throw error;
         const errMsg = error instanceof Error ? error.message : String(error);
-        const abortedTasks = targets.map(t => withTail(withFullCommand(r.get(t.id))));
-        return { content: [{ type: 'text', text: errMsg }], details: { tasks: abortedTasks, waitedMs: Math.max(0, Date.now() - waitStartedAt), waitOutcome: 'interrupted' as const }, isError: true };
+        const abortedTasks = targets.map(t => withTail(r.get(t.id)));
+        return { content: [{ type: 'text', text: errMsg }], details: { tasks: abortedTasks, ...waitMeta(abortedTasks), waitedMs: Math.max(0, Date.now() - waitStartedAt), waitOutcome: 'interrupted' as const }, isError: true };
       } finally {
         clearInterval(timer);
       }
@@ -482,7 +485,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
           content: `<system-reminder>\n${entries.map(e => e.text).join('\n\n')}${entries.some(e => e.hasMore) ? '\n\nUse meantime(action="wait", ids=[...]) for full output.' : ''}\n</system-reminder>`,
           display: true, details: { taskIds: tasks.map(t => t.id),
             tasks: tasks.map(t => ({ id: t.id, tool: t.tool, state: t.state,
-              ...(t.command !== undefined ? { command: t.command } : {}),
+              ...(t.command !== undefined ? { command: t.command } : {}), ...(t.args !== undefined ? { args: t.args } : {}),
               ...(t.exitCode !== undefined ? { exitCode: t.exitCode } : {}),
               ...(t.outputPath !== undefined ? { outputPath: t.outputPath } : {}),
               ...(t.cancelRequestedAt !== undefined ? { cancelRequestedAt: t.cancelRequestedAt } : {}),

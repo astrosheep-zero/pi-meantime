@@ -39,6 +39,27 @@ const render = module.exports.render!;
 const renderList = module.exports.renderList!;
 const renderLine = module.exports.renderLine!;
 
+test("collapsed inventory previews work while retaining the real hidden count", () => {
+  const tasks = Array.from({ length: 5 }, (_, i) => ({ id: `mt_${i}`, state: "running", command: `work${i}`, createdAt: i }));
+  const text = render({ source: "meantime", action: "list", tasks, total: 12, remainingCount: 7 }).replace(/<[^>]*>/g, "");
+  assert.deepEqual([...text.matchAll(/work\d/g)].map(m => m[0]), ["work4", "work3", "work2"]);
+  assert.ok(text.includes("+9 more"));
+  const finished = render({ source: "meantime", action: "list", tasks: [
+    { id: "mt_11111111", state: "completed", command: "older", endedAt: 10 },
+    { id: "mt_22222222", state: "failed", command: "recent", endedAt: 20 },
+  ] });
+  assert.match(finished, /recent/);
+  assert.match(finished, /\+1 more/);
+});
+test("wait-all retains its observed count and target rows together", () => {
+  const html = render({ source: "meantime", action: "wait", waitAll: true, pendingCount: 2,
+    tasks: [{ id: "mt_11111111", tool: "codemode", args: { code: "return 42;" }, state: "running" }] });
+  assert.match(html, /meantime/);
+  assert.match(html, / wait all/);
+  assert.match(html, /· 2/);
+  assert.match(html, /codemode/);
+});
+
 test("wait cards retain every supplied target and its outcome", () => {
   const html = render({ source: "meantime", action: "wait", tasks: [
     { id: "mt_a1b2c3d4", state: "completed", command: "npm test", exitCode: 0 },
@@ -49,8 +70,11 @@ test("wait cards retain every supplied target and its outcome", () => {
   assert.match(html, />exit 2</);
 });
 test("wait-all shows the supplied task count and an empty list remains an answer", () => {
-  assert.match(render({ source: "meantime", action: "wait", tasks: [], total: 0 }), /0.*tasks/);
-  assert.match(render({ source: "meantime", action: "list", tasks: [] }), /No background tasks/);
+  assert.match(render({ source: "meantime", action: "wait", tasks: [], waitAll: true, pendingCount: 0 }), /· 0/);
+  const empty = render({ source: "meantime", action: "list", tasks: [] });
+  assert.match(empty, /meantime/);
+  assert.match(empty, / list/);
+  assert.match(empty, /no tasks/);
 });
 test("collapsed lists summarize all outcome groups including inactive and single-task pages", () => {
   const tasks = [
@@ -65,7 +89,7 @@ test("collapsed lists summarize all outcome groups including inactive and single
 test("opened list rows expose task details and remaining count", () => {
   const html = renderList({ source: "meantime", action: "list", tasks: [
     { id: "mt_deadbeef", state: "failed", command: "make test", output: "failure output" },
-  ], total: 25, moreOffset: 1 }, true);
+  ], total: 25, remainingCount: 24 }, true);
   for (const text of ["mt_deadbeef", "failure output", "+24 more"]) assert.ok(html.includes(text));
 });
 test("a launch receipt names the started observation", () => {
@@ -73,7 +97,7 @@ test("a launch receipt names the started observation", () => {
 });
 test("opening a task exposes complete command, output and identity together", () => {
   const command = "const x = 1;\nreturn x;";
-  const html = renderLine({ id: "mt_deadbeef", tool: "codemode", code: command, state: "completed", output: "result 1", outputPath: "/tmp/result.log" });
+  const html = renderLine({ id: "mt_deadbeef", tool: "codemode", args: { code: command }, state: "completed", output: "result 1", outputPath: "/tmp/result.log" });
   for (const text of [command, "result 1", "mt_deadbeef", "/tmp/result.log"]) assert.ok(html.includes(text));
 });
 test("task output selects final result, then tail, then progress", () => {

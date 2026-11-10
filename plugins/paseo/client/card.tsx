@@ -17,6 +17,6 @@ export function Card({ colors, layout, children, grouped = false }: { colors: Co
 }
 
 /** The same glass panel with the task's tone washing the top-left corner. */
-export function TintedCard({ colors, tone, layout, children }: { colors: Colors; tone: Tone; layout: Layout; children: ReactNode }) {
-  return <View style={glassChrome(colors, layout.platform, tone)}>{children}</View>;
+export function TintedCard({ colors, tone, layout, children, grouped = false }: { colors: Colors; tone: Tone; layout: Layout; children: ReactNode; grouped?: boolean }) {
+  return <View style={[glassChrome(colors, layout.platform, tone), grouped && { paddingVertical: 0 }]}>{children}</View>;
 }

@@ -5,7 +5,7 @@ import { isRecord } from './schema.ts';
 import { truncateUtf8 } from './store.ts';
 
 export interface TaskDisplay {
-  id: string; tool: string; state: string; command?: string; code?: string; args?: Record<string, unknown>;
+  id: string; tool: string; state: string; command?: string; args?: Record<string, unknown>;
   createdAt?: number; endedAt?: number; exitCode?: number;
   output?: string; outputPath?: string; outputTail?: string; progress?: string; cancelRequestedAt?: number;
   detachReason?: string; notification?: string; notificationError?: string; isError?: boolean; recovered?: boolean;
@@ -36,10 +36,14 @@ export function elapsedText(task: TaskDisplay): string {
   if (task.createdAt === undefined || (!active(task) && task.endedAt === undefined)) return '';
   return formatDuration(((task.endedAt ?? Date.now()) - task.createdAt) / 1000);
 }
-/** Use only display data already present in the snapshot; never infer arguments. */
+/** Commands and non-shell inputs share one display path; args.code is the script itself. */
 export function taskCommand(task: TaskDisplay): string | undefined {
-  const arg = task.args?.code ?? Object.values(task.args ?? {})[0];
-  return task.command ?? task.code ?? (typeof arg === 'string' ? arg : arg === undefined ? undefined : JSON.stringify(arg));
+  return task.command ?? (typeof task.args?.code === 'string' ? task.args.code : task.args
+    ? Object.entries(task.args).map(([key, value]) => `${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`).join('\n') : undefined);
+}
+export function previewTasks(tasks: TaskDisplay[]): TaskDisplay[] {
+  const live = tasks.filter(active).sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+  return live.length ? live.slice(0, 3) : [...tasks].sort((a, b) => (b.endedAt ?? b.createdAt ?? 0) - (a.endedAt ?? a.createdAt ?? 0)).slice(0, 1);
 }
 export function taskLine(task: TaskDisplay, theme: RenderTheme, width = 100, wait: WaitDisplay = {}): string {
   const state = task.state === 'cancel_requested' ? 'cancelling' : ['running', 'completed', 'failed'].includes(task.state) ? ''
@@ -51,12 +55,13 @@ export function taskLine(task: TaskDisplay, theme: RenderTheme, width = 100, wai
   const parts = clean(taskCommand(task) ?? '').split('\n');
   const title = [task.command === undefined ? task.tool : '', parts[0]!.replace(/\s+/g, ' ').trim()].filter(Boolean).join(' ');
   const hint = parts.length > 1 ? ` +${parts.length - 1} line${parts.length === 2 ? "" : "s"}` : '';
-  const command = truncateToWidth(title, Math.max(1, width - visibleWidth(suffix + hint) - 2), theme.fg('dim', '…')) + theme.fg('dim', hint);
+  const head = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*\S+/.exec(title)?.[0] ?? '';
+  const command = truncateToWidth(theme.bold(head) + title.slice(head.length), Math.max(1, width - visibleWidth(suffix + hint) - 2), theme.fg('dim', '…')) + theme.fg('dim', hint);
   return truncateToWidth(`${stateGlyph(theme, task.exitCode ? 'failed' : task.state)} ${command}${theme.fg('dim', suffix)}`, width, '…');
 }
 export function commandBlock(task: TaskDisplay, theme: RenderTheme, width: number, wait: WaitDisplay = {}): string[] {
   const raw = taskCommand(task);
-  if (raw === undefined || (!clean(raw).includes('\n') && !stripTerminalSequences(taskLine(task, theme, width, wait)).includes('…'))) return [];
+  if (raw === undefined || (!task.args && !clean(raw).includes('\n') && !stripTerminalSequences(taskLine(task, theme, width, wait)).includes('…'))) return [];
   return clean(raw).split('\n').map(line => theme.fg('toolOutput', `  ${line}`));
 }
 function tailLines(tail: string): string[] { return clean(tail).trimEnd().split('\n').filter(line => line.trim().length > 0); }
@@ -78,7 +83,7 @@ export function listHeading(tasks: TaskDisplay[], theme: RenderTheme): string {
   const groups = [[tasks.filter(active).length, 'active'], [tasks.filter(t => !active(t) && t.state === 'completed' && !t.exitCode).length, '✓'],
     [tasks.filter(t => !active(t) && (t.state === 'failed' || Boolean(t.exitCode))).length, '✕'],
     [tasks.filter(t => !active(t) && t.state !== 'completed' && t.state !== 'failed' && !t.exitCode).length, 'other']];
-  return `Background tasks${theme.fg('dim', groups.filter(([n]) => n).map(([n, label]) => ` · ${n} ${label}`).join(''))}`;
+  return `${theme.bold('meantime')} list${theme.fg('dim', groups.filter(([n]) => n).map(([n, label]) => ` · ${n} ${label}`).join(''))}`;
 }
 /** Rows are measured at the real available width; expanded blocks alone wrap. */
 function textAtWidth(build: (width: number) => string): Text {
@@ -118,13 +123,23 @@ export function renderTaskResult(result: ResultLike & { details?: unknown }, opt
         : `${stateGlyph(theme, task.exitCode ? 'failed' : task.state)} ${theme.fg('dim', `${task.state === 'running' ? 'running in background' : 'background'}${detachReasonSuffix(task.detachReason, autoDetachMs)}`)}`}`;
     }
     const isWait = isRecord(context.args) && context.args.action === 'wait', lines: string[] = [];
+    if (isRecord(context.args) && context.args.action === 'list' && Array.isArray(details?.tasks) && !tasks.length) {
+      lines.push(listHeading([], theme), theme.fg('dim', 'no tasks'));
+    }
+    if (isWait && (details?.waitAll === true || (!tasks.length && Array.isArray(details?.tasks)))) {
+      const pending = details?.pendingCount;
+      const count = typeof pending === 'number' && Number.isSafeInteger(pending) && pending >= 0 ? ` · ${pending}` : '';
+      lines.push(`${theme.bold('meantime')} wait all${theme.fg('dim', count)}`);
+    }
     if (tasks.length && (isWait || page)) {
       const isCancel = isRecord(context.args) && context.args.action === 'cancel';
-      if (!isWait && !isCancel) lines.push(listHeading(tasks, theme));
+      const isList = !isWait && !isCancel;
+      const shown = isList && !options.expanded ? previewTasks(tasks) : tasks;
+      if (isList) lines.push(listHeading(tasks, theme) + theme.fg('dim', options.expanded ? ' ▴' : ' ▾'));
       if (options.expanded) lines.push(tasks.map(task => detailBlock(task, theme, width,
         isWait ? options.isPartial ? task.outputTail ?? task.progress : task.output : task.outputTail, isWait ? details : undefined).join('\n')).join('\n\n'));
       else {
-        lines.push(...tasks.map(task => taskLine(task, theme, width, isWait ? details : undefined)));
+        lines.push(...shown.map(task => taskLine(task, theme, width, isWait ? details : undefined)));
         if (isWait) {
           const body = tasks.flatMap(task => tailLines(options.isPartial ? task.outputTail ?? task.progress ?? '' : task.output ?? ''));
           const shown = options.isPartial ? body.slice(-5) : body.slice(0, 10);
@@ -132,12 +147,16 @@ export function renderTaskResult(result: ResultLike & { details?: unknown }, opt
           if (body.length > shown.length && !options.isPartial) lines.push(theme.fg('dim', `… ${body.length - shown.length} more lines, ${keyHint('app.tools.expand', 'to expand')}`));
         }
       }
+      if (isList) {
+        const hidden = typeof details?.remainingCount === 'number' ? details.remainingCount : 0;
+        const more = hidden + tasks.length - shown.length;
+        if (more) lines.push(theme.fg('dim', `+${more} more`));
+      }
     }
-    if (typeof details?.next_offset === 'number' && typeof details.total === 'number') {
-      const more = Math.max(0, details.total - details.next_offset);
-      if (more) lines.push(theme.fg('dim', `+${more} more`));
+    if (!lines.length) {
+      if (isRecord(context.args) && context.args.action === 'list') lines.push(listHeading([], theme));
+      lines.push(...result.content.filter(b => b.type === 'text' && typeof b.text === 'string').flatMap(b => tailLines(b.text!)).map(line => theme.fg('toolOutput', line)));
     }
-    if (!lines.length) lines.push(...result.content.filter(b => b.type === 'text' && typeof b.text === 'string').flatMap(b => tailLines(b.text!)).map(line => theme.fg('toolOutput', line)));
     return `\n${lines.join('\n')}`;
   });
 }

@@ -1,5 +1,5 @@
 import type { Config } from './config.ts';
-import type { Mode, Outcome, Result, ScopeResult, Update } from './protocol.ts';
+import type { Json, Mode, Outcome, Result, ScopeResult, Update } from './protocol.ts';
 import { isRecord } from './schema.ts';
 import { TASK_ID, newTaskId, truncateUtf8 } from './store.ts';
 
@@ -8,7 +8,7 @@ const USER_STEER_GRACE_MS = 3000;
 export type TaskState = 'running' | 'cancel_requested' | 'completed' | 'failed' | 'cancelled' | 'outcome_unknown';
 export type DetachReason = 'explicit' | 'shortcut' | 'steer' | 'timeout';
 export interface Snapshot {
-  id: string; tool: string; kind: 'bash' | 'tool'; state: TaskState; command?: string;
+  id: string; tool: string; kind: 'bash' | 'tool'; state: TaskState; command?: string; args?: Record<string, Json>;
   mode: Mode; delivery: 'foreground' | 'background'; createdAt: number;
   endedAt?: number; detachReason?: DetachReason; cancelRequestedAt?: number;
   localRunning: boolean; progress?: string; outputPath?: string; exitCode?: number;
@@ -17,7 +17,7 @@ export interface Snapshot {
   isError?: boolean;
   recovered?: boolean; textOnly?: boolean; notification: 'none' | 'pending' | 'queued' | 'delivered' | 'observed' | 'failed' | 'suppressed';
 }
-export type TaskIndex = Pick<Snapshot, 'id' | 'tool' | 'kind' | 'command' | 'mode' | 'createdAt' | 'detachReason'>;
+export type TaskIndex = Pick<Snapshot, 'id' | 'tool' | 'kind' | 'command' | 'args' | 'mode' | 'createdAt' | 'detachReason'>;
 export interface Completion {
   id: string; endedAt: number; isError: boolean; cancelRequestedAt?: number;
   exitCode?: number; text: string; outputPath?: string;
@@ -30,7 +30,7 @@ export type TaskRecord = TaskIndex & { completion?: Completion; observed?: boole
 export type IndexChange = { task: TaskIndex } | { completion: Completion } | { observed: string } | { delivered: string[] } | { removed: string[] };
 export type View = { kind: 'result'; task: Snapshot; result: Result; isError?: boolean; thrown?: { error: unknown } } | { kind: 'handle'; task: Snapshot };
 export interface RunRequest {
-  tool: string; kind: 'bash' | 'tool'; callId: string; mode: Mode; command?: string;
+  tool: string; kind: 'bash' | 'tool'; callId: string; mode: Mode; command?: string; args?: Record<string, unknown>;
   canDetach: boolean; parentSignal?: AbortSignal; onUpdate?: Update;
   userDetach?: 'steer' | 'shortcut';
   codemodeRootId?: string; onDetach?(): void; onSettled?(): void;
@@ -114,8 +114,12 @@ export class TaskRuntime {
     if (leases().size >= this.config.maxRunning) throw new Error(`Background capacity ${this.config.maxRunning} reached; inspect or cancel a task, do not retry in a loop`);
     let id = newTaskId();
     while (this.tasks.has(id) || leases().has(id)) id = newTaskId();
+    // Snapshot admitted business arguments before execution can mutate them.
+    // Display metadata must never prevent a tool with non-JSON native args from running.
+    let args: Record<string, Json> | undefined;
+    try { if (request.args !== undefined) args = JSON.parse(JSON.stringify(request.args)); } catch {}
     const meta: Snapshot = { id, tool: request.tool, kind: request.kind, mode: request.mode,
-      ...(request.command !== undefined ? { command: request.command } : {}),
+      ...(request.command !== undefined ? { command: request.command } : {}), ...(args ? { args } : {}),
       state: 'running', delivery: 'foreground', createdAt: Date.now(), localRunning: true, notification: 'none' };
     const task: Task = { meta, callId: request.callId, controller: new AbortController(), published: false,
       viewSettled: false, canDetach: request.canDetach, notifyAttempts: 0, waiters: 0, deliveryPersisted: false,
@@ -225,8 +229,8 @@ export class TaskRuntime {
   }
   private releaseToBackground(task: Task, force = false): boolean {
     if (task.meta.delivery === 'foreground') {
-      const { id, tool, kind, command, mode, createdAt, detachReason } = task.meta;
-      try { this.sink.index({ task: { id, tool, kind, command, mode, createdAt, detachReason } }); }
+      const { id, tool, kind, command, args, mode, createdAt, detachReason } = task.meta;
+      try { this.sink.index({ task: { id, tool, kind, command, args, mode, createdAt, detachReason } }); }
       catch (error) {
         task.meta.indexError = `Task index could not be saved: ${String(error)}`;
         if (!force) { task.canDetach = false; return false; }

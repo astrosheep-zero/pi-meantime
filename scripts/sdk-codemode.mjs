@@ -170,6 +170,7 @@ try {
   const early = await prompt('codemode', { code: 'let local=1; try { const a=await tools.hold({key:"continue"}); local+=a.value; const b=await tools.second({value:local}); store("answer", b.value); return b.value; } finally { text("FINALLY_ONCE"); }' }, 'continuation');
   const id = taskId(early);
   assert(id.startsWith('mt_')); assert.equal(early.nestedCalls, undefined, 'handle must not consume unfinished summary');
+  assert.match(early.details.args.code, /^let local=1; try/);
   await bounded(starts.get('continue').promise, 'continuation child started');
   assert.equal(signals.get('continue').aborted, false);
   await session.prompt('another unrelated model turn');
@@ -188,6 +189,8 @@ try {
   assert.equal(session.getSessionStats().tokens.input, 6, 'completion charges before any successful wait');
   const collected = await bounded(control({ action: 'wait', ids: [id], timeout: 10 }), 'collect continuation');
   assert.equal(collected.isError, false);
+  assert.deepEqual(notice.details.tasks[0].args, early.details.args);
+  assert.deepEqual(collected.result.details.task.args, early.details.args);
   const completion = completions().find(c => c.id === id);
   assert.equal(scriptResult(completion).match(/FINALLY_ONCE/g).length, 1);
   assert.match(scriptResult(completion), /42/);

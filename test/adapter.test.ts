@@ -339,7 +339,7 @@ test('wait keeps every JSON-valid native details value behind one control envelo
   const gates = new Map<string, ReturnType<typeof deferred<Result>>>();
   const h = await setup([basicTool('mcp__t__shape', (_id, args) => gates.get(String(args.shape))!.promise,
     { parameters: { type: 'object', properties: { shape: { type: 'string' } }, required: ['shape'], additionalProperties: false } })]);
-  const theme = { fg: (_color: string, value: string) => value } as Parameters<typeof renderTaskResult>[2];
+  const theme = { fg: (_color: string, value: string) => value, bg: (_color: string, value: string) => value, bold: (value: string) => value };
   try {
     for (const [shape, native] of shapes) {
       const gate = deferred<Result>(); gates.set(shape, gate);
@@ -354,7 +354,7 @@ test('wait keeps every JSON-valid native details value behind one control envelo
       assert.equal(Object.hasOwn(details, 'usage'), false);
       const card = renderTaskResult(wait.result, { expanded: false }, theme, { args: { action: 'wait' } }, false)
         .render(200).map(line => line.trimEnd()).join('\n');
-      assert.match(card, /✓ mcp__t__shape  \d+s/, `${shape}: the renderer reads control details`);
+      assert.match(card, new RegExp(`✓ mcp__t__shape shape: ${shape}  \\d+s`), `${shape}: the renderer reads admitted args and control details`);
       assert.doesNotMatch(card, /job-7|NATIVE_DETAIL|kept/, `${shape}: native details are not control metadata`);
     }
   } finally { for (const gate of gates.values()) gate.resolve(ok().result); await h.close(); }

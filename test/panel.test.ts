@@ -29,7 +29,7 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
   let panel: Component | undefined, renders = 0, closed = 0;
   pi.ctx.ui.custom = async factory => new Promise(resolve => {
     panel = factory({ requestRender() { renders++; } } as Parameters<Factory>[0],
-      { fg: (color: string, text: string) => color === 'warning' ? `!${text}` : color === 'muted' ? `~${text}` : text } as Parameters<Factory>[1],
+      { fg: (color: string, text: string) => color === 'warning' ? `!${text}` : color === 'muted' ? `~${text}` : text, bold: (text: string) => text } as Parameters<Factory>[1],
       {} as Parameters<Factory>[2], result => { closed++; panel?.dispose?.(); resolve(result); }) as Component;
   });
   const text = () => panel!.render(1000).join('\n');
@@ -43,7 +43,7 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
     const b = await pi.call('bash', { command: longCommand, __background__: 'yes' });
     const idA = (a.result.details as Snapshot).id, idB = (b.result.details as Snapshot).id;
     const opening = command();
-    assert.match(text(), /Background tasks/);
+    assert.equal(text().split('\n')[0], 'meantime');
     assert.ok(text().indexOf(longCommand) < text().indexOf("first command"));
     panel!.handleInput!('\r');
     assert.ok(text().includes(longCommand));

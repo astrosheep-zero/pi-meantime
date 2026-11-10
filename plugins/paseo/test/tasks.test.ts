@@ -35,11 +35,12 @@ describe("recognizeToolCall: meantime tool", () => {
   it("parses list results with tasks and pagination", () => {
     const data = recognizeToolCall(unknownItem("meantime", { action: "list" }, {
       content: [{ type: "text", text: "..." }],
-      details: { tasks: [SNAPSHOT], next_offset: 20 },
+      details: { tasks: [SNAPSHOT], next_offset: 20, total: 25, remainingCount: 5 },
     }));
     assert.equal(data?.source, "meantime");
     assert.equal(data?.action, "list");
-    assert.equal(data?.moreOffset, 20);
+    assert.equal(data?.remainingCount, 5);
+    assert.equal(data?.total, 25);
     assert.equal(data?.tasks.length, 1);
     assert.deepEqual(data?.tasks[0], {
       id: "mt_a1b2c3d4", tool: "bash", state: "running",
@@ -197,7 +198,7 @@ describe("recognizeToolCall: meantime tool", () => {
   });
 
   it("rejects empty non-list and unparseable results", () => {
-    assert.deepEqual(recognizeToolCall(unknownItem("meantime", { action: "wait" }, { details: { tasks: [] } })), { source: "meantime", action: "wait", tasks: [], total: 0 });
+    assert.deepEqual(recognizeToolCall(unknownItem("meantime", { action: "wait" }, { details: { tasks: [], waitAll: true, pendingCount: 0 } })), { source: "meantime", action: "wait", tasks: [], waitAll: true, pendingCount: 0 });
     assert.equal(recognizeToolCall(unknownItem("meantime", { action: "cancel" }, { details: { tasks: [] } })), undefined);
     assert.equal(recognizeToolCall(unknownItem("meantime", { action: "list" }, { content: [{ type: "text", text: "none" }] })), undefined);
   });
@@ -446,10 +447,10 @@ test("failed single wait preserves its task and output; actual call errors use a
   assert.equal(error?.error, "cancel requires ids");
 });
 
-test("existing code/args survive projection for a compact title and full drawer", () => {
+test("admitted args survive projection for a compact title and full drawer", () => {
+  const args = { code: "const x = 1;\nreturn x;" };
   const data = recognizeToolCall(unknownItem("meantime", { action: "list" }, {
-    details: { tasks: [{ ...SNAPSHOT, tool: "codemode", command: undefined, code: "const x = 1;\nreturn x;", args: { query: "fixture" } }] },
+    details: { tasks: [{ ...SNAPSHOT, tool: "codemode", command: undefined, args }] },
   }));
-  assert.equal(data?.tasks[0]?.code, "const x = 1;\nreturn x;");
-  assert.deepEqual(data?.tasks[0]?.args, { query: "fixture" });
+  assert.deepEqual(data?.tasks[0]?.args, args);
 });

@@ -39,7 +39,6 @@ export const taskSummarySchema = z.object({
   tool: z.string().optional(),
   state: z.string(),
   command: z.string().optional(),
-  code: z.string().optional(),
   args: z.record(z.string(), z.json()).optional(),
   progress: z.string().optional(),
   outputTail: z.string().optional(),
@@ -60,8 +59,10 @@ export const cardDataSchema = z.object({
   source: z.enum(["handle", "meantime", "completion"]),
   action: z.string().optional(),
   tasks: z.array(taskSummarySchema),
-  total: z.number().optional(),
-  moreOffset: z.number().optional(),
+  total: z.number().int().nonnegative().optional(),
+  remainingCount: z.number().int().nonnegative().optional(),
+  waitAll: z.boolean().optional(),
+  pendingCount: z.number().int().nonnegative().optional(),
   /** A failed meantime call: the call line and one human sentence, never raw JSON. */
   call: z.string().optional(),
   error: z.string().optional(),
@@ -113,7 +114,6 @@ export function simplifySnapshot(raw: unknown): TaskSummary | undefined {
     tool: raw.tool,
     state: raw.state,
     ...(command ? { command } : {}),
-    ...(typeof raw.code === "string" ? { code: raw.code } : {}),
     ...(args ? { args } : {}),
     ...(progress ? { progress } : {}),
     ...(output ? { output: outputPreview(output) } : {}),
@@ -163,6 +163,14 @@ function errorSentence(value: unknown): string | undefined {
   return line ? (line.length > 240 ? `${line.slice(0, 239)}…` : line) : undefined;
 }
 
+function count(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+function waitMetadata(details: Record<string, unknown> | undefined) {
+  const pendingCount = count(details?.pendingCount);
+  return { ...(details?.waitAll === true ? { waitAll: true } : {}), ...(pendingCount !== undefined ? { pendingCount } : {}) };
+}
+
 function meantimeCall(action: string | undefined, input: Record<string, unknown> | undefined): string {
   const ids = Array.isArray(input?.ids) ? input.ids.filter(id => typeof id === "string")
     : typeof input?.id === "string" ? [input.id] : [];
@@ -193,7 +201,7 @@ export function recognizeToolCall(item: ToolCallItemLike): MeantimeCardData | un
       // itself is already expressed by the timeline item's status.
       const observed = raws.map(simplifySnapshot)
         .filter((task): task is TaskSummary => task !== undefined);
-      if (details !== undefined) return { source: "meantime", action, tasks: observed, total: observed.length };
+      if (details !== undefined) return { source: "meantime", action, tasks: observed, ...waitMetadata(details) };
       // No partial snapshot yet. Current calls use ids (including prefixes);
       // keep id for historical timelines. No ids means wait-all, not an
       // inferred set of tasks from a later client-side snapshot.
@@ -215,7 +223,7 @@ export function recognizeToolCall(item: ToolCallItemLike): MeantimeCardData | un
         && input.ids.every(id => typeof id === "string" && /^(?:mt_)?[a-f0-9]{1,8}$/.test(id))) {
         tasks = input.ids.map(id => ({ id: id as string, state: "waiting" }));
       }
-      return { source: "meantime", action, tasks: projectOutputs(detail, tasks), waitOutcome: "interrupted",
+      return { source: "meantime", action, tasks: projectOutputs(detail, tasks), waitOutcome: "interrupted", ...waitMetadata(details),
         ...(waitedSeconds !== undefined ? { waitedSeconds } : {}) };
     }
     if ((item.status === "failed" || output?.isError === true) && !(action === "wait" && simplifySnapshot(details?.task ?? details))) {
@@ -231,17 +239,17 @@ export function recognizeToolCall(item: ToolCallItemLike): MeantimeCardData | un
     const pending = Array.isArray(details.pending) ? details.pending : [];
     const snapshots = [...raws, ...pending].map(simplifySnapshot).filter((task): task is TaskSummary => task !== undefined);
     const tasks = action === "wait" || action === "cancel" ? projectOutputs(detail, snapshots) : snapshots;
+    const total = count(details.total), remainingCount = count(details.remainingCount);
+    const inventory = { ...(total !== undefined ? { total } : {}), ...(remainingCount !== undefined ? { remainingCount } : {}) };
     if (tasks.length === 0) {
       // An empty list is still an answer. Paseo drops unrecognized rows to a
       // raw tool line, so a completed empty list must become a card instead.
       return (action === "list" || action === "wait") && Array.isArray(details.tasks)
-        ? { source: "meantime", action, tasks: [], ...(action === "wait" ? { total: 0 } : {}), ...(action === "wait" && (details.waitOutcome === "timeout" || details.waitOutcome === "interrupted") ? { waitOutcome: details.waitOutcome } : {}), ...(waitedSeconds !== undefined ? { waitedSeconds } : {}) }
+        ? { source: "meantime", action, tasks: [], ...inventory, ...waitMetadata(details), ...(action === "wait" && (details.waitOutcome === "timeout" || details.waitOutcome === "interrupted") ? { waitOutcome: details.waitOutcome } : {}), ...(waitedSeconds !== undefined ? { waitedSeconds } : {}) }
         : undefined;
     }
-    const total = typeof details.total === "number" ? details.total : undefined;
-    const moreOffset = typeof details.next_offset === "number" ? details.next_offset : undefined;
     const waitOutcome = action === "wait" && (details.waitOutcome === "timeout" || details.waitOutcome === "interrupted") ? details.waitOutcome : undefined;
-    return { source: "meantime", ...(action ? { action } : {}), tasks, ...(waitOutcome ? { waitOutcome } : {}), ...(action === "wait" && waitedSeconds !== undefined ? { waitedSeconds } : {}), ...(total !== undefined ? { total } : {}), ...(moreOffset !== undefined ? { moreOffset } : {}) };
+    return { source: "meantime", ...(action ? { action } : {}), tasks, ...(waitOutcome ? { waitOutcome } : {}), ...(action === "wait" && waitedSeconds !== undefined ? { waitedSeconds } : {}), ...inventory, ...waitMetadata(details) };
   }
 
   // Managed tools now retain their original names; old _mt rows still work.
@@ -284,15 +292,20 @@ export function resolveWaitTask(task: TaskSummary, known: ReadonlyMap<string, Ta
   const prefix = task.id.startsWith("mt_") ? task.id : `mt_${task.id}`;
   const matches = [...known.values()].filter(candidate => candidate.id.startsWith(prefix));
   const found = known.get(task.id) ?? (matches.length === 1 ? matches[0] : undefined);
-  return found ? { ...task, id: found.id, command: task.command ?? found.command, tool: task.tool ?? found.tool } : task;
+  const args = task.args ?? found?.args;
+  return found ? { ...task, id: found.id, command: task.command ?? found.command, ...(args ? { args } : {}), tool: task.tool ?? found.tool } : task;
 }
 
 const ACTIVE_STATES = new Set(["running", "cancel_requested", "started", "waiting", "queued"]);
 
-/** Summaries use only arguments already carried by a snapshot. */
+/** Commands and non-shell inputs share one display path. */
 export function taskCommand(task: TaskSummary): string | undefined {
-  const arg = task.args?.code ?? Object.values(task.args ?? {})[0];
-  return task.command ?? task.code ?? (typeof arg === "string" ? arg : arg === undefined ? undefined : JSON.stringify(arg));
+  return task.command ?? (typeof task.args?.code === "string" ? task.args.code : task.args
+    ? Object.entries(task.args).map(([key, value]) => `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`).join("\n") : undefined);
+}
+export function previewTasks(tasks: readonly TaskSummary[]): TaskSummary[] {
+  const live = tasks.filter(isActiveTask).sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+  return live.length ? live.slice(0, 3) : [...tasks].sort((a, b) => (b.endedAt ?? b.createdAt ?? 0) - (a.endedAt ?? a.createdAt ?? 0)).slice(0, 1);
 }
 
 export function isActiveTask(task: Pick<TaskSummary, "state">): boolean {

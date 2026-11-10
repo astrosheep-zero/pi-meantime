@@ -11,6 +11,22 @@ const done: TaskDisplay = { id: 'mt_a1b2c3d4', tool: 'bash', state: 'completed',
 const running: TaskDisplay = { id: 'mt_deadbeef', tool: 'bash', state: 'running', command: 'npm watch' };
 const result = (details: unknown, action = 'list', expanded = false, isPartial = false) => render(renderTaskResult({ content: [], details }, { expanded, isPartial }, plain, { args: { action } }, false));
 
+test('collapsed task inventory previews newest active work and reports every hidden task', () => {
+  const tasks = Array.from({ length: 5 }, (_, i) => ({ ...running, id: `mt_${i}`, command: `task-${i}`, createdAt: i }));
+  const text = result({ tasks, total: 12, remainingCount: 7 });
+  assert.deepEqual([...text.matchAll(/^● (task-\d+)/gm)].map(m => m[1]), ['task-4', 'task-3', 'task-2']);
+  assert.match(text, /\+9 more/);
+  const expanded = result({ tasks, total: 12, remainingCount: 7 }, 'list', true);
+  for (const task of tasks) assert.ok(expanded.includes(task.command));
+  assert.match(expanded, /\+7 more/);
+  assert.match(result({ tasks: [{ ...done, command: 'older', endedAt: 10 }, { ...done, command: 'recent', endedAt: 20 }] }), /✓ recent/);
+});
+test('wait-all renders the supplied current pending count with task rows', () => {
+  const text = result({ waitAll: true, pendingCount: 3, tasks: [running] }, 'wait');
+  assert.match(text, /meantime wait all · 3/);
+  assert.match(text, /● npm watch/);
+});
+
 test('state glyphs distinguish outcomes and active states', () => {
   assert.deepEqual(['running', 'waiting', 'cancel_requested', 'completed', 'failed', 'cancelled', 'outcome_unknown'].map(state => stateGlyph(plain, state)), ['●', '●', '●', '✓', '✕', '⊘', '?']);
 });
@@ -57,14 +73,14 @@ test('collapsed commands advertise hidden lines and expanded commands preserve t
   assert.match(result({ tasks: [{ ...done, command: 'argument '.repeat(80) }] }), /…/);
 });
 test('existing non-shell code and args provide titles and complete details', () => {
-  for (const fields of [{ tool: 'codemode', command: undefined, code: 'const x = 1;\nreturn x;' }, { tool: 'square', command: undefined, args: { square: 'fixture-square' } }]) {
+  for (const fields of [{ tool: 'codemode', command: undefined, args: { code: 'const x = 1;\nreturn x;' } }, { tool: 'square', command: undefined, args: { square: 'fixture-square' } }]) {
     const text = result({ tasks: [{ ...done, ...fields }] }, 'list', true);
     assert.ok(text.includes(fields.tool));
-    for (const line of (fields.code ?? 'fixture-square').split('\n')) assert.ok(text.includes(line));
+    for (const line of (fields.args.code ?? 'fixture-square').split('\n')) assert.ok(text.includes(line));
   }
 });
 test('list pagination and notification failures remain actionable', () => {
-  const text = result({ tasks: [{ ...done, notification: 'failed', notificationError: 'Delivery retry exhausted' }], total: 31, next_offset: 7 }, 'list', true);
+  const text = result({ tasks: [{ ...done, notification: 'failed', notificationError: 'Delivery retry exhausted' }], total: 31, remainingCount: 24, next_offset: 7 }, 'list', true);
   assert.match(text, /\+24 more/);
   assert.match(text, /Delivery retry exhausted/);
 });
@@ -75,6 +91,6 @@ test('streaming waits retain bounded latest output and progress fallback', () =>
   assert.match(result({ tasks: [{ ...running, progress: 'latest update' }] }, 'wait', false, true), /latest update/);
 });
 test('text-only errors and terminal sanitization remain readable', () => {
-  assert.equal(render(renderTaskResult({ content: [{ type: 'text', text: 'Unknown task' }] }, { expanded: false }, plain, {}, false)), 'Unknown task');
+  assert.equal(render(renderTaskResult({ content: [{ type: 'text', text: 'Unknown task' }] }, { expanded: false }, plain, { args: { action: 'wait' } }, false)), 'Unknown task');
   assert.match(result({ tasks: [{ ...done, command: 'printf \u001b[2JSAFE' }] }), /printf SAFE/);
 });
