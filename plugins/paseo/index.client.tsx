@@ -29,7 +29,7 @@ export default function contribute(client: PluginClientContext) {
     }),
     client.addWorkspacePanel({
       id: "meantime-board",
-      title: "Background tasks",
+      title: "meantime list",
       icon: "Layers",
       context: "agent",
       locations: ["workspace", "explorer"],
@@ -37,7 +37,7 @@ export default function contribute(client: PluginClientContext) {
     }),
     client.addCommandCenterItem({
       id: "open-meantime-board",
-      title: "Open background tasks",
+      title: "meantime list",
       icon: "Layers",
       context: "agent",
       onSelect({ openPanel }) {

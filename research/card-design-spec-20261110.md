@@ -93,4 +93,4 @@ No `Output:` / `Command:` lines (path lives in the footer). One blank line betwe
 - Wait-all: bold `meantime` + normal ` wait all · N` from the supplied observed pendingCount, followed by supplied task rows. Omit the number when unknown; display 0 for known empty.
 - Handle: `● running in background (120s timeout)` — suffixes `(Ns timeout)` from config, `(manual detach)`, `(steered)`, explicit none; no id.
 - Panel: title bold `meantime`; empty body muted `no tasks`; `→ ` selection marker and key-hint footer unchanged; items use the row format, expanded item uses the expanded block.
-- Tool label: `meantime`. Status bar active count `bg 1/4` unchanged; notification failure text is `meantime: N notification(s) unsent`. Sentence-style system prompt/error prose is unchanged.
+- Tool label: `meantime`. Paseo workspace/explorer panel title and command-center entry: `meantime list` (host-owned navigation typography). Status bar active count `bg 1/4` unchanged; notification failure text is `meantime: N notification(s) unsent`. Sentence-style system prompt/error prose is unchanged.
