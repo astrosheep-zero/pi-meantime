@@ -3,8 +3,8 @@ import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useState } from "react";
 import { Pressable, ScrollView, Text, View, type TextStyle, type ViewStyle } from "react-native";
 import type { TaskSummary } from "../shared/tasks.js";
-import { elapsedSeconds, isActiveTask, outputPreview } from "../shared/tasks.js";
-import { TintedCard, taskTone, toneColor, toneRgb, type Tone, type WaitOutcome } from "./card.js";
+import { elapsedSeconds, isActiveTask, outputPreview, taskCommand } from "../shared/tasks.js";
+import { Card, TintedCard, taskTone, toneColor, toneRgb, type Tone, type WaitOutcome } from "./card.js";
 import { CODE_FONT_SIZE, CODE_LINE_HEIGHT, dividerColor, doneColor, formatSeconds, frameColor, isDarkSurface, monoFont, secondaryColor, stateColor, stateText, taskStateLabel } from "./rows.js";
 
 type Colors = PluginTheme["colors"];
@@ -18,15 +18,15 @@ export function Pip({ tone, colors }: { tone: Tone; colors: Colors }) {
 }
 
 export function TaskCommand({ task, colors, quiet = false }: { task: TaskSummary; colors: Colors; quiet?: boolean }) {
-  // The header is always one flattened line; a multi-line script unfolds in the drawer.
-  const raw = task.command?.trim() || undefined;
-  const command = raw?.replace(/\s+/g, " ");
-  const head = command === undefined ? undefined : /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*\S+/.exec(command)?.[0];
+  const raw = taskCommand(task), parts = raw?.split("\n");
+  const command = parts?.[0]?.replace(/\s+/g, " ").trim();
+  const title = raw === undefined ? undefined : task.command === undefined ? [task.tool ?? "task", command].filter(Boolean).join(" ") : command;
+  const head = title === undefined ? undefined : /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*\S+/.exec(title)?.[0];
   const argColor = isDarkSurface(colors) ? "#9ca3ad" : secondaryColor(colors);
   const base = quiet ? argColor : colors.foreground;
-  return <Text numberOfLines={1} style={{ minWidth: 0, fontSize: 13, lineHeight: 17, letterSpacing: -0.2, color: base, fontWeight: "600" }}>
-    {command ? <>{head}<Text style={{ color: argColor, fontWeight: "400" }}>{command.slice(head?.length ?? 0)}</Text></> : <>{task.tool ?? "task"}<Text style={{ color: frameColor(colors), fontWeight: "400" }}> {task.id}</Text></>}
-  </Text>;
+  return <View style={{ flexDirection: "row", alignItems: "baseline", minWidth: 0 }}><Text numberOfLines={1} style={{ flexShrink: 1, minWidth: 0, fontSize: 13, lineHeight: 17, letterSpacing: -0.2, color: base, fontWeight: "600" }}>
+    {title ? <>{head}<Text style={{ color: argColor, fontWeight: "400" }}>{title.slice(head?.length ?? 0)}</Text></> : <>{task.tool ?? "task"}<Text style={{ color: frameColor(colors), fontWeight: "400" }}> {task.id}</Text></>}
+  </Text>{parts && parts.length > 1 ? <Text style={{ color: secondaryColor(colors), fontSize: 10 }}> …+{parts.length - 1} lines</Text> : null}</View>;
 }
 
 /** Ticking clock for live tasks. Local interval: only the label re-renders. */
@@ -94,6 +94,7 @@ export function TaskLine({ task, colors, layout, showId, muted: quiet = false, d
   const effectiveWaitOutcome = active ? waitOutcome : undefined;
   const [open, setOpen] = useState(defaultOpen), tone = taskTone(task, effectiveWaitOutcome), mono = monoFont(layout.platform), dark = isDarkSurface(colors);
   // Collapsed cards are one uniform line everywhere; output lives in the drawer.
+  const rawCommand = taskCommand(task);
   const output = open ? taskOutput(task) : "";
   const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour12: false });
   const footerParts = [task.id, task.createdAt !== undefined && task.endedAt !== undefined ? `${clock(task.createdAt)} → ${clock(task.endedAt)}` : task.createdAt !== undefined ? `started ${clock(task.createdAt)}` : undefined, task.recovered ? "recovered" : undefined, task.isError && task.state !== "failed" ? "error reported" : undefined, task.outputPath].filter((x): x is string => Boolean(x));
@@ -114,8 +115,8 @@ export function TaskLine({ task, colors, layout, showId, muted: quiet = false, d
         // Same bounded drawer as Square's message card: a bare ScrollView with
         // maxHeight + nestedScrollEnabled; no wrapper (the wrapper was a guess).
         <ScrollView style={{ maxHeight: layout.compact ? 240 : 360, marginTop: 2 }} nestedScrollEnabled>
-          {task.command?.includes("\n") ? <Text selectable style={{ color: dark ? "#a8aeb7" : secondaryColor(colors), fontFamily: mono, fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>{task.command.trim()}</Text> : null}
-          {task.command?.includes("\n") && output ? <StatusRule colors={colors} /> : null}
+          {rawCommand !== undefined ? <Text selectable style={{ color: dark ? "#a8aeb7" : secondaryColor(colors), fontFamily: mono, fontSize: CODE_FONT_SIZE, lineHeight: CODE_LINE_HEIGHT }}>{rawCommand}</Text> : null}
+          {rawCommand !== undefined && output ? <StatusRule colors={colors} /> : null}
           {output ? <FormattedOutput output={output} colors={colors} layout={layout} /> : null}
         </ScrollView>
       ) : output ? <FormattedOutput output={output} colors={colors} layout={layout} /> : null}
@@ -126,10 +127,12 @@ export function TaskLine({ task, colors, layout, showId, muted: quiet = false, d
   </View>;
 }
 
-/** Every task gets the same glass card; the corner wash carries the tone. */
-export function TaskTable({ tasks, colors, layout, showId, waitOutcome, waitedSeconds }: { tasks: readonly TaskSummary[]; colors: Colors; layout: Layout; showId?: boolean; waitOutcome?: WaitOutcome; waitedSeconds?: number }) {
-  return <View style={{ gap: 8 }}>{tasks.map(task => {
-    const active = isActiveTask(task) || task.state === "queued";
-    return <TintedCard key={task.id} colors={colors} layout={layout} tone={taskTone(task, active ? waitOutcome : undefined)}><TaskLine task={task} colors={colors} layout={layout} showId={showId} waitOutcome={waitOutcome} waitedSeconds={waitedSeconds} /></TintedCard>;
-  })}</View>;
+/** Wait batches share one panel; each row retains its own status and drawer. */
+export function TaskTable({ tasks, colors, layout, showId, waitOutcome, waitedSeconds, grouped = false }: { tasks: readonly TaskSummary[]; colors: Colors; layout: Layout; showId?: boolean; waitOutcome?: WaitOutcome; waitedSeconds?: number; grouped?: boolean }) {
+  const rows = tasks.map((task, index) => {
+    const row = <TaskLine task={task} colors={colors} layout={layout} showId={showId} waitOutcome={waitOutcome} waitedSeconds={waitedSeconds} />;
+    return grouped ? <View key={task.id} style={index ? { marginTop: 7, paddingTop: 7, borderTopWidth: 0.5, borderTopColor: dividerColor(colors) } : undefined}>{row}</View>
+      : <TintedCard key={task.id} colors={colors} layout={layout} tone={taskTone(task, isActiveTask(task) ? waitOutcome : undefined)}>{row}</TintedCard>;
+  });
+  return grouped ? <Card colors={colors} layout={layout}>{rows}</Card> : <View style={{ gap: 8 }}>{rows}</View>;
 }

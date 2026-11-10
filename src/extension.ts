@@ -1,13 +1,13 @@
 import { keyHint } from '@earendil-works/pi-coding-agent';
 import { Text, getCapabilities, getImageDimensions, imageFallback, stripTerminalSequences,
-  matchesKey, SelectList, truncateToWidth, visibleWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
+  matchesKey, SelectList, wrapTextWithAnsi } from '@earendil-works/pi-tui';
 import type { Config } from './config.ts';
 import type { Context, EventHandler, EventMap, Json, PiHost, Result, Tool } from './protocol.ts';
 import { override } from './codemode.ts';
 import { captureSession, manageTools } from './host.ts';
 import type { HostSession, ManagedCall } from './host.ts';
 import { CONTROL, isRecord, projectResult } from './schema.ts';
-import { clean, renderCompletion, renderMeantimeCall, renderTaskResult, stateGlyph } from './render.ts';
+import { clean, commandBlock, detachReasonSuffix, renderCompletion, renderMeantimeCall, renderTaskResult, taskLine } from './render.ts';
 import { TaskRuntime } from './runtime.ts';
 import { CompletionDelivery } from './notifications.ts';
 import type { Snapshot, View, TaskRecord, IndexChange } from './runtime.ts';
@@ -26,12 +26,6 @@ function owner(ctx: Context): string {
   return `${ctx.sessionManager.getSessionId()}\0${ctx.sessionManager.getSessionFile() ?? ''}`;
 }
 function json(value: unknown): Json { return JSON.parse(JSON.stringify(value)) as Json; }
-/** Concise detached-handle attribution; explicit detach needs no reason. */
-function detachReasonSuffix(reason: Snapshot['detachReason'], autoDetachMs: number): string {
-  if (reason === 'timeout') return ` (${(autoDetachMs > 0 ? autoDetachMs / 1000 : 90)}s auto-detach)`;
-  if (reason === 'shortcut' || reason === 'steer') return ' (detached)';
-  return '';
-}
 function foregroundOrHandle(view: View, autoDetachMs: number): Result {
   if (view.kind === 'handle') {
     const previewTask = withFullCommand(view.task);
@@ -183,16 +177,12 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       const close = () => { if (closed) return; closed = true; dispose(); done(); };
       const refresh = () => {
         tasks = r.list();
-        list = new SelectList(tasks.map(task => ({ value: task.id,
-          label: `${stateGlyph(theme, task.state)} ${task.command !== undefined ? commandOneLine(task.command) : task.tool} · ${Math.max(0, Math.floor(((task.endedAt ?? Date.now()) - task.createdAt) / 1000))}s · ${task.id}` })), 10, {
+        list = new SelectList(tasks.map(task => ({ value: task.id, label: task.id })), 10, {
           selectedPrefix: text => theme.fg('accent', text), selectedText: text => theme.fg('accent', text),
           description: text => theme.fg('muted', text), scrollInfo: text => theme.fg('dim', text), noMatch: text => theme.fg('muted', text),
         }, {
-          truncatePrimary({ text, maxWidth }) {
-            // Reserve the elapsed/id facts before shortening the command preview.
-            const facts = /( · \d+s · mt_[a-f0-9]{8})$/.exec(text)?.[1] ?? '';
-            if (visibleWidth(facts) >= maxWidth) return truncateToWidth(facts.trimStart(), maxWidth, '');
-            return truncateToWidth(text.slice(0, text.length - facts.length), maxWidth - visibleWidth(facts), '…') + facts;
+          truncatePrimary({ item, maxWidth }) {
+            return taskLine(tasks.find(task => task.id === item.value)!, theme, true, false, maxWidth);
           },
         });
         list.setSelectedIndex(Math.max(0, tasks.findIndex(task => task.id === selected)));
@@ -212,10 +202,9 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
       return {
         render(width) {
           const task = tasks.find(task => task.id === expanded);
-          // The snapshot may carry a preview; the expanded panel shows the original command.
-          const rawCommand = task ? r.tasks.get(task.id)?.meta.command ?? task.command : undefined;
           const details = task ? [
-            ...(rawCommand !== undefined ? [`Command: ${stripTerminalSequences(rawCommand)}`] : []),
+            ...commandBlock(task, theme, width - 4, true),
+            theme.fg('dim', task.id),
             // The panel is for the human: show terminal output, not receipt prose.
             clean(r.tasks.get(task.id)?.outputTail ?? task.progress ?? '').trim(),
             ...(task.outputPath ? [`Output: ${task.outputPath}`] : []),
@@ -302,7 +291,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
         // model/programmatic data and is not passed to this callback.
         const handle = isRecord(details) && details.delivery === 'background'
           && typeof details.id === 'string' && typeof details.createdAt === 'number';
-        if (handle || name === 'meantime') return renderTaskResult(result, renderOptions, theme, context, handle);
+        if (handle || name === 'meantime') return renderTaskResult(result, renderOptions, theme, context, handle, config.autoDetachMs);
         if (native?.renderResult) return native.renderResult(result, renderOptions, theme, context);
         // Match Pi's generic result preview for tools without a renderer.
         const blocks = result.content.filter(block => block.type === 'text').map(block =>
@@ -349,7 +338,7 @@ export function install(pi: PiHost, options: InstallOptions): { dispose(): Promi
         const all = r.list(); const tasks = all.slice(offset, offset + limit).map(t => withTail({ ...withFullCommand(t), progress: t.progress?.slice(0, 256) }));
         const page = { tasks, next_offset: offset + limit < all.length ? offset + limit : null, total: all.length };
         const text = tasks.map(taskReceipt).join('\n') || 'No meantime tasks.';
-        const result = textResult(`${text}${page.next_offset !== null ? `\nMore: offset=${page.next_offset}` : ''}`, page); result.structuredContent = json(page); return result;
+        const result = textResult(`${text}${page.next_offset !== null ? `\n+${all.length - page.next_offset} more` : ''}`, page); result.structuredContent = json(page); return result;
       }
       const timeout = (typeof params.timeout === 'number' && params.timeout >= 0 ? params.timeout : 90) * 1000;
       if (params.action !== 'wait' && params.action !== 'cancel') throw new Error('Unknown meantime action');

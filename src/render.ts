@@ -1,167 +1,136 @@
-import { Box, Text, stripTerminalSequences } from '@earendil-works/pi-tui';
+import { Box, Text, stripTerminalSequences, truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 import { keyHint } from '@earendil-works/pi-coding-agent';
 import type { Theme, ThemeColor } from '@earendil-works/pi-coding-agent';
 import { isRecord } from './schema.ts';
 import { truncateUtf8 } from './store.ts';
 
-/** Task-shaped display data; details payloads arrive as plain JSON. */
 export interface TaskDisplay {
-  id: string; tool: string; state: string; command?: string;
+  id: string; tool: string; state: string; command?: string; code?: string; args?: Record<string, unknown>;
   createdAt?: number; endedAt?: number; exitCode?: number;
   output?: string; outputPath?: string; outputTail?: string; progress?: string; cancelRequestedAt?: number;
-  detachReason?: string;
-  notification?: string;
-  isError?: boolean;
+  detachReason?: string; notification?: string; notificationError?: string; isError?: boolean;
 }
 export type RenderTheme = Pick<Theme, 'fg' | 'bg' | 'bold'>;
 interface ResultLike { content: { type: string; text?: string }[] }
 interface RenderOptions { expanded?: boolean; isPartial?: boolean; outputPad?: number }
-
-// One semantic channel: the glyph carries state, color only supports it.
 const GLYPHS: Record<string, [glyph: string, color: ThemeColor]> = {
-  running: ['●', 'accent'],
-  waiting: ['●', 'accent'],
-  cancel_requested: ['●', 'warning'],
-  completed: ['✓', 'success'],
-  failed: ['✕', 'error'],
-  cancelled: ['⊘', 'muted'],
-  outcome_unknown: ['?', 'warning'],
+  running: ['●', 'accent'], waiting: ['●', 'accent'], cancel_requested: ['●', 'warning'],
+  completed: ['✓', 'success'], failed: ['✕', 'error'], cancelled: ['⊘', 'muted'], outcome_unknown: ['?', 'warning'],
 };
 export function stateGlyph(theme: RenderTheme, state: string, quiet = false): string {
   const [glyph, color] = GLYPHS[state] ?? ['·', 'muted'];
   return theme.fg(quiet ? 'muted' : color, glyph);
 }
-
-/** Display text must never carry terminal control from tool output. */
 export function clean(text: string): string {
   return stripTerminalSequences(text).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\uFFF9-\uFFFB\r]/g, '');
 }
-function commandLabel(task: TaskDisplay): string {
-  return task.command !== undefined
-    ? truncateUtf8(clean(task.command).replace(/\s+/g, ' ').trim(), 96) : task.tool;
+export function shortId(id: string): string { return id.replace(/^mt_/, '').slice(0, 4); }
+export function formatDuration(seconds: number): string {
+  seconds = Math.max(0, Math.floor(seconds));
+  return seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s`
+    : `${Math.floor(seconds / 3600)}h${String(Math.floor(seconds / 60) % 60).padStart(2, '0')}m`;
 }
+function active(task: TaskDisplay): boolean { return ['running', 'waiting', 'cancel_requested'].includes(task.state); }
 export function elapsedText(task: TaskDisplay): string {
-  if (task.createdAt === undefined) return '';
-  // A still-active task legitimately ticks; an inactive one without endedAt
-  // (outcome_unknown, recovered) must not bill the wall clock as a runtime.
-  const active = task.state === 'running' || task.state === 'waiting' || task.state === 'cancel_requested';
-  if (!active && task.endedAt === undefined) return '';
-  return `${Math.max(0, Math.floor(((task.endedAt ?? Date.now()) - task.createdAt) / 1000))}s`;
+  if (task.createdAt === undefined || (!active(task) && task.endedAt === undefined)) return '';
+  return formatDuration(((task.endedAt ?? Date.now()) - task.createdAt) / 1000);
 }
-function isAcknowledged(task: TaskDisplay): boolean {
-  return task.notification === 'observed' || task.notification === 'delivered';
+/** Use only display data already present in the snapshot; never infer arguments. */
+export function taskCommand(task: TaskDisplay): string | undefined {
+  const arg = task.args?.code ?? Object.values(task.args ?? {})[0];
+  return task.command ?? task.code ?? (typeof arg === 'string' ? arg : arg === undefined ? undefined : JSON.stringify(arg));
 }
-function meta(task: TaskDisplay, withId: boolean, showAck = false): string {
-  return [
-    ...(task.exitCode !== undefined ? [`exit ${task.exitCode}`] : []),
-    ...(elapsedText(task) ? [elapsedText(task)] : []),
-    ...(showAck && isAcknowledged(task) ? [task.notification!] : []),
-    ...(withId ? [task.id] : []),
-  ].join(' · ');
+function commandLabel(task: TaskDisplay, theme: RenderTheme, width: number): string {
+  const raw = clean(taskCommand(task) ?? ''), parts = raw.split('\n');
+  const title = [task.command === undefined ? task.tool : '', parts[0]!.replace(/\s+/g, ' ').trim()].filter(Boolean).join(' ');
+  const hint = parts.length > 1 ? ` …+${parts.length - 1} lines` : '';
+  return truncateToWidth(title, Math.max(1, width - visibleWidth(hint)), '…') + theme.fg('dim', hint);
 }
-/** Collapsed row: glyph, what it is, then dim facts. */
-export function taskLine(task: TaskDisplay, theme: RenderTheme, withId = true, quiet = false): string {
-  const facts = meta(task, withId, quiet);
-  return `${stateGlyph(theme, task.state, quiet)} ${commandLabel(task)}${facts ? theme.fg('dim', ` · ${facts}`) : ''}`;
+export function taskLine(task: TaskDisplay, theme: RenderTheme, withId = true, quiet = false, width = 100): string {
+  const facts = [task.exitCode !== undefined && (task.exitCode !== 0 || task.state !== 'completed') ? `exit ${task.exitCode}` : '',
+    elapsedText(task), withId ? shortId(task.id) : '', task.state === 'waiting' ? 'waiting' : task.state === 'cancel_requested' ? 'cancelling' : '',
+    task.notificationError ?? (task.notification === 'failed' ? 'notification failed' : '')].filter(Boolean).join(' · ');
+  const suffix = facts ? ` · ${facts}` : '';
+  return truncateToWidth(`${stateGlyph(theme, task.state, quiet)} ${commandLabel(task, theme, width - visibleWidth(suffix) - 2)}${theme.fg('dim', suffix)}`, width, '…');
 }
-function tailLines(tail: string): string[] {
-  return clean(tail).trimEnd().split('\n').filter(line => line.trim().length > 0);
+/** Full, mono command block, optionally only when the collapsed header hides text. */
+export function commandBlock(task: TaskDisplay, theme: RenderTheme, width: number, onlyHidden = false): string[] {
+  const raw = taskCommand(task);
+  if (raw === undefined || (onlyHidden && !clean(raw).includes('\n') && !stripTerminalSequences(taskLine(task, theme, true, false, width)).includes('…'))) return [];
+  return clean(raw).split('\n').map(line => theme.fg('toolOutput', `  ${line}`));
 }
-function detailBlock(task: TaskDisplay, theme: RenderTheme, tail: string[] | undefined, tailBudget: number): string[] {
-  const lines = [taskLine(task, theme)];
-  // The row already names a command-less tool; bash/powershell need no label at all.
-  if (task.command !== undefined && task.tool !== 'bash' && task.tool !== 'powershell') lines.push(theme.fg('dim', `  ${task.tool}`));
-  if (task.outputPath) lines.push(theme.fg('muted', `  Output: ${task.outputPath}`));
-  if (task.cancelRequestedAt !== undefined) lines.push(theme.fg('warning', '  Cancellation was requested; the native outcome may not be settled.'));
-  if (tail?.length) lines.push(...tail.slice(-tailBudget).map(line => theme.fg('toolOutput', `  ${truncateUtf8(line, 200)}`)));
-  return lines;
+function tailLines(tail: string): string[] { return clean(tail).trimEnd().split('\n').filter(line => line.trim().length > 0); }
+function detailBlock(task: TaskDisplay, theme: RenderTheme, width: number, tail: string[] = []): string[] {
+  return [taskLine(task, theme, true, false, width), ...commandBlock(task, theme, width), theme.fg('dim', `  ${task.id}`),
+    ...(task.outputPath ? [theme.fg('muted', `  Output: ${task.outputPath}`)] : []),
+    ...(task.state === 'cancel_requested' ? [theme.fg('warning', '  Cancellation was requested; the native outcome may not be settled.')] : []),
+    ...tail.slice(-40).map(line => theme.fg('toolOutput', `  ${truncateUtf8(line, 200)}`))];
 }
-
-/** Chat card for a persisted completion notice. Model-directed boilerplate in
- * message.content is deliberately not shown; display answers what finished,
- * how it ended and what it produced. */
+/** Build rows at the actual available width; only expanded blocks may wrap. */
+function textAtWidth(build: (width: number) => string): Text {
+  const text = new Text('', 0, 0), render = text.render.bind(text);
+  text.render = width => { text.setText(build(width)); return render(width); };
+  return text;
+}
 export function renderCompletion(message: { details?: unknown }, options: RenderOptions, theme: RenderTheme): Box | undefined {
   const details = isRecord(message.details) ? message.details : undefined;
   const tasks = (Array.isArray(details?.tasks) ? details.tasks : []).filter(isRecord) as unknown as TaskDisplay[];
   if (!tasks.length) return undefined;
-  const blocks: string[] = [];
-  for (const task of tasks) {
-    const tail = typeof task.outputTail === 'string' ? tailLines(task.outputTail) : [];
-    if (options.expanded) blocks.push(...detailBlock(task, theme, tail, 40));
-    else {
-      blocks.push(taskLine(task, theme));
-      // A tail glimpse only helps when one task owns the card.
-      if (tasks.length === 1 && tail.length) blocks.push(...tail.slice(-2).map(line => theme.fg('toolOutput', `  ${truncateUtf8(line, 200)}`)));
-    }
-  }
-  // Same chrome as Pi's own custom messages: padded, on the message background.
   const box = new Box(options.outputPad ?? 1, 1, text => theme.bg('customMessageBg', text));
-  box.addChild(new Text(blocks.join('\n'), 0, 0));
+  box.addChild(textAtWidth(width => tasks.flatMap(task => {
+    const tail = typeof task.outputTail === 'string' ? tailLines(task.outputTail) : [];
+    return options.expanded ? detailBlock(task, theme, width, tail) : [taskLine(task, theme, true, false, width),
+      ...(tasks.length === 1 ? tail.slice(-2).map(line => theme.fg('toolOutput', `  ${truncateUtf8(line, 200)}`)) : [])];
+  }).join('\n')));
   return box;
 }
-
-/** Extract task snapshots from a result's control details, in display order.
- * Native details live under `nativeDetails`, so no native key reads as a task. */
 function resultTasks(details: unknown): { tasks: TaskDisplay[]; page: boolean } {
   if (!isRecord(details)) return { tasks: [], page: false };
-  if (Array.isArray(details.tasks)) return { tasks: details.tasks.filter(isRecord) as unknown as TaskDisplay[], page: true };
-  if (isRecord(details.task)) return { tasks: [details.task as unknown as TaskDisplay], page: true };
-  if (typeof details.id === 'string' && typeof details.state === 'string') return { tasks: [details as unknown as TaskDisplay], page: false };
-  return { tasks: [], page: false };
+  const raws = [...(Array.isArray(details.tasks) ? details.tasks : isRecord(details.task) ? [details.task] : typeof details.id === 'string' && typeof details.state === 'string' ? [details] : []),
+    ...(Array.isArray(details.pending) ? details.pending : [])].filter(isRecord) as unknown as TaskDisplay[];
+  return { tasks: [...new Map(raws.map(task => [task.id, task])).values()], page: Array.isArray(details.tasks) || isRecord(details.task) };
 }
-/** Result rendering for meantime itself and for managed tools that returned a
- * background handle. Everything else belongs to the native renderer. */
+export function detachReasonSuffix(reason: string | undefined, autoDetachMs: number): string {
+  return reason === 'timeout' ? ` (${autoDetachMs / 1000}s timeout)` : reason === 'shortcut' ? ' (manual detach)' : reason === 'steer' ? ' (steered)' : '';
+}
 export function renderTaskResult(result: ResultLike & { details?: unknown }, options: RenderOptions & { expanded: boolean },
-  theme: RenderTheme, context: { args?: unknown }, isHandle: boolean): Text {
+  theme: RenderTheme, context: { args?: unknown }, isHandle: boolean, autoDetachMs = 0): Text {
   const details = isRecord(result.details) ? result.details : undefined;
   const { tasks, page } = resultTasks(details);
-  if (isHandle && tasks[0]) {
-    const task = tasks[0];
-    const reason = task.detachReason === 'timeout' ? ' (90s auto-detach)'
-      : task.detachReason === 'shortcut' || task.detachReason === 'steer' ? ' (detached)' : '';
-    // The native call header already renders the command; don't repeat it here.
-    const what = task.state === 'running' ? 'running in background' : 'background';
-    if (!options.expanded) return new Text(`\n${stateGlyph(theme, task.state)} ${theme.fg('dim', `${what}${reason} · ${task.id}`)}`, 0, 0);
-    return new Text(`\n${detailBlock(task, theme, undefined, 0).join('\n')}`, 0, 0);
-  }
-  const isWait = isRecord(context.args) && context.args.action === 'wait';
-  const lines: string[] = [];
-  if (isWait && tasks.length) {
-    for (const task of tasks) lines.push(taskLine(task, theme));
-    const body = tasks.flatMap(task => {
-      const output = options.isPartial ? task.outputTail ?? task.progress : task.output;
-      return typeof output === 'string' ? tailLines(output) : [];
-    });
-    const shown = options.isPartial ? body.slice(-(options.expanded ? 20 : 5))
-      : options.expanded ? body : body.slice(0, 10);
-    // A blank line keeps the status rows apart from the process's own output.
-    if (shown.length) lines.push('', ...shown.map(line => theme.fg('toolOutput', line)));
-    const remaining = body.length - shown.length;
-    if (remaining > 0 && !options.isPartial) lines.push(theme.fg('muted', `… ${remaining} more lines, ${keyHint('app.tools.expand', 'to expand')}`));
-  } else if (page && tasks.length) {
-    const isCancel = isRecord(context.args) && context.args.action === 'cancel';
-    if (!isCancel) {
-      const total = typeof details?.total === 'number' ? details.total : tasks.length;
-      lines.push(theme.fg('muted', `Background tasks (${total})`));
+  return textAtWidth(width => {
+    if (isHandle && tasks[0]) {
+      const task = tasks[0];
+      return `\n${options.expanded ? detailBlock(task, theme, width).join('\n')
+        : `${stateGlyph(theme, task.state)} ${theme.fg('dim', `${task.state === 'running' ? 'running in background' : 'background'}${detachReasonSuffix(task.detachReason, autoDetachMs)} · ${shortId(task.id)}`)}`}`;
     }
-    if (!options.expanded) lines.push(...tasks.map(task => taskLine(task, theme, true, !isCancel && task.state !== 'running' && task.state !== 'waiting' && task.state !== 'cancel_requested')));
-    else for (const task of tasks) {
-      const tail = typeof task.outputTail === 'string' ? tailLines(task.outputTail) : [];
-      lines.push(...detailBlock(task, theme, tail, 40));
+    const isWait = isRecord(context.args) && context.args.action === 'wait', lines: string[] = [];
+    if (isWait && tasks.length) {
+      for (const task of tasks) {
+        lines.push(...(options.expanded ? detailBlock(task, theme, width) : [taskLine(task, theme, true, false, width)]));
+        if (active(task) && (details?.waitOutcome === 'timeout' || details?.waitOutcome === 'interrupted')) lines.push(theme.fg('dim',
+          `  ${details.waitOutcome}${typeof details.waitedMs === 'number' ? ` · waited ${Math.max(0, Math.floor(details.waitedMs / 1000))}s` : ''}`));
+      }
+      const body = tasks.flatMap(task => { const output = options.isPartial ? task.outputTail ?? task.progress : task.output; return typeof output === 'string' ? tailLines(output) : []; });
+      const shown = options.isPartial ? body.slice(-(options.expanded ? 20 : 5)) : options.expanded ? body : body.slice(0, 10);
+      if (shown.length) lines.push('', ...shown.map(line => theme.fg('toolOutput', line)));
+      if (body.length > shown.length && !options.isPartial) lines.push(theme.fg('muted', `… ${body.length - shown.length} more lines, ${keyHint('app.tools.expand', 'to expand')}`));
+    } else if (page && tasks.length) {
+      const isCancel = isRecord(context.args) && context.args.action === 'cancel';
+      if (!isCancel) lines.push(theme.fg('muted', `Background tasks (${typeof details?.total === 'number' ? details.total : tasks.length})`));
+      for (const task of tasks) lines.push(...(options.expanded ? detailBlock(task, theme, width, typeof task.outputTail === 'string' ? tailLines(task.outputTail) : [])
+        : [taskLine(task, theme, true, !isCancel && !active(task), width)]));
     }
-  }
-  if (isRecord(details) && details.next_offset != null) lines.push(theme.fg('muted', `More: offset=${details.next_offset}`));
-  if (!lines.length) {
-    const fallback = result.content.filter(b => b.type === 'text' && typeof b.text === 'string').flatMap(b => tailLines(b.text!));
-    lines.push(...fallback.map(line => theme.fg('toolOutput', line)));
-  }
-  return new Text(`\n${lines.join('\n')}`, 0, 0);
+    if (typeof details?.next_offset === 'number' && typeof details.total === 'number') {
+      const more = Math.max(0, details.total - details.next_offset);
+      if (more) lines.push(theme.fg('muted', `+${more} more`));
+    }
+    if (!lines.length) lines.push(...result.content.filter(b => b.type === 'text' && typeof b.text === 'string').flatMap(b => tailLines(b.text!)).map(line => theme.fg('toolOutput', line)));
+    return `\n${lines.join('\n')}`;
+  });
 }
-
-/** Call header in Pi's tool language: **meantime** `wait mt_a, mt_b · 30s`, not raw JSON. */
 export function renderMeantimeCall(args: unknown, theme: RenderTheme): Text {
   const action = isRecord(args) && typeof args.action === 'string' ? args.action : 'list';
-  const ids = isRecord(args) && Array.isArray(args.ids) ? args.ids.filter(id => typeof id === 'string').join(', ') : '';
-  const timeout = isRecord(args) && typeof args.timeout === 'number' ? ` · ${args.timeout}s` : '';
+  const ids = isRecord(args) && Array.isArray(args.ids) ? args.ids.filter((id): id is string => typeof id === 'string').map(shortId).join(', ') : '';
+  const timeout = isRecord(args) && typeof args.timeout === 'number' ? ` · ${formatDuration(args.timeout)}` : '';
   return new Text(`${theme.fg('toolTitle', theme.bold('meantime'))} ${theme.fg('accent', action)}${ids ? ` ${ids}` : ''}${theme.fg('dim', timeout)}`, 0, 0);
 }

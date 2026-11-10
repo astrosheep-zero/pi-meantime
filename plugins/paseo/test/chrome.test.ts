@@ -6,7 +6,7 @@ import { build } from "esbuild";
 // loads bare in node, the same trick rows.test.ts uses.
 const bundle = await build({ entryPoints: [new URL("../client/chrome.ts", import.meta.url).pathname],
   bundle: true, write: false, platform: "node", format: "esm" });
-const { glassChrome, taskTone } = (await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0]!.text).toString("base64")}`)) as typeof import("../client/chrome.ts");
+const { glassChrome, taskTone, toneColor } = (await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0]!.text).toString("base64")}`)) as typeof import("../client/chrome.ts");
 
 const LIGHT = {
   surface0: "#eef1f6", surface1: "#ecf0f6", surface2: "#e6eaf1", border: "#d7dbe3",
@@ -44,4 +44,5 @@ test("taskTone maps states and wait outcomes to the four tones", () => {
   assert.equal(taskTone({ state: "completed", exitCode: 2 }), "bad");
   assert.equal(taskTone({ state: "running" }, "timeout"), "run");
   assert.equal(taskTone({ state: "running" }, "interrupted"), "neutral");
+  assert.equal(toneColor("neutral", { ...LIGHT, foregroundMuted: "muted", accent: "green" }), "muted");
 });

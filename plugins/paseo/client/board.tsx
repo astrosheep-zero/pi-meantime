@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import type { TaskSummary } from "../shared/tasks.js";
 import { foldItem, foldTimeline, isActiveTask, sortTasks } from "../shared/tasks.js";
-import { TintedCard, taskTone } from "./card.js";
+import { Card, TintedCard, taskTone } from "./card.js";
 import { secondaryColor, stateColor } from "./rows.js";
 import { TaskLine } from "./task-view.js";
 
@@ -73,13 +73,13 @@ export function MeantimeBoard({ agentId, theme, layout }: PluginAgentPanelProps)
   return (
     <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.screen}>
       {tasks.length === 0
-        ? <Text style={styles.muted}>No background tasks</Text>
+        ? <Card colors={colors} layout={layout}><Text style={styles.muted}>No background tasks</Text></Card>
         : tasks.map(task => (
           <TintedCard key={task.id} colors={colors} layout={layout} tone={taskTone(task)}>
             <TaskLine task={task} colors={colors} layout={layout} showId muted={!isActiveTask(task)} />
           </TintedCard>
         ))}
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+      {error ? <TintedCard colors={colors} tone="bad" layout={layout}><Text style={styles.error}>{error}</Text></TintedCard> : null}
       {hasOlder
         ? <Text style={styles.muted}>Only the latest {PAGE_LIMIT} timeline entries were scanned; older tasks may be missing.</Text>
         : null}

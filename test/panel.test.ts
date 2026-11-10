@@ -44,19 +44,19 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
     const idA = (a.result.details as Snapshot).id, idB = (b.result.details as Snapshot).id;
     const opening = command();
     assert.match(text(), /Current session tasks/);
-    assert.ok(text().indexOf(idB) < text().indexOf(idA));
+    assert.ok(text().indexOf(idB.slice(3, 7)) < text().indexOf(idA.slice(3, 7)));
     const assertElapsedVisible = () => {
       const lines = panel!.render(80);
-      const rows = lines.filter(line => line.includes(idA) || line.includes(idB));
+      const rows = lines.filter(line => [idA, idB].some(id => line.endsWith(` · ${id.slice(3, 7)}`)));
       assert.equal(rows.length, 2);
       for (const row of rows) {
-        assert.match(row, / · \d+s · mt_[a-f0-9]{8}$/);
+        assert.match(row, / · \d+s · [a-f0-9]{4}$/);
         assert.ok(visibleWidth(row) <= 80);
       }
     };
     assertElapsedVisible();
     panel!.handleInput!('\r');
-    assert.ok(text().includes(`Command: ${longCommand}`));
+    assert.ok(text().includes(longCommand));
     assertElapsedVisible();
     const changedBefore = renders, updateSecond = update!;
     await sleep(2);
@@ -72,7 +72,7 @@ test('TUI panel selects, expands, cancels, refreshes and releases resources on c
     assert.ok(panel!.render(20).every(line => visibleWidth(line) <= 20));
     panel!.handleInput!('\u001b[B');
     panel!.handleInput!('\r');
-    assert.match(text(), /Command: first command/);
+    assert.match(text(), /first command/);
     panel!.handleInput!('\u001b[A');
     panel!.handleInput!('c');
     assert.equal(aborts, 1);

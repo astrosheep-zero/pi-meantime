@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it, test } from "node:test";
 import type { ToolCallItemLike } from "../shared/tasks.ts";
 import { OUTPUT_DISPLAY_MAX_CHARS, elapsedSeconds, foldTimeline, outputPreview, recognizeTimelineToolCall, recognizeToolCall, resolveWaitTask, sortTasks } from "../shared/tasks.ts";
 
@@ -197,7 +197,7 @@ describe("recognizeToolCall: meantime tool", () => {
   });
 
   it("rejects empty non-list and unparseable results", () => {
-    assert.deepEqual(recognizeToolCall(unknownItem("meantime", { action: "wait" }, { details: { tasks: [] } })), { source: "meantime", action: "wait", tasks: [] });
+    assert.deepEqual(recognizeToolCall(unknownItem("meantime", { action: "wait" }, { details: { tasks: [] } })), { source: "meantime", action: "wait", tasks: [], total: 0 });
     assert.equal(recognizeToolCall(unknownItem("meantime", { action: "cancel" }, { details: { tasks: [] } })), undefined);
     assert.equal(recognizeToolCall(unknownItem("meantime", { action: "list" }, { content: [{ type: "text", text: "none" }] })), undefined);
   });
@@ -432,4 +432,24 @@ describe("wait outcomes", () => {
     const item = unknownItem("meantime", { action: "wait", ids: [SNAPSHOT.id] }, null); item.status = "canceled";
     const data = recognizeToolCall(item); assert.equal(data?.waitOutcome, "interrupted"); assert.deepEqual(data?.tasks, [{ id: SNAPSHOT.id, state: "waiting" }]);
   });
+});
+
+test("failed single wait preserves its task and output; actual call errors use an error card", () => {
+  const failed = recognizeTimelineToolCall(unknownItem("meantime", { action: "wait" }, {
+    isError: true, details: { task: { ...SNAPSHOT, state: "failed", output: "task failure" } },
+  }));
+  assert.equal(failed?.tasks[0]?.state, "failed");
+  assert.equal(failed?.tasks[0]?.output, "task failure");
+  const error = recognizeTimelineToolCall(unknownItem("meantime", { action: "cancel" }, {
+    isError: true, content: [{ type: "text", text: "cancel requires ids" }],
+  }));
+  assert.equal(error?.error, "cancel requires ids");
+});
+
+test("existing code/args survive projection for a compact title and full drawer", () => {
+  const data = recognizeToolCall(unknownItem("meantime", { action: "list" }, {
+    details: { tasks: [{ ...SNAPSHOT, tool: "codemode", command: undefined, code: "const x = 1;\nreturn x;", args: { query: "fixture" } }] },
+  }));
+  assert.equal(data?.tasks[0]?.code, "const x = 1;\nreturn x;");
+  assert.deepEqual(data?.tasks[0]?.args, { query: "fixture" });
 });

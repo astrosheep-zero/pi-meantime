@@ -5,7 +5,7 @@ import { useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { MeantimeCardData } from "../shared/tasks.js";
 import { isActiveTask } from "../shared/tasks.js";
-import { Card, TintedCard, toneColor } from "./card.js";
+import { Card, TintedCard, taskTone, toneColor } from "./card.js";
 import { CODE_FONT_SIZE, CODE_LINE_HEIGHT, dividerColor, formatSeconds, frameColor, isDarkSurface, monoFont, secondaryColor } from "./rows.js";
 import { Pip, StatusRule, TaskLine, TaskTable } from "./task-view.js";
 
@@ -31,7 +31,7 @@ function MeantimeTaskCardBody(props: PluginTimelineItemProps<MeantimeCardData>) 
   const tasks = data.source === "handle"
     ? data.tasks.map(task => task.state === "running" ? { ...task, state: "started" } : task)
     : data.tasks;
-  return <TaskTable tasks={tasks} colors={colors} layout={layout} waitOutcome={data.waitOutcome} waitedSeconds={data.waitedSeconds} />;
+  return <TaskTable tasks={tasks} colors={colors} layout={layout} grouped={data.action === "wait" && tasks.length > 1} waitOutcome={data.waitOutcome} waitedSeconds={data.waitedSeconds} />;
 }
 
 /** A failed meantime call: one bad lamp, the call line, one human sentence. */
@@ -60,7 +60,7 @@ function WaitAllCard({ data, colors, layout }: { data: MeantimeCardData; colors:
     <TintedCard colors={colors} tone={tone} layout={layout}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
         <Pip tone={tone} colors={colors} />
-        <Text style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: 13, lineHeight: 17, fontWeight: "600", letterSpacing: -0.2 }}>All pending tasks</Text>
+        <Text style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: 13, lineHeight: 17, fontWeight: "600", letterSpacing: -0.2 }}>All pending tasks<Text style={{ color: secondaryColor(colors), fontFamily: monoFont(layout.platform), fontWeight: "400" }}> · {data.total ?? "?"} tasks</Text></Text>
         {data.waitOutcome ? <Text style={{ fontSize: 11.5, lineHeight: 16, fontFamily: monoFont(layout.platform), fontVariant: ["tabular-nums"], fontWeight: "500", color: toneColor(tone, colors) }}>{data.waitOutcome}</Text> : null}
         {data.waitedSeconds !== undefined
           ? <Text numberOfLines={1} style={{ fontSize: 11.5, lineHeight: 16, fontFamily: monoFont(layout.platform), fontVariant: ["tabular-nums"], color: dark ? "#6b727b" : secondaryColor(colors) }}>waited <Text style={{ fontWeight: "600", color: dark ? "#cbd0d6" : colors.foreground }}>{formatSeconds(data.waitedSeconds)}</Text></Text>
@@ -77,7 +77,9 @@ function WaitAllCard({ data, colors, layout }: { data: MeantimeCardData; colors:
 export function ListCard({ data, colors, layout, defaultOpen = false, openTask = false }: { data: MeantimeCardData; colors: Colors; layout: Layout; defaultOpen?: boolean; openTask?: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
   const empty = data.tasks.length === 0;
-  const running = data.tasks.filter(isActiveTask).length;
+  const groups = ([['run', 'active'], ['ok', '✓'], ['bad', '✕'], ['neutral', 'other']] as const)
+    .map(([tone, label]) => ({ tone, label, count: data.tasks.filter(task => (isActiveTask(task) ? 'run' : taskTone(task)) === tone).length })).filter(group => group.count);
+  const more = data.total !== undefined && data.moreOffset !== undefined ? Math.max(0, data.total - data.moreOffset) : 0;
   const dark = isDarkSurface(colors);
   const chevColor = dark ? "#5e646d" : frameColor(colors);
   const muted = secondaryColor(colors);
@@ -89,11 +91,8 @@ export function ListCard({ data, colors, layout, defaultOpen = false, openTask =
         <Text style={{ flex: 1, minWidth: 0, color: colors.foreground, fontSize: 13, lineHeight: 17, fontWeight: "600", letterSpacing: -0.2 }}>
           {empty ? "No background tasks" : "Background tasks"}
         </Text>
-        {empty
-          ? <Text style={{ fontSize: 11.5, lineHeight: 16, fontFamily: monoFont(layout.platform), fontVariant: ["tabular-nums"], color: muted }}>none</Text>
-          : running > 0
-            ? <Text style={{ fontSize: 11.5, lineHeight: 16, fontFamily: monoFont(layout.platform), fontVariant: ["tabular-nums"], color: muted }}>{running} running</Text>
-            : null}
+        {empty ? <Text style={{ fontSize: 11.5, lineHeight: 16, fontFamily: monoFont(layout.platform), color: muted }}>none</Text>
+          : groups.map(group => <Text key={group.tone} style={{ fontSize: 11.5, lineHeight: 16, fontFamily: monoFont(layout.platform), color: toneColor(group.tone, colors) }}>{group.count} {group.label}</Text>)}
         {!empty ? <Icon name={open ? "ChevronUp" : "ChevronDown"} size={11} color={chevColor} /> : null}
       </Pressable>
       {open ? data.tasks.map((task, index) => (
@@ -101,9 +100,9 @@ export function ListCard({ data, colors, layout, defaultOpen = false, openTask =
           <TaskLine task={task} colors={colors} layout={layout} showId muted={!isActiveTask(task)} defaultOpen={openTask} />
         </View>
       )) : null}
-      {open && data.moreOffset !== undefined
+      {open && more > 0
         ? <Text style={{ marginTop: 4, paddingTop: 6, borderTopWidth: 0.5, borderTopColor: divider,
-          color: muted, fontSize: 10, lineHeight: 14, fontFamily: monoFont(layout.platform) }}>More tasks not shown (offset {data.moreOffset})</Text>
+          color: muted, fontSize: 10, lineHeight: 14, fontFamily: monoFont(layout.platform) }}>+{more} more</Text>
         : null}
     </Card>
   );

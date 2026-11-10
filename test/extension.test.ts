@@ -176,7 +176,7 @@ test('detached handles state why the handoff happened', async () => {
     await until(() => (h.instance.inspect() as { tasks: Snapshot[] }).tasks.length === 2);
     h.pi.shortcuts.get('ctrl+shift+b')!(h.pi.ctx);
     const manual = await pending;
-    assert.equal(text(manual.result), `Meantime ${snapshot(manual).id} running in background (detached).`);
+    assert.equal(text(manual.result), `Meantime ${snapshot(manual).id} running in background (manual detach).`);
     assert.equal(h.pi.uiMessages.at(-1), 'Detached 1 call(s) to background.');
   } finally { await h.close(); }
 });
@@ -186,7 +186,7 @@ test('auto timeout handles name the configured window', async () => {
   try {
     const handle = await h.pi.call('bash', { command: 'sleep 5' });
     assert.equal((handle.result.content[0] as { text: string }).text,
-      `Meantime ${snapshot(handle).id} running in background (0.25s auto-detach).`);
+      `Meantime ${snapshot(handle).id} running in background (0.25s timeout).`);
   } finally { await h.close(); }
 });
 

@@ -88,14 +88,14 @@ test("washed-out host tokens gain contrast without using border or a fixed palet
   assert.equal(readableColor("#e9b45a", dark), "#e9b45a");
 });
 
-test("a collapsed row flattens newlines; an open row shows the full script in the drawer", () => {
+test("a collapsed row previews the first command line and opens the full script", () => {
   const task = { id: "mt_a1b2c3d4", state: "running", command: "npm test\n  --  --watch" };
   const collapsed = row(task);
-  assert.match(collapsed, /npm<span[^>]*> test -- --watch<\/span>/);
-  assert.doesNotMatch(collapsed, /npm test\n/);
+  assert.match(collapsed, /npm<span[^>]*> test<\/span>/);
+  assert.match(collapsed, /…\+1 lines/);
   const open = openRow({ ...task, progress: "2/5" });
   // The header keeps the flattened one-liner; the script unfolds once, in the drawer.
-  assert.match(open, /npm<span[^>]*> test -- --watch<\/span>/);
+  assert.match(open, /npm<span[^>]*> test<\/span>/);
   assert.equal(open.match(/npm test\n  --  --watch/g)?.length, 1);
   assert.match(open, /2\/5/);
 

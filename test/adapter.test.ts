@@ -312,7 +312,7 @@ test('wait previews show native single and batch bodies, while handle cards reta
     const handles = [];
     for (let i = 0; i < 2; i++) handles.push(await h.pi.call('mcp__preview', { __background__: 'yes' }));
     const ids = handles.map(out => snapshot(out).id);
-    assert.match(managed.renderResult!(handles[0]!.result, { expanded: false, isPartial: false }, theme, {} as Parameters<Render>[3]).render(200).map(line => line.trimEnd()).join('\n'), /● running in background · mt_[a-f0-9]{8}$/,
+    assert.match(managed.renderResult!(handles[0]!.result, { expanded: false, isPartial: false }, theme, {} as Parameters<Render>[3]).render(200).map(line => line.trimEnd()).join('\n'), /● running in background · [a-f0-9]{4}$/,
       'the call header already carries the command, so the handle line stays compact');
     initTheme('dark', false);
     const ui = { requestRender() {} } as ConstructorParameters<typeof ToolExecutionComponent>[5];
@@ -322,7 +322,7 @@ test('wait previews show native single and batch bodies, while handle cards reta
       const preview = make(resolve('meantime', () => undefined)!);
       preview.updateResult({ ...outcome.result, isError: outcome.isError });
       const collapsed = stripTerminalSequences(preview.render(200).map(line => line.trimEnd()).join('\n'));
-      assert.match(collapsed, /✓ mcp__preview · \d+s · mt_[a-f0-9]{8}/, 'wait results open with a glyph header');
+      assert.match(collapsed, /✓ mcp__preview · \d+s · [a-f0-9]{4}/, 'wait results open with a glyph header');
       assert.doesNotMatch(collapsed, /Meantime mt_/, 'the machine receipt line is not duplicated under the header');
       assert.match(collapsed, /BODY_1\b/);
       assert.doesNotMatch(collapsed, /BODY_25\b/);
@@ -354,7 +354,7 @@ test('wait keeps every JSON-valid native details value behind one control envelo
       assert.equal(Object.hasOwn(details, 'usage'), false);
       const card = renderTaskResult(wait.result, { expanded: false }, theme, { args: { action: 'wait' } }, false)
         .render(200).map(line => line.trimEnd()).join('\n');
-      assert.match(card, new RegExp(`✓ mcp__t__shape · \\d+s · ${task.id}`), `${shape}: the renderer reads control details`);
+      assert.match(card, new RegExp(`✓ mcp__t__shape · \\d+s · ${task.id.slice(3, 7)}`), `${shape}: the renderer reads control details`);
       assert.doesNotMatch(card, /job-7|NATIVE_DETAIL|kept/, `${shape}: native details are not control metadata`);
     }
   } finally { for (const gate of gates.values()) gate.resolve(ok().result); await h.close(); }
@@ -407,7 +407,7 @@ test('management results are paginated rather than dumping the full registry int
     const page = await h.pi.call('meantime', { action: 'list', limit: 5 });
     const value = page.result.structuredContent as { tasks: unknown[]; next_offset: number; total: number };
     assert.equal(value.tasks.length, 5); assert.equal(value.next_offset, 5); assert.equal(value.total, 12);
-    assert.match(page.result.content.filter(b => b.type === 'text').map(b => b.text).join('\n'), /\nMore: offset=5$/);
+    assert.match(page.result.content.filter(b => b.type === 'text').map(b => b.text).join('\n'), /\n\+7 more$/);
   } finally { await h.close(); }
 });
 

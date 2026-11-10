@@ -1,187 +1,80 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { Text } from '@earendil-works/pi-tui';
 import { install } from '../src/extension.ts';
 import { validateConfig } from '../src/config.ts';
-import { renderCompletion, renderMeantimeCall, renderTaskResult, stateGlyph } from '../src/render.ts';
+import { elapsedText, formatDuration, renderCompletion, renderMeantimeCall, renderTaskResult, stateGlyph } from '../src/render.ts';
 import type { TaskDisplay } from '../src/render.ts';
-import { FakePi, fixtureBash } from './host.ts';
+import { FakePi } from './host.ts';
+const plain = { fg: (_c: string, text: string) => text, bg: (_c: string, text: string) => text, bold: (text: string) => text };
+const render = (component: { render(width: number): string[] } | undefined, width = 100) => component?.render(width).map(line => line.trimEnd()).join('\n').trim() ?? '';
+const done: TaskDisplay = { id: 'mt_a1b2c3d4', tool: 'bash', state: 'completed', command: 'npm test', createdAt: 1000, endedAt: 73000, exitCode: 0, output: '✔ all passed', outputTail: '✔ all passed', outputPath: '/tmp/result.log' };
+const running: TaskDisplay = { id: 'mt_deadbeef', tool: 'bash', state: 'running', command: 'npm watch' };
+const result = (details: unknown, action = 'list', expanded = false, isPartial = false) => render(renderTaskResult({ content: [], details }, { expanded, isPartial }, plain, { args: { action } }, false));
 
-/** Records the semantic color of every fragment: `[color]text`. */
-function recordingTheme() {
-  return { fg: (color: string, text: string) => `[${color}]${text}`, bg: (_c: string, t: string) => t, bold: (t: string) => t } as unknown as Parameters<typeof renderCompletion>[2];
-}
-const plain = { fg: (_color: string, text: string) => text, bg: (_c: string, t: string) => t, bold: (t: string) => t } as unknown as Parameters<typeof renderCompletion>[2];
-const render = (component: { render(width: number): string[] } | undefined) =>
-  component?.render(200).map(line => line.trimEnd()).join('\n').replace(/^\n+|\n+$/g, '') ?? '';
-
-const done: TaskDisplay = { id: 'mt_a1b2c3d4', tool: 'bash', state: 'completed', command: 'npm test',
-  exitCode: 0, createdAt: 1_000, endedAt: 13_000, outputTail: '…\n✓ 42 passing', outputPath: '/tmp/out.txt' };
-const failed: TaskDisplay = { id: 'mt_e5f60718', tool: 'bash', state: 'failed', command: 'make release',
-  exitCode: 2, createdAt: 0, endedAt: 61_000 };
-const cancelled: TaskDisplay = { id: 'mt_19202122', tool: 'bash', state: 'cancelled', command: 'sleep 99',
-  cancelRequestedAt: 5, createdAt: 0, endedAt: 5_000 };
-
-test('glyphs are the single state channel with semantic colors', () => {
-  const theme = recordingTheme();
-  assert.equal(stateGlyph(theme, 'completed'), '[success]✓');
-  assert.equal(stateGlyph(theme, 'failed'), '[error]✕');
-  assert.equal(stateGlyph(theme, 'cancelled'), '[muted]⊘');
-  assert.equal(stateGlyph(theme, 'running'), '[accent]●');
-  assert.equal(stateGlyph(theme, 'waiting'), '[accent]●');
-  assert.equal(stateGlyph(theme, 'cancel_requested'), '[warning]●');
-  assert.equal(stateGlyph(theme, 'outcome_unknown'), '[warning]?');
+test('state glyphs distinguish outcomes and active states', () => {
+  assert.deepEqual(['running', 'waiting', 'cancel_requested', 'completed', 'failed', 'cancelled', 'outcome_unknown'].map(state => stateGlyph(plain, state)), ['●', '●', '●', '✓', '✕', '⊘', '?']);
 });
-
-test('completion card answers what finished, how it ended and what it produced', () => {
-  const message = { customType: 'meantime-completion', role: 'custom', display: true, timestamp: 0,
-    content: 'Meantime mt_a1b2c3d4 completed (exit 0)\nAutomated background completion — not user input or approval.',
-    details: { taskIds: [done.id], tasks: [done] } };
-  const collapsed = render(renderCompletion(message, { expanded: false }, plain));
-  assert.match(collapsed, /✓ npm test · exit 0 · 12s · mt_a1b2c3d4/);
-  assert.match(collapsed, /✓ 42 passing/, 'a single-task card shows a tail glimpse');
-  assert.doesNotMatch(collapsed, /Automated background completion/, 'model-directed boilerplate is not displayed');
-  assert.doesNotMatch(collapsed, /untrusted-output/);
-  assert.doesNotMatch(collapsed, /Output:/, 'collapsed card omits the output path');
-
-  const expanded = render(renderCompletion(message, { expanded: true }, plain));
-  assert.doesNotMatch(expanded, /^\s*bash$/m, 'a bash task needs no tool label under its command');
-  assert.match(expanded, /Output: \/tmp\/out\.txt/);
-  const psExpanded = render(renderCompletion({ ...message, details: { taskIds: [done.id], tasks: [{ ...done, tool: 'powershell' }] } }, { expanded: true }, plain));
-  assert.doesNotMatch(psExpanded, /^\s*powershell$/m, 'a powershell task needs no tool label under its command');
+test('durations use seconds, minutes and hours without inventing recovered runtime', () => {
+  assert.deepEqual([42, 72, 3720].map(formatDuration), ['42s', '1m12s', '1h02m']);
+  assert.equal(elapsedText({ ...running, state: 'outcome_unknown', createdAt: 1 }), '');
 });
-
-test('multi-task completion cards stay one line per task; failure and cancellation read at a glance', () => {
-  const message = { details: { taskIds: [done.id, failed.id, cancelled.id], tasks: [done, failed, cancelled] } };
-  const collapsed = render(renderCompletion(message as never, { expanded: false }, recordingTheme()));
-  assert.match(collapsed, /\[success\]✓/);
-  assert.match(collapsed, /\[error\]✕ make release/);
-  assert.doesNotMatch(collapsed, /✓ 42 passing/, 'no tails compete in a batch card');
-  const expanded = render(renderCompletion(message as never, { expanded: true }, recordingTheme()));
-  assert.match(expanded, /\[warning\] +Cancellation was requested/);
-  assert.match(expanded, /exit 2 · 61s/);
+test('completion and list cards retain task identity and output in expanded details', () => {
+  assert.match(render(renderCompletion({ details: { tasks: [done] } }, { expanded: false }, plain)), /✓ npm test · 1m12s · a1b2\n\s+✔ all passed/);
+  const expanded = render(renderCompletion({ details: { tasks: [done] } }, { expanded: true }, plain));
+  for (const text of [done.id, done.command!, done.outputPath!, done.output!]) assert.ok(expanded.includes(text));
+  assert.equal(renderCompletion({}, {}, plain), undefined);
 });
-
-test('completion renderer declines messages without task metadata', () => {
-  assert.equal(renderCompletion({ details: undefined }, { expanded: false }, plain), undefined);
-  assert.equal(renderCompletion({ details: { taskIds: [] } }, { expanded: false }, plain), undefined);
+test('call headers summarize actions and ids', () => {
+  assert.equal(render(renderMeantimeCall({ action: 'wait', ids: [done.id], timeout: 30 }, plain)), 'meantime wait a1b2 · 30s');
 });
-
-test('meantime call rows summarize the action instead of raw JSON', () => {
-  assert.equal(render(renderMeantimeCall({ action: 'wait', ids: ['mt_a', 'mt_b'], timeout: 30 }, plain)), 'meantime wait mt_a, mt_b · 30s');
-  assert.equal(render(renderMeantimeCall({ action: 'cancel', ids: ['mt_a'] }, plain)), 'meantime cancel mt_a');
-  assert.equal(render(renderMeantimeCall({}, plain)), 'meantime list');
+test('installed handle renderer uses the configured timeout and distinct detach reasons', () => {
+  const pi = new FakePi(), app = install(pi, { config: validateConfig({ autoDetachMs: 120000 }), connect: () => pi });
+  const renderer = pi.renderers[0]!('meantime', () => undefined)!;
+  for (const [reason, suffix] of [['timeout', ' (120s timeout)'], ['shortcut', ' (manual detach)'], ['steer', ' (steered)'], ['explicit', '']]) {
+    const text = render(renderer.renderResult!({ content: [], details: { ...running, delivery: 'background', createdAt: 1, detachReason: reason } }, { expanded: false, isPartial: false }, plain as never, {} as never));
+    assert.equal(text, `● running in background${suffix} · dead`);
+  }
+  void app.dispose();
 });
-
-test('install registers the completion message renderer', async () => {
-  const pi = new FakePi();
-  pi.registerTool(fixtureBash(process.cwd()));
-  const instance = install(pi, { config: validateConfig({}), connect: () => pi });
-  try {
-    assert.equal(typeof pi.messageRenderers.get('meantime-completion'), 'function');
-  } finally { await instance.dispose(); }
+test('pending siblings render alongside settled rows with wait outcomes', () => {
+  const text = result({ tasks: [done], pending: [running], waitOutcome: 'timeout', waitedMs: 72000 }, 'wait');
+  for (const fragment of ['✓ npm test', '● npm watch', 'timeout · waited 72s', '✔ all passed']) assert.ok(text.includes(fragment));
+  assert.match(result({ tasks: [running], waitOutcome: 'interrupted', waitedMs: 2000 }, 'wait'), /interrupted · waited 2s/);
 });
-
-test('handle and list results keep one scannable line per task', () => {
-  const handle = renderTaskResult({ content: [{ type: 'text', text: 'Meantime mt_a1b2c3d4 running in background…' }],
-    details: { id: done.id, tool: done.tool, state: 'running', command: done.command,
-      delivery: 'background', createdAt: Date.now() - 12_000 } }, { expanded: false }, plain, {}, true);
-  assert.equal(render(handle), '● running in background · mt_a1b2c3d4',
-    'the native call header already shows the command');
-  const expanded = renderTaskResult({ content: [], details: { id: done.id, tool: done.tool, state: 'running',
-    command: done.command, delivery: 'background', createdAt: Date.now() - 12_000 } }, { expanded: true }, plain, {}, true);
-  assert.match(render(expanded), /● npm test · \d+s · mt_a1b2c3d4/, 'expanding still reveals the command');
-
-  const list = renderTaskResult({ content: [{ type: 'text', text: 'Current session tasks…' }],
-    details: { tasks: [{ ...done, notification: 'observed' }, { ...failed, notification: 'delivered' }], total: 10, pending: [], next_offset: 40 } }, { expanded: false }, recordingTheme(), {}, false);
-  const text = render(list);
-  assert.match(text, /\[muted\]Background tasks \(10\)/);
-  assert.match(text, /\[muted\]✓ npm test\[dim\] · exit 0 · 12s · observed · mt_a1b2c3d4/);
-  assert.match(text, /\[muted\]✕ make release\[dim\] · exit 2 · 61s · delivered · mt_e5f60718/);
-  assert.match(text, /More: offset=40/);
+test('waiting and cancellation requests have readable active state labels', () => {
+  assert.match(result({ tasks: [{ ...running, state: 'waiting' }] }), /waiting/);
+  const text = result({ tasks: [{ ...running, state: 'cancel_requested' }] }, 'cancel', true);
+  assert.match(text, /cancelling/);
+  assert.match(text, /Cancellation was requested/);
+  assert.match(result({ tasks: [{ ...done, state: 'cancelled', cancelRequestedAt: 1 }] }, 'cancel', true), /⊘ npm test/);
 });
-
-test('collapsed list rows stay one line per task while expanded rows use detail blocks', () => {
-  const result = { content: [{ type: 'text', text: 'Current session tasks…' }],
-    details: { tasks: [done, failed], pending: [], next_offset: 0 } };
-  const collapsed = render(renderTaskResult(result, { expanded: false }, plain, {}, false));
-  assert.equal(collapsed.split('\n').filter(line => line.includes('mt_a1b2c3d4')).length, 1, 'one row per task');
-  assert.doesNotMatch(collapsed, /42 passing/, 'collapsed rows carry no output tail');
-  assert.doesNotMatch(collapsed, /Output:/, 'collapsed rows carry no output path');
-
-  const expanded = render(renderTaskResult(result, { expanded: true }, plain, {}, false));
-  assert.match(expanded, /✓ npm test · exit 0 · 12s · mt_a1b2c3d4\n  Output: \/tmp\/out\.txt\n  …\n  ✓ 42 passing/,
-    'expanded rows render the output path and tail per task');
-  assert.match(expanded, /✕ make release · exit 2 · 61s · mt_e5f60718/, 'every task gets its own detail block');
+test('collapsed commands advertise hidden lines and expanded commands preserve the whole script', () => {
+  const command = 'printf first\n  printf second\n' + 'long argument '.repeat(30);
+  const task = { ...done, command };
+  assert.match(result({ tasks: [task] }), /…\+2 lines/);
+  const expanded = render(renderTaskResult({ content: [], details: { tasks: [task] } }, { expanded: true }, plain, { args: { action: 'list' } }, false), 1000);
+  for (const line of command.split('\n')) assert.ok(expanded.includes(line.trimEnd()));
+  assert.match(result({ tasks: [{ ...done, command: 'argument '.repeat(80) }] }), /…/);
 });
-
-test('wait results show the glyph header plus the structured output from details without regex scraping', () => {
-  const wait = renderTaskResult({ content: [
-    { type: 'text', text: 'mt_a1b2c3d4 · completed · exit 0 · 12s\n$ npm test' },
-    { type: 'text', text: '✓ 42 passing\n✓ all good' },
-  ], details: { ...done, output: '✓ 42 passing\n✓ all good' } }, { expanded: false }, plain, { args: { action: 'wait' } }, false);
-  const text = render(wait);
-  assert.match(text, /✓ npm test · exit 0 · 12s · mt_a1b2c3d4/);
-  assert.match(text, /✓ 42 passing/);
-  assert.doesNotMatch(text, /\$ npm test/, 'the receipt header is not duplicated');
+test('existing non-shell code and args provide titles and complete details', () => {
+  for (const fields of [{ tool: 'codemode', command: undefined, code: 'const x = 1;\nreturn x;' }, { tool: 'square', command: undefined, args: { square: 'fixture-square' } }]) {
+    const text = result({ tasks: [{ ...done, ...fields }] }, 'list', true);
+    assert.ok(text.includes(fields.tool));
+    for (const line of (fields.code ?? 'fixture-square').split('\n')) assert.ok(text.includes(line));
+  }
 });
-
-test('multi-task waits render each task row and its structured output from details', () => {
-  const wait = renderTaskResult({ content: [
-    { type: 'text', text: 'mt_a1b2c3d4 · completed · exit 0 · 12s\n$ npm test\n✓ 42 passing' },
-    { type: 'text', text: 'mt_e5f60718 · failed · exit 2 · 61s\n$ make release\nNo retained result.' },
-    { type: 'text', text: 'Pending: (none)' },
-  ], details: { tasks: [{ ...done, output: '✓ 42 passing' }, { ...failed }, { ...cancelled, output: 'FINAL' }], pending: [] } },
-  { expanded: false }, plain, { args: { action: 'wait' } }, false);
-  const text = render(wait);
-  assert.equal(text, ['✓ npm test · exit 0 · 12s · mt_a1b2c3d4', '✕ make release · exit 2 · 61s · mt_e5f60718',
-    '⊘ sleep 99 · 5s · mt_19202122', '', '✓ 42 passing', 'FINAL'].join('\n'), 'a blank line separates status rows from output');
+test('list pagination and notification failures remain actionable', () => {
+  const text = result({ tasks: [{ ...done, notification: 'failed', notificationError: 'Delivery retry exhausted' }], total: 31, next_offset: 7 });
+  assert.match(text, /\+24 more/);
+  assert.match(text, /Delivery retry exhausted/);
 });
-
-test('partial wait results render task rows without receipt prose when no output exists', () => {
-  const streaming: TaskDisplay = { id: 'mt_a1b2c3d4', tool: 'bash', state: 'waiting',
-    command: 'npm test', createdAt: Date.now() - 12_000 };
-  const partial = renderTaskResult({ content: [{ type: 'text', text: 'Meantime mt_a1b2c3d4 waiting — npm test' }],
-    details: { tasks: [streaming] } },
-  { expanded: false, isPartial: true }, plain, { args: { action: 'wait' } }, false);
-  assert.equal(render(partial), '● npm test · 12s · mt_a1b2c3d4', 'streaming rows do not repeat the receipt prose');
+test('streaming waits retain bounded latest output and progress fallback', () => {
+  const tail = Array.from({ length: 25 }, (_, i) => `live ${i + 1}`).join('\n');
+  assert.ok(result({ tasks: [{ ...running, outputTail: tail }] }, 'wait', false, true).endsWith(tail.split('\n').slice(-5).join('\n')));
+  assert.ok(result({ tasks: [{ ...running, outputTail: tail }] }, 'wait', true, true).endsWith(tail.split('\n').slice(-20).join('\n')));
+  assert.match(result({ tasks: [{ ...running, progress: 'latest update' }] }, 'wait', false, true), /latest update/);
 });
-
-test('partial wait results show a bounded live tail with progress fallback and sanitized output', () => {
-  const tail = Array.from({ length: 25 }, (_, index) => `live ${index + 1}`).join('\n');
-  const task: TaskDisplay = { id: 'mt_a1b2c3d4', tool: 'bash', state: 'waiting', command: 'npm test',
-    outputTail: '\u001b[2J' + tail, progress: 'older progress', output: 'final output' };
-  const partial = (expanded: boolean, entry = task) => render(renderTaskResult({ content: [], details: { tasks: [entry] } },
-    { expanded, isPartial: true }, plain, { args: { action: 'wait' } }, false));
-  assert.equal(partial(false), ['● npm test · mt_a1b2c3d4', '', ...tail.split('\n').slice(-5)].join('\n'));
-  assert.equal(partial(true), ['● npm test · mt_a1b2c3d4', '', ...tail.split('\n').slice(-20)].join('\n'));
-  assert.match(partial(false, { ...task, outputTail: undefined, progress: 'fallback\nnewest' }), /fallback\nnewest$/);
-  const final = render(renderTaskResult({ content: [], details: { tasks: [task] } },
-    { expanded: false }, plain, { args: { action: 'wait' } }, false));
-  assert.match(final, /final output$/);
-});
-
-test('collapsed handle rows attribute the detach trigger concisely', () => {
-  const row = (detachReason?: string) => render(renderTaskResult({ content: [],
-    details: { id: done.id, tool: 'bash', state: 'running', command: 'npm test', delivery: 'background',
-      createdAt: Date.now() - 12_000, ...(detachReason ? { detachReason } : {}) } }, { expanded: false }, plain, {}, true));
-  assert.equal(row(undefined), '● running in background · mt_a1b2c3d4');
-  assert.equal(row('explicit'), '● running in background · mt_a1b2c3d4');
-  assert.equal(row('timeout'), '● running in background (90s auto-detach) · mt_a1b2c3d4');
-  assert.equal(row('shortcut'), '● running in background (detached) · mt_a1b2c3d4');
-  assert.equal(row('steer'), '● running in background (detached) · mt_a1b2c3d4');
-});
-
-test('a settled receipt without a retained result has no machine prose left to display', () => {
-  const wait = renderTaskResult({ content: [{ type: 'text', text: 'Meantime mt_e5f60718 failed (exit 2) — make release\nNo retained result.' }],
-    details: { tasks: [{ ...failed }], pending: [] } }, { expanded: false }, plain, { args: { action: 'wait' } }, false);
-  assert.equal(render(wait), '✕ make release · exit 2 · 61s · mt_e5f60718');
-});
-
-test('terminal control bytes in commands and tails never reach the terminal', () => {
-  const hostile: TaskDisplay = { id: 'mt_deadbeef', tool: 'bash', state: 'completed',
-    command: 'printf \u001b[2J\u001b[31mRED', outputTail: 'line\u001b[7mREVERSED' };
-  const out = render(renderCompletion({ details: { taskIds: [hostile.id], tasks: [hostile] } }, { expanded: true }, plain));
-  assert.ok(!out.includes('\u001b'), 'no escape bytes survive');
-  assert.match(out, /printf/);
+test('text-only errors and terminal sanitization remain readable', () => {
+  assert.equal(render(renderTaskResult({ content: [{ type: 'text', text: 'Unknown task' }] }, { expanded: false }, plain, {}, false)), 'Unknown task');
+  assert.match(result({ tasks: [{ ...done, command: 'printf \u001b[2JSAFE' }] }), /printf SAFE/);
 });

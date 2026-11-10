@@ -1,7 +1,7 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { ViewStyle } from "react-native";
 import type { TaskSummary } from "../shared/tasks.js";
-import { isDarkSurface, rgb } from "./rows.js";
+import { isDarkSurface, rgb, secondaryColor } from "./rows.js";
 
 type Colors = PluginTheme["colors"];
 export type Tone = "ok" | "bad" | "run" | "neutral";
@@ -19,7 +19,7 @@ export function toneColor(tone: Tone, colors: Colors): string {
   return tone === "ok" ? (colors.statusSuccess ?? "#7fb26a")
     : tone === "bad" ? (colors.statusDanger ?? "#ef7d6b")
     : tone === "run" ? (colors.statusWarning ?? "#e9b45a")
-    : (colors.accent ?? "#8d99a8");
+    : secondaryColor(colors);
 }
 export function toneRgb(tone: Tone, colors: Colors): string {
   return rgb(toneColor(tone, colors))?.join(",") ?? FALLBACK_RGB[tone];
